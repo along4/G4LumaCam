@@ -37,16 +37,32 @@ docker pull jeffersonlab/geant4:g4v10.6.2-ubuntu24
    git clone https://github.com/TsvikiHirsh/G4LumaCam.git
    ```
 
-2. Navigate to the cloned directory and install:
+2. (Optional) Specify the EMPIR executables path before installation:
+   ```bash
+   export EMPIR_PATH=/path/to/empir/executables
+   ```
+
+3. Navigate to the cloned directory and install:
    ```bash
    cd G4LumaCam
    pip install .
    ```
 
-3. Specify the folder containing the EMPIR executables in your environment:
+## EMPIR Configuration
+G4LumaCam provides three ways to specify the path to EMPIR executables:
+
+1. **Environment Variable (during installation)**: Set `EMPIR_PATH` before installation to configure it globally:
    ```bash
    export EMPIR_PATH=/path/to/empir/executables
+   pip install .
    ```
+
+2. **Runtime Parameter**: Specify the path when creating an Analysis object:
+   ```python
+   analysis = lumacam.Analysis(archive="your_archive", empir_dirpath="/path/to/empir/executables")
+   ```
+
+3. **Default Path**: If no path is specified, G4LumaCam will look for EMPIR in the `./empir` directory relative to your working directory.
 
 ## Usage Example
 The following example demonstrates a typical workflow with G4LumaCam:
@@ -63,7 +79,8 @@ opm = lens.refocus(zfocus=25/1.58, zfine=13.3)
 openbeam_data = lens.trace_rays(opm=opm, chunk_size=500, n_processes=10)
 
 # Analyse and process data using EMPIR
-o = lumacam.Analysis(archive="archive/test/openbeam").process_data()
+# Uses EMPIR path from installation config or default
+reconstructed = lumacam.Analysis(archive="archive/test/openbeam").process_data()
 ```
 
 ## Citation

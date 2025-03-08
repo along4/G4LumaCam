@@ -42,17 +42,37 @@ class BuildGeant4Simulation(build_py):
         super().run()
 
 class CustomInstall(install):
-    """Custom install command to ensure the executable is properly installed."""
+    """Custom install command to ensure the executable is properly installed and configure EMPIR path."""
     def run(self):
         install.run(self)
+        
+        # Create or update config file with EMPIR path if specified
+        empir_path = os.environ.get('EMPIR_PATH')
+        if empir_path:
+            try:
+                # Determine the installation directory
+                site_packages_dir = self.install_lib
+                config_dir = os.path.join(site_packages_dir, 'G4LumaCam', 'config')
+                os.makedirs(config_dir, exist_ok=True)
+                
+                config_file = os.path.join(config_dir, 'paths.py')
+                with open(config_file, 'w') as f:
+                    f.write(f"EMPIR_PATH = '{empir_path}'\n")
+                
+                print(f"EMPIR_PATH configured as {empir_path}")
+            except Exception as e:
+                print(f"Warning: Could not configure EMPIR_PATH: {e}")
+        else:
+            print("Note: EMPIR_PATH environment variable not set. Using default './empir' path.")
+            print("To set EMPIR_PATH, run: export EMPIR_PATH=/path/to/empir/executables before installation")
 
 setup(
     name="G4LumaCam",
-    version="0.1.0",
+    version="0.2.0",
     packages=find_packages(where="src"),
     package_dir={"": "src"},
     package_data={
-        'G4LumaCam': ['bin/*'],  # Include binary files in the package
+        'G4LumaCam': ['bin/*', 'config/*'],  # Include binary files and config in the package
     },
     install_requires=[
         "rayoptics",

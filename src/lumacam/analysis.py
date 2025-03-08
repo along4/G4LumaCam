@@ -221,7 +221,7 @@ class Analysis:
     def __init__(self, archive: str = "test",
                  data: "pd.DataFrame" = None,
                  sim_data: "pd.DataFrame" = None,
-                 empir_dirpath: str = "./empir"):
+                 empir_dirpath: str = None):
         """
         Analysis class for the LumaCam data.
 
@@ -229,14 +229,28 @@ class Analysis:
             archive: str - The directory containing traced photon data.
             data: pd.DataFrame, Optional - The data to be analysed directly.
             sim_data: pd.DataFrame, Optional - The simulation data to be analysed directly.
-            empir_dirpath: str - The path to the empir directory.
+            empir_dirpath: str, Optional - The path to the empir directory. If None, will use
+                           EMPIR_PATH from config if available, otherwise defaults to "./empir".
         
         The class will:
         1. Use the provided DataFrame if `data` is given.
         2. Otherwise, load all traced photon files in `archive/TracedPhotons/`.
         """
         self.archive = Path(archive)
-        self.empir_dirpath = Path(empir_dirpath)
+        
+        # Determine EMPIR directory path
+        if empir_dirpath is not None:
+            # Use explicitly provided path
+            self.empir_dirpath = Path(empir_dirpath)
+        else:
+            # Try to load from config
+            try:
+                from G4LumaCam.config.paths import EMPIR_PATH
+                self.empir_dirpath = Path(EMPIR_PATH)
+            except ImportError:
+                # Fall back to default
+                self.empir_dirpath = Path("./empir")
+                
         self.traced_dir = self.archive / "TracedPhotons"
         self.sim_dir = self.archive / "SimPhotons"
         self.photon_files_dir = self.archive / "PhotonFiles"
