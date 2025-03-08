@@ -1,0 +1,8 @@
+src/G4LumaCam.egg-info/*
+build/*
+notebooks/.ipynb_checkpoints/*
+notebooks/data
+empir
+notebooks/archive/*
+nohup.out
+sim_data*.csv
