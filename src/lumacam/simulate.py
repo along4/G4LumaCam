@@ -37,7 +37,7 @@ class Config:
     energy_intercept: Optional[float] = None  # Used for Lin distribution
     position_x: float = 0
     position_y: float = 0
-    position_z: float = -10
+    position_z: float = -1059
     position_unit: str = "cm"
     direction_x: float = 0
     direction_y: float = 0
@@ -47,9 +47,10 @@ class Config:
     halfy: float = 60
     shape_unit: str = "mm"
     angle_type: str = "iso"
-    max_theta: float = 60
+    max_theta: float = 0
+    min_theta: float = 0
     angle_unit: str = "deg"
-    sample_material: str = "G4_Graphite" # Material of the sample
+    sample_material: str = "G4_Galactic" # Material of the sample
     csv_batch_size: int = 0
     
     # Run parameters
@@ -113,7 +114,8 @@ class Config:
             halfy=0.0001,
             shape_unit="um",
             num_events=10000,
-            max_theta=3,
+            max_theta=180,
+            min_theta=177,
             progress_interval=1000,
             csv_filename="sim_data.csv",
             sample_material="G4_Galactic",
@@ -131,7 +133,8 @@ class Config:
             position_unit="mm",
             halfx=60,
             halfy=60,
-            max_theta=3,
+            max_theta=180,
+            min_theta=177,
             shape_unit="mm",
             num_events=100000,
             progress_interval=1000,
@@ -173,6 +176,7 @@ class Config:
 /gps/pos/type Plane
 /gps/ang/type {self.angle_type}
 /gps/ang/maxtheta {self.max_theta} {self.angle_unit}
+/gps/ang/mintheta {self.min_theta} {self.angle_unit}
 /run/printProgress {self.progress_interval}
 /lumacam/sampleMaterial {self.sample_material}
 /lumacam/batchSize {self.csv_batch_size}
