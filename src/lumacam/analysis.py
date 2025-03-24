@@ -582,15 +582,17 @@ class Analysis:
         return result_df
 
 
+    
     def process_data_event_by_event(self,
-                                dSpace_px: float = 4.0,
-                                dTime_s: float = 50e-9,
-                                durationMax_s: float = 500e-9,
-                                dTime_ext: float = 1.0,
-                                nBins: int = 1000,
-                                binning_time_resolution: float = 1.5625e-9,
-                                binning_offset: float = 0.0,
-                                verbosity: VerbosityLevel = VerbosityLevel.QUIET) -> pd.DataFrame:
+                                    dSpace_px: float = 4.0,
+                                    dTime_s: float = 50e-9,
+                                    durationMax_s: float = 500e-9,
+                                    dTime_ext: float = 1.0,
+                                    nBins: int = 1000,
+                                    binning_time_resolution: float = 1.5625e-9,
+                                    binning_offset: float = 0.0,
+                                    verbosity: VerbosityLevel = VerbosityLevel.QUIET,
+                                    merge: bool = False) -> pd.DataFrame:
         """
         Processes data event by event, grouping optical photons by neutron_id.
         
@@ -600,6 +602,7 @@ class Analysis:
         3. Groups traced photons by neutron_id and organizes them by batch
         4. Processes each neutron event independently
         5. Combines results by batch into separate files
+        6. Optionally merges results with simulation data
         
         Args:
             dSpace_px: Spatial clustering distance in pixels
@@ -610,9 +613,10 @@ class Analysis:
             binning_time_resolution: Time resolution for binning in seconds
             binning_offset: Time offset for binning in seconds
             verbosity: Level of output verbosity
+            merge: If True, merge results with simulation data and save
             
         Returns:
-            DataFrame with processed event data including neutron_id column
+            DataFrame with processed event data (optionally merged with sim_data)
         """
         
         # Create necessary directories
@@ -621,11 +625,10 @@ class Analysis:
         result_dir = self.archive / "EventResults"
         result_dir.mkdir(parents=True, exist_ok=True)
         
-        # Determine number of batches by looking at SimPhotons or TracedPhotons folder
+        # Determine number of batches
         sim_photons_path = self.archive.parent / "SimPhotons"
         traced_photons_path = self.archive.parent / "TracedPhotons"
         
-        # Check which directory exists and count batch files
         if sim_photons_path.exists():
             batch_files = list(sim_photons_path.glob("*.simphot"))
             num_batches = len(batch_files)
@@ -637,12 +640,11 @@ class Analysis:
             if verbosity >= VerbosityLevel.BASIC:
                 print(f"Detected {num_batches} batches from TracedPhotons folder")
         else:
-            # Default to a single batch if no batch information is available
             num_batches = 1
             if verbosity >= VerbosityLevel.BASIC:
                 print("No batch information found, defaulting to a single batch")
         
-        # Combine data with simulation data to get neutron_id
+        # Combine data with simulation data
         if verbosity >= VerbosityLevel.BASIC:
             print("Combining data with simulation data to include neutron_id...")
         
@@ -652,34 +654,21 @@ class Analysis:
         if len(self.data) != len(self.sim_data):
             raise ValueError(f"Data length mismatch: self.data has {len(self.data)} rows, self.sim_data has {len(self.sim_data)} rows")
         
-        # Create a combined dataframe
         combined_data = self.data.copy()
         combined_data['neutron_id'] = self.sim_data['neutron_id']
         
-        # Check if batch_id is available in the simulation data
         has_batch_id = 'batch_id' in self.sim_data.columns
         
         if has_batch_id:
-            # Use existing batch_id
             combined_data['batch_id'] = self.sim_data['batch_id']
             if verbosity >= VerbosityLevel.BASIC:
                 print("Using batch_id from simulation data")
         else:
-            # Assign batch_id based on neutron_id (simple distribution across batches)
             unique_neutron_ids = combined_data['neutron_id'].unique()
             events_per_batch = len(unique_neutron_ids) // num_batches + 1
-            
-            # Create a mapping of neutron_id to batch_id
-            neutron_to_batch = {}
-            for i, neutron_id in enumerate(unique_neutron_ids):
-                batch_id = i // events_per_batch
-                if batch_id >= num_batches:
-                    batch_id = num_batches - 1
-                neutron_to_batch[neutron_id] = batch_id
-            
-            # Assign batch_id to each row
+            neutron_to_batch = {nid: min(i // events_per_batch, num_batches - 1) 
+                            for i, nid in enumerate(unique_neutron_ids)}
             combined_data['batch_id'] = combined_data['neutron_id'].map(neutron_to_batch)
-            
             if verbosity >= VerbosityLevel.BASIC:
                 print(f"Assigned {len(unique_neutron_ids)} neutron events to {num_batches} batches")
         
@@ -689,7 +678,6 @@ class Analysis:
         
         neutron_groups = combined_data.groupby('neutron_id')
         
-        # Create dictionaries to store results by batch
         batch_results = {i: [] for i in range(num_batches)}
         
         # Setup photon2event config
@@ -712,33 +700,27 @@ class Analysis:
         # Process each neutron event
         for neutron_id, group in tqdm(neutron_groups, desc="Processing neutron events"):
             try:
-                # Skip if no photons
                 if group.empty:
                     continue
                     
-                # Get batch_id for this neutron
                 batch_id = group['batch_id'].iloc[0]
-                    
-                # Extract relevant columns and prepare data
+                
                 df = group[["x2", "y2", "toa2"]].dropna()
                 df["toa2"] *= 1e-9
-                df["px"] = (df["x2"] + 10) / 10 * 128  # convert between px and mm
-                df["py"] = (df["y2"] + 10) / 10 * 128  # convert between px and mm
+                df["px"] = (df["x2"] + 10) / 10 * 128
+                df["py"] = (df["y2"] + 10) / 10 * 128
                 df = df[["px", "py", "toa2"]]
                 df.columns = ["x [px]", "y [px]", "t [s]"]
                 df["t_relToExtTrigger [s]"] = df["t [s]"]
                 df = df.loc[(df["t [s]"] >= 0) & (df["t [s]"] < 1)]
                 
-                # Skip if no valid photons after filtering
                 if df.empty:
                     continue
                     
-                # Save temporary CSV
                 event_prefix = f"event_{neutron_id}"
                 temp_csv = temp_dir / f"{event_prefix}.csv"
                 df.sort_values("t [s]").to_csv(temp_csv, index=False)
                 
-                # Generate empirphot file
                 empirphot_file = temp_dir / f"{event_prefix}.empirphot"
                 cmd = f"{self.empir_import_photons} {temp_csv} {empirphot_file} csv"
                 if verbosity >= VerbosityLevel.DETAILED:
@@ -747,7 +729,6 @@ class Analysis:
                 else:
                     subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 
-                # Run photon2event
                 empirevent_file = temp_dir / f"{event_prefix}.empirevent"
                 cmd = (
                     f"{self.empir_dirpath}/bin/empir_photon2event "
@@ -761,7 +742,6 @@ class Analysis:
                 else:
                     subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 
-                # Run empire_export to convert to CSV for individual event
                 event_result_csv = temp_dir / f"{event_prefix}_result.csv"
                 cmd = (
                     f"{self.empir_dirpath}/empir_export_events "
@@ -775,17 +755,21 @@ class Analysis:
                 else:
                     subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 
-                # Read result and add to batch results
                 if event_result_csv.exists():
                     try:
                         result_df = pd.read_csv(event_result_csv)
+                        result_df.columns = [col.strip() for col in result_df.columns]
+                        expected_columns = ['x [px]', 'y [px]', 't [s]', 'nPhotons [1]', 'PSD value',
+                                        't_relToExtTrigger [s]']
+                        for col in expected_columns:
+                            if col not in result_df.columns:
+                                raise ValueError(f"Missing expected column '{col}' in result CSV")
                         result_df['neutron_id'] = neutron_id
                         batch_results[batch_id].append(result_df)
                     except pd.errors.EmptyDataError:
                         if verbosity >= VerbosityLevel.BASIC:
                             print(f"Empty result for neutron_id {neutron_id}")
                 
-                # Clean up temporary files unless detailed verbosity is requested
                 if verbosity < VerbosityLevel.DETAILED:
                     temp_csv.unlink(missing_ok=True)
                     empirphot_file.unlink(missing_ok=True)
@@ -804,18 +788,15 @@ class Analysis:
                     print(f"No valid results for batch {batch_id}")
                 continue
                 
-            # Combine results for this batch
             batch_df = pd.concat(results, ignore_index=True)
             all_results.append(batch_df)
             
-            # Save batch results
             batch_csv = result_dir / f"batch_{batch_id}_results.csv"
             batch_df.to_csv(batch_csv, index=False)
             
             if verbosity >= VerbosityLevel.BASIC:
                 print(f"Batch {batch_id} results saved to {batch_csv} ({len(results)} neutron events)")
         
-        # Combine all results
         if not all_results:
             if verbosity >= VerbosityLevel.BASIC:
                 print("No valid results found!")
@@ -823,7 +804,6 @@ class Analysis:
         
         combined_results = pd.concat(all_results, ignore_index=True)
         
-        # Save combined results
         combined_csv = self.archive / "all_batches_results.csv"
         combined_results.to_csv(combined_csv, index=False)
         
@@ -831,7 +811,108 @@ class Analysis:
             print(f"All results saved to {combined_csv}")
             print(f"Processed {len(combined_results)} neutron events across {len(batch_results)} batches")
         
+        # Optional merging with simulation data
+        if merge:
+            if verbosity >= VerbosityLevel.BASIC:
+                print("Merging processed results with simulation data...")
+            
+            def merge_sim_and_recon_data(sim_data, recon_data):
+                """
+                Merge simulation and reconstruction dataframes based on neutron_id and toa.
+                
+                Parameters:
+                -----------
+                sim_data : pd.DataFrame
+                    Original simulation data with neutron_id and toa columns
+                recon_data : pd.DataFrame
+                    Reconstruction data with neutron_id column
+                    
+                Returns:
+                --------
+                pd.DataFrame
+                    Merged dataframe containing simulation data with reconstruction data added
+                """
+                sim_df = sim_data.copy()
+                recon_df = recon_data.copy()
+                
+                sim_df = sim_df.sort_values(['neutron_id', 'toa'])
+                recon_df = recon_df.sort_values(['neutron_id', 't [s]'])
+                
+                merged_rows = []
+                
+                sim_groups = sim_df.groupby('neutron_id')
+                recon_groups = recon_df.groupby('neutron_id')
+                
+                for neutron_id in sorted(sim_df['neutron_id'].unique()):
+                    sim_group = sim_groups.get_group(neutron_id) if neutron_id in sim_groups.groups else None
+                    recon_group = recon_groups.get_group(neutron_id) if neutron_id in recon_groups.groups else None
+                    
+                    if recon_group is None or sim_group is None:
+                        if sim_group is not None:
+                            for _, sim_row in sim_group.iterrows():
+                                merged_row = sim_row.to_dict()
+                                merged_row.update({col: None for col in recon_df.columns if col != 'neutron_id'})
+                                merged_rows.append(merged_row)
+                        continue
+                    
+                    if len(recon_group) == 1:
+                        recon_row = recon_group.iloc[0]
+                        for _, sim_row in sim_group.iterrows():
+                            merged_row = sim_row.to_dict()
+                            for col in recon_df.columns:
+                                if col != 'neutron_id':
+                                    merged_row[f'recon_{col}'] = recon_row[col]
+                            merged_rows.append(merged_row)
+                    
+                    else:
+                        recon_times = recon_group['t [s]'].values * 1e9
+                        sim_times = sim_group['toa'].values
+                        
+                        for _, recon_row in recon_group.iterrows():
+                            recon_time = recon_row['t [s]'] * 1e9
+                            closest_idx = np.argmin(np.abs(sim_times - recon_time))
+                            sim_row = sim_group.iloc[closest_idx]
+                            
+                            merged_row = sim_row.to_dict()
+                            for col in recon_df.columns:
+                                if col != 'neutron_id':
+                                    merged_row[f'recon_{col}'] = recon_row[col]
+                            
+                            merged_row['time_diff_ns'] = abs(sim_times[closest_idx] - recon_time)
+                            merged_rows.append(merged_row)
+                
+                merged_df = pd.DataFrame(merged_rows)
+                
+                sim_cols = sim_df.columns.tolist()
+                recon_cols = [f'recon_{col}' for col in recon_df.columns if col != 'neutron_id']
+                merged_df = merged_df[sim_cols + recon_cols + ['time_diff_ns']]
+                
+                merged_df["x3"] = (128 - merged_df["recon_x [px]"])/256*120
+                merged_df["y3"] = (128 - merged_df["recon_y [px]"])/256*120
+                merged_df["delta_x"] = merged_df["x3"] - merged_df["nx"]
+                merged_df["delta_y"] = merged_df["y3"] - merged_df["ny"]
+                merged_df["delta_r"] = np.sqrt(merged_df["delta_x"]**2 + merged_df["delta_y"]**2)
+                
+                return merged_df
+            
+            def merge_sim_and_recon_data_no_prefix(sim_data, recon_data):
+                merged_df = merge_sim_and_recon_data(sim_data, recon_data)
+                rename_dict = {col: col.replace('recon_', '') for col in merged_df.columns if col.startswith('recon_')}
+                merged_df = merged_df.rename(columns=rename_dict)
+                return merged_df
+            
+            merged_df = merge_sim_and_recon_data_no_prefix(self.sim_data, combined_results)
+            
+            merged_csv = self.archive / "merged_all_batches_results.csv"
+            merged_df.to_csv(merged_csv, index=False)
+            
+            if verbosity >= VerbosityLevel.BASIC:
+                print(f"Merged results saved to {merged_csv}")
+            
+            return merged_df
+        
         return combined_results
+
 
     def calculate_event_ellipsoid_shape(self, 
                                         results_df: pd.DataFrame=None,
