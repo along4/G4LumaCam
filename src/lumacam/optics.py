@@ -220,16 +220,17 @@ class Lens:
             opm.save_model(self.archive / "Nikkor_58mm_095")
         return opm
 
-    def refocus(self, opm: "OpticalModel"=None, zfocus=0, zfine=0, save: bool=False):
+    def refocus(self, opm: "OpticalModel"=None, zfocus=0, zfine=0, fnumber=None, save: bool=False):
         """
         Refocus the lens
-
+        
         Input:
             - opm: OpticalModel, Optional, Optical model to refocus
             - zfocus: (float, Optional), Focus distance in mm
             - zfine: (float, Optional), Fine focus distance in mm
+            - fnumber: (float, Optional), New f-number for the lens (None = no change)
             - save: bool, Optional, Save the optical model to a file
-
+        
         Returns:
             - OpticalModel
         """
@@ -237,21 +238,29 @@ class Lens:
         if opm == None:
             opm = self.opm0
         opm = deepcopy(opm)
-        sm  = opm.seq_model
+        sm = opm.seq_model
+        osp = opm.optical_spec
+        
         Δ0 = sm.gaps[-9].thi
         Δ = zfine
         Δs = sm.gaps[-3].thi
         s = {}
         dfs = {}
-        δ =  zfocus
+        δ = zfocus
         sm.gaps[0].thi = self.dist_from_screen + δ - Δ
         sm.gaps[-9].thi = Δ0 + Δ
         # sm.gaps[-3].thi = Δs + δ
+        
+        # Change the f-number if specified
+        if fnumber is not None:
+            osp.pupil = PupilSpec(osp, key=['image', 'f/#'], value=fnumber)
+        
         sm.do_apertures = False
         opm.update_model()
         apply_paraxial_vignetting(opm)
         if save:
-            save_path = self.archive / f"refocus_zfocus_{zfocus}_zfine_{zfine}"
+            fnumber_str = f"_f{fnumber:.2f}" if fnumber is not None else ""
+            save_path = self.archive / f"refocus_zfocus_{zfocus}_zfine_{zfine}{fnumber_str}"
             opm.save_model(save_path)
         return opm
 
@@ -445,7 +454,7 @@ class Lens:
             zfine_range: Union[np.ndarray, list, float] = 0.,
             data: pd.DataFrame = None, opm: "OpticalModel" = None,
             n_processes: int = None, chunk_size: int = 1000,
-            archive: str = None, verbose: VerbosityLevel = VerbosityLevel.BASIC) -> pd.Series:
+            archive: str = None, verbose: VerbosityLevel = VerbosityLevel.QUIET) -> pd.Series:
         """
         Perform a Z-scan to determine the optimal focus by evaluating ray tracing results.
 
@@ -620,18 +629,20 @@ class Lens:
 
 
     def zscan_optimize(self, initial_zfocus: float = 0., initial_zfine: float = 0.,
+                    initial_fnumber: float = None,
                     optimize_param: str = "zfocus", zfocus_min: float = None, zfocus_max: float = None,
                     zfine_min: float = None, zfine_max: float = None,
+                    fnumber_min: float = None, fnumber_max: float = None,
                     data: pd.DataFrame = None, opm: "OpticalModel" = None,
                     n_processes: int = None, chunk_size: int = 1000, archive: str = None,
                     verbose: VerbosityLevel = VerbosityLevel.BASIC) -> dict:
         """
-        Optimize z-focus and/or z-fine positions using lmfit minimization to minimize ray position spread
+        Optimize z-focus, z-fine positions, and/or f-number using lmfit minimization to minimize ray position spread
         while maximizing the number of traced photons.
 
         This method:
         1. Loads simulation data from archive, provided DataFrame, or class data
-        2. Optimizes either zfocus, zfine, or both sequentially using lmfit
+        2. Optimizes zfocus, zfine, fnumber, or combinations sequentially using lmfit
         3. Balances minimizing std of x2/y2 with maximizing traced photons
         4. Returns the best parameters and minimum objective value achieved
 
@@ -641,8 +652,11 @@ class Lens:
             Initial guess for z-focus position
         initial_zfine : float, default 0.
             Initial guess for z-fine position
+        initial_fnumber : float, optional
+            Initial guess for f-number (None uses the default lens f-number)
         optimize_param : str, default "zfocus"
-            Parameter to optimize: "zfocus", "zfine", or "both" (sequential optimization)
+            Parameter to optimize: "zfocus", "zfine", "fnumber", or combinations like "both", 
+            "zfocus+fnumber", "zfine+fnumber", "all"
         zfocus_min : float, optional
             Minimum allowable z-focus value
         zfocus_max : float, optional
@@ -651,6 +665,10 @@ class Lens:
             Minimum allowable z-fine value
         zfine_max : float, optional
             Maximum allowable z-fine value
+        fnumber_min : float, optional
+            Minimum allowable f-number value
+        fnumber_max : float, optional
+            Maximum allowable f-number value
         data : pd.DataFrame, optional
             Input ray data; overrides archive/class data if provided
         opm : OpticalModel, optional
@@ -670,6 +688,7 @@ class Lens:
             Optimization results with keys:
             - best_zfocus: Optimal z-focus position (if optimized)
             - best_zfine: Optimal z-fine position (if optimized)
+            - best_fnumber: Optimal f-number (if optimized)
             - min_std: Minimum standard deviation achieved
             - traced_fraction: Fraction of photons traced at optimal position
             - result: lmfit MinimizeResult object from the last optimization
@@ -728,20 +747,48 @@ class Lens:
             print(f"Data NaN summary:\n{data.isna().sum()}")
 
         opm = deepcopy(opm) if opm else deepcopy(self.opm0)
+        
+        # Get default f-number if not provided
+        if initial_fnumber is None:
+            # Extract the default f-number from the optical model
+            try:
+                initial_fnumber = opm.optical_spec.pupil.value
+                if verbose >= VerbosityLevel.DETAILED:
+                    print(f"Using default f-number from optical model: {initial_fnumber}")
+            except:
+                # Default to 0.95 for the Nikkor lens if we can't extract it
+                initial_fnumber = 0.95
+                if verbose >= VerbosityLevel.DETAILED:
+                    print(f"Could not extract f-number from optical model, using default: {initial_fnumber}")
 
         # Validate optimize_param
-        if optimize_param not in ["zfocus", "zfine", "both"]:
-            raise ValueError("optimize_param must be 'zfocus', 'zfine', or 'both'")
+        valid_params = ["zfocus", "zfine", "fnumber", "both", "zfocus+fnumber", "zfine+fnumber", "all"]
+        if optimize_param not in valid_params:
+            raise ValueError(f"optimize_param must be one of {valid_params}")
 
-        # Objective function factory
-        def create_objective(param_name: str, fixed_param_name: str, fixed_value: float):
-            best_result = {'z': initial_zfocus if param_name == 'zfocus' else initial_zfine, 
-                        'std': float('inf'), 'traced_fraction': 0.0}
+        # Determine which parameters to optimize
+        optimize_zfocus = optimize_param in ["zfocus", "both", "zfocus+fnumber", "all"]
+        optimize_zfine = optimize_param in ["zfine", "both", "zfine+fnumber", "all"]
+        optimize_fnumber = optimize_param in ["fnumber", "zfocus+fnumber", "zfine+fnumber", "all"]
+
+        # Objective function factory with support for f-number
+        def create_objective(param_name: str, fixed_params: dict):
+            best_result = {
+                'z': fixed_params.get('zfocus', initial_zfocus) if param_name == 'zfocus' else 
+                    fixed_params.get('zfine', initial_zfine) if param_name == 'zfine' else
+                    fixed_params.get('fnumber', initial_fnumber),
+                'std': float('inf'), 
+                'traced_fraction': 0.0
+            }
             iteration_count = [0]
 
             def objective(params):
                 z = params['z'].value
-                refocus_kwargs = {param_name: z, fixed_param_name: fixed_value}
+                
+                # Create a dictionary of parameters for refocus method
+                refocus_kwargs = fixed_params.copy()
+                refocus_kwargs[param_name] = z
+                
                 try:
                     current_opm = self.refocus(opm, **refocus_kwargs)
                 except Exception as e:
@@ -751,8 +798,8 @@ class Lens:
                     return float('inf')
 
                 df = self.trace_rays(opm=current_opm, join=False, print_stats=False,
-                                    n_processes=n_processes, chunk_size=chunk_size,
-                                    progress_bar=False, return_df=True, verbosity=verbose)
+                                n_processes=n_processes, chunk_size=chunk_size,
+                                progress_bar=False, return_df=True, verbosity=verbose)
 
                 if df is None or df.empty:
                     if verbose >= VerbosityLevel.DETAILED:
@@ -784,8 +831,10 @@ class Lens:
                 penalty = 1000.0 * (1.0 - traced_fraction)
                 objective_value = std_value + penalty if std_value != float('inf') else 1e6 + penalty
 
+                # Different reporting for fnumber optimization
                 if verbose >= VerbosityLevel.DETAILED:
-                    print(f"Iteration {iteration_count[0]}: {param_name}={z:.3f}, std={std_value:.3f}, "
+                    param_str = f"f/{z:.2f}" if param_name == 'fnumber' else f"{param_name}={z:.3f}"
+                    print(f"Iteration {iteration_count[0]}: {param_str}, std={std_value:.3f}, "
                         f"traced={traced_count}/{total_photons} ({traced_fraction:.2%}), penalty={penalty:.3f}, objective={objective_value:.3f}")
 
                 if objective_value < (best_result['std'] + 1000.0 * (1.0 - best_result['traced_fraction'])):
@@ -801,18 +850,21 @@ class Lens:
         results = {}
         current_zfocus = initial_zfocus
         current_zfine = initial_zfine
+        current_fnumber = initial_fnumber
 
         # Optimize zfocus
-        if optimize_param in ["zfocus", "both"]:
-            if verbose >= VerbosityLevel.DETAILED:
+        if optimize_zfocus:
+            if verbose >= VerbosityLevel.BASIC:
                 print(f"Starting optimization for zfocus with initial value {current_zfocus:.3f}")
-            objective_func, best_result = create_objective('zfocus', 'zfine', current_zfine)
+            
+            fixed_params = {'zfine': current_zfine, 'fnumber': current_fnumber}
+            objective_func, best_result = create_objective('zfocus', fixed_params)
 
             params = Parameters()
             params.add('z', value=current_zfocus, min=zfocus_min, max=zfocus_max)
 
             try:
-                result = minimize(objective_func, params, method='nelder')  # Switch to Nelder-Mead
+                result = minimize(objective_func, params, method='nelder')  # Nelder-Mead method
                 best_zfocus = float(result.params['z'].value)
                 min_std = best_result['std']
                 traced_fraction = best_result['traced_fraction']
@@ -822,25 +874,26 @@ class Lens:
                 results['traced_fraction'] = traced_fraction
                 results['result'] = result
 
-                if verbose >= VerbosityLevel.DETAILED:
+                if verbose >= VerbosityLevel.BASIC:
                     print(f"Optimized zfocus: {best_zfocus:.3f}, min std: {min_std:.3f}, traced fraction: {traced_fraction:.2%}")
 
-                if optimize_param == "both":
-                    current_zfocus = best_zfocus
+                current_zfocus = best_zfocus
 
             except MinimizerException as e:
-                if verbose >= VerbosityLevel.DETAILED:
+                if verbose >= VerbosityLevel.BASIC:
                     print(f"Optimization of zfocus failed: {str(e)}")
                 results['best_zfocus'] = current_zfocus
                 results['min_std'] = float('inf')
                 results['traced_fraction'] = 0.0
                 results['result'] = None
 
-        # Optimize zfine (similar changes as above)
-        if optimize_param in ["zfine", "both"]:
-            if verbose >= VerbosityLevel.DETAILED:
+        # Optimize zfine
+        if optimize_zfine:
+            if verbose >= VerbosityLevel.BASIC:
                 print(f"Starting optimization for zfine with initial value {current_zfine:.3f}")
-            objective_func, best_result = create_objective('zfine', 'zfocus', current_zfocus)
+            
+            fixed_params = {'zfocus': current_zfocus, 'fnumber': current_fnumber}
+            objective_func, best_result = create_objective('zfine', fixed_params)
 
             params = Parameters()
             params.add('z', value=current_zfine, min=zfine_min, max=zfine_max)
@@ -856,13 +909,48 @@ class Lens:
                 results['traced_fraction'] = traced_fraction
                 results['result'] = result
 
-                if verbose >= VerbosityLevel.DETAILED:
+                if verbose >= VerbosityLevel.BASIC:
                     print(f"Optimized zfine: {best_zfine:.3f}, min std: {min_std:.3f}, traced fraction: {traced_fraction:.2%}")
 
+                current_zfine = best_zfine
+
             except MinimizerException as e:
-                if verbose >= VerbosityLevel.DETAILED:
+                if verbose >= VerbosityLevel.BASIC:
                     print(f"Optimization of zfine failed: {str(e)}")
                 results['best_zfine'] = current_zfine
+                results['min_std'] = float('inf')
+                results['traced_fraction'] = 0.0
+                results['result'] = None
+
+        # Optimize fnumber
+        if optimize_fnumber:
+            if verbose >= VerbosityLevel.BASIC:
+                print(f"Starting optimization for f-number with initial value f/{current_fnumber:.2f}")
+            
+            fixed_params = {'zfocus': current_zfocus, 'zfine': current_zfine}
+            objective_func, best_result = create_objective('fnumber', fixed_params)
+
+            params = Parameters()
+            params.add('z', value=current_fnumber, min=fnumber_min, max=fnumber_max)
+
+            try:
+                result = minimize(objective_func, params, method='nelder')
+                best_fnumber = float(result.params['z'].value)
+                min_std = best_result['std']
+                traced_fraction = best_result['traced_fraction']
+
+                results['best_fnumber'] = best_fnumber
+                results['min_std'] = min_std
+                results['traced_fraction'] = traced_fraction
+                results['result'] = result
+
+                if verbose >= VerbosityLevel.BASIC:
+                    print(f"Optimized f-number: f/{best_fnumber:.2f}, min std: {min_std:.3f}, traced fraction: {traced_fraction:.2%}")
+
+            except MinimizerException as e:
+                if verbose >= VerbosityLevel.BASIC:
+                    print(f"Optimization of f-number failed: {str(e)}")
+                results['best_fnumber'] = current_fnumber
                 results['min_std'] = float('inf')
                 results['traced_fraction'] = 0.0
                 results['result'] = None
