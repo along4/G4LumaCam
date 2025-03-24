@@ -501,34 +501,71 @@ class Analysis:
                     nBins: int = 1000,
                     binning_time_resolution: float = 1.5625e-9,
                     binning_offset: float = 0.0,
-                    verbosity: VerbosityLevel = VerbosityLevel.QUIET) -> pd.DataFrame:
+                    verbosity: VerbosityLevel = VerbosityLevel.QUIET,
+                    suffix: str = "") -> pd.DataFrame:
         """
         Streamlined method to process data through the complete analysis pipeline.
+        
+        Args:
+            dSpace_px: Spatial clustering distance in pixels
+            dTime_s: Time clustering threshold in seconds
+            durationMax_s: Maximum event duration in seconds
+            dTime_ext: Time extension factor for clustering
+            nBins: Number of time bins
+            binning_time_resolution: Time resolution for binning in seconds
+            binning_offset: Time offset for binning in seconds
+            verbosity: Level of output verbosity
+            suffix: Optional suffix for output folder and files (e.g., "_test" creates "AnalysedResults/test")
+            
+        Returns:
+            DataFrame with processed data including stacks, counts, and error
         """
+        # Create base directory for analysed results
+        analysed_dir = self.archive / "AnalysedResults"
+        analysed_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Create suffixed subfolder
+        suffix_dir = analysed_dir / (suffix.strip("_") if suffix else "default")
+        suffix_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Run the import photons step
         self._run_import_photons(verbosity=verbosity)
         
+        # Setup photon2event config
         p2e_config = self.Photon2EventConfig()
         p2e_config.dSpace_px = dSpace_px
         p2e_config.dTime_s = dTime_s
         p2e_config.durationMax_s = durationMax_s
         p2e_config.dTime_ext = dTime_ext
+        params_file = suffix_dir / "parameterSettings.json"  # Save in suffixed folder
+        p2e_config.write(params_file)
         
+        # Run photon2event
         self._run_photon2event(config=p2e_config, verbosity=verbosity)
         
+        # Setup event binning config
         binning_config = self.EventBinningConfig().time_binning()
         binning_config.binning_t.nBins = nBins
         binning_config.binning_t.resolution_s = binning_time_resolution
         binning_config.binning_t.offset_s = binning_offset
+        event_params_file = suffix_dir / "parameterEvents.json"  # Save in suffixed folder
+        binning_config.write(event_params_file)
         
+        # Run event binning
         self._run_event_binning(config=binning_config, verbosity=verbosity)
         
+        # Read and process binned data
         result_df = self._read_binned_data()
         result_df.columns = ["stacks", "counts"]
         result_df["err"] = np.sqrt(result_df["counts"])
         result_df["stacks"] = np.arange(len(result_df))
         
-        os.makedirs(self.archive, exist_ok=True)
-        result_df.to_csv(f"{self.archive}/counts.csv", index=False)
+        # Save results in suffixed folder
+        output_csv = suffix_dir / "counts.csv"
+        result_df.to_csv(output_csv, index=False)
+        
+        if verbosity >= VerbosityLevel.BASIC:
+            print(f"Processed data saved to {output_csv}")
         
         return result_df
 
@@ -592,7 +629,8 @@ class Analysis:
                                     binning_time_resolution: float = 1.5625e-9,
                                     binning_offset: float = 0.0,
                                     verbosity: VerbosityLevel = VerbosityLevel.QUIET,
-                                    merge: bool = False) -> pd.DataFrame:
+                                    merge_with_sim: bool = False,
+                                    suffix: str = "") -> pd.DataFrame:
         """
         Processes data event by event, grouping optical photons by neutron_id.
         
@@ -601,7 +639,7 @@ class Analysis:
         2. Determines the number of batches from SimPhotons or TracedPhotons folder
         3. Groups traced photons by neutron_id and organizes them by batch
         4. Processes each neutron event independently
-        5. Combines results by batch into separate files
+        5. Combines results by batch into separate files in a suffixed subfolder
         6. Optionally merges results with simulation data
         
         Args:
@@ -613,15 +651,26 @@ class Analysis:
             binning_time_resolution: Time resolution for binning in seconds
             binning_offset: Time offset for binning in seconds
             verbosity: Level of output verbosity
-            merge: If True, merge results with simulation data and save
+            merge_with_sim: If True, merge results with simulation data and save
+            suffix: Optional suffix for output folder and files (e.g., "_test" creates "AnalysedResults/test")
             
         Returns:
             DataFrame with processed event data (optionally merged with sim_data)
         """
         
-        # Create necessary directories
+        # Create base directory for analysed results
+        analysed_dir = self.archive / "AnalysedResults"
+        analysed_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Create suffixed subfolder
+        suffix_dir = analysed_dir / (suffix.strip("_") if suffix else "default")
+        suffix_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Temporary directory for event processing
         temp_dir = self.archive / "temp_events"
         temp_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Directory for batch results (still separate but could be moved under suffix_dir if desired)
         result_dir = self.archive / "EventResults"
         result_dir.mkdir(parents=True, exist_ok=True)
         
@@ -686,7 +735,7 @@ class Analysis:
         p2e_config.dTime_s = dTime_s
         p2e_config.durationMax_s = durationMax_s
         p2e_config.dTime_ext = dTime_ext
-        params_file = self.archive / "parameterSettings.json"
+        params_file = suffix_dir / "parameterSettings.json"  # Save in suffixed folder
         p2e_config.write(params_file)
         
         # Setup event binning config
@@ -694,7 +743,7 @@ class Analysis:
         binning_config.binning_t.nBins = nBins
         binning_config.binning_t.resolution_s = binning_time_resolution
         binning_config.binning_t.offset_s = binning_offset
-        event_params_file = self.archive / "parameterEvents.json"
+        event_params_file = suffix_dir / "parameterEvents.json"  # Save in suffixed folder
         binning_config.write(event_params_file)
         
         # Process each neutron event
@@ -804,7 +853,8 @@ class Analysis:
         
         combined_results = pd.concat(all_results, ignore_index=True)
         
-        combined_csv = self.archive / "all_batches_results.csv"
+        # Save combined results in suffixed folder
+        combined_csv = suffix_dir / "all_batches_results.csv"
         combined_results.to_csv(combined_csv, index=False)
         
         if verbosity >= VerbosityLevel.BASIC:
@@ -812,25 +862,13 @@ class Analysis:
             print(f"Processed {len(combined_results)} neutron events across {len(batch_results)} batches")
         
         # Optional merging with simulation data
-        if merge:
+        if merge_with_sim:
             if verbosity >= VerbosityLevel.BASIC:
                 print("Merging processed results with simulation data...")
             
             def merge_sim_and_recon_data(sim_data, recon_data):
                 """
                 Merge simulation and reconstruction dataframes based on neutron_id and toa.
-                
-                Parameters:
-                -----------
-                sim_data : pd.DataFrame
-                    Original simulation data with neutron_id and toa columns
-                recon_data : pd.DataFrame
-                    Reconstruction data with neutron_id column
-                    
-                Returns:
-                --------
-                pd.DataFrame
-                    Merged dataframe containing simulation data with reconstruction data added
                 """
                 sim_df = sim_data.copy()
                 recon_df = recon_data.copy()
@@ -903,7 +941,8 @@ class Analysis:
             
             merged_df = merge_sim_and_recon_data_no_prefix(self.sim_data, combined_results)
             
-            merged_csv = self.archive / "merged_all_batches_results.csv"
+            # Save merged results in suffixed folder
+            merged_csv = suffix_dir / "merged_all_batches_results.csv"
             merged_df.to_csv(merged_csv, index=False)
             
             if verbosity >= VerbosityLevel.BASIC:
