@@ -10,12 +10,12 @@
 #include "G4SDManager.hh"
 
 class EventProcessor;
-class ParticleGenerator; // Forward declaration
-class LumaCamMessenger; // Forward declaration
+class ParticleGenerator;
+class LumaCamMessenger;
 
 class GeometryConstructor : public G4VUserDetectorConstruction {
 public:
-    GeometryConstructor(ParticleGenerator* gen = nullptr); // Accept ParticleGenerator
+    GeometryConstructor(ParticleGenerator* gen = nullptr);
     ~GeometryConstructor() override;
     G4VPhysicalVolume* Construct() override;
 

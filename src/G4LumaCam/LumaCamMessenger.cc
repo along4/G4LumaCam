@@ -28,14 +28,35 @@ LumaCamMessenger::~LumaCamMessenger() {
     delete messenger;
 }
 
+// Add verbose logging in SetMaterial method
 void LumaCamMessenger::SetMaterial(const G4String& materialName) {
-    if (!sampleLog) return;
+    if (!sampleLog) {
+        G4cerr << "ERROR: sampleLog is nullptr!" << G4endl;
+        return;
+    }
+    
     G4NistManager* nistManager = G4NistManager::Instance();
     G4Material* material = nistManager->FindOrBuildMaterial(materialName);
+    
     if (material) {
+        // Print current material before change
+        G4cout << "Current sample material: " 
+               << sampleLog->GetMaterial()->GetName() << G4endl;
+        
         sampleLog->SetMaterial(material);
-        G4cout << "Sample material set to: " << materialName << G4endl;
+        
+        // Verify material change
+        G4cout << "Sample material set to: " << materialName 
+               << ", Confirmed material: " 
+               << sampleLog->GetMaterial()->GetName() << G4endl;
     } else {
         G4cerr << "Material " << materialName << " not found!" << G4endl;
+        
+        // List available NIST materials
+        G4cout << "Available NIST materials:" << G4endl;
+        const std::vector<G4String>& materialNames = nistManager->GetNistMaterialNames();
+        for (const auto& name : materialNames) {
+            G4cout << name << G4endl;
+        }
     }
 }
