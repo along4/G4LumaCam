@@ -629,7 +629,7 @@ class Analysis:
                                     binning_time_resolution: float = 1.5625e-9,
                                     binning_offset: float = 0.0,
                                     verbosity: VerbosityLevel = VerbosityLevel.QUIET,
-                                    merge_with_sim: bool = False,
+                                    merge: bool = False,
                                     suffix: str = "") -> pd.DataFrame:
         """
         Processes data event by event, grouping optical photons by neutron_id.
@@ -651,7 +651,7 @@ class Analysis:
             binning_time_resolution: Time resolution for binning in seconds
             binning_offset: Time offset for binning in seconds
             verbosity: Level of output verbosity
-            merge_with_sim: If True, merge results with simulation data and save
+            merge: If True, merge results with simulation data and save
             suffix: Optional suffix for output folder and files (e.g., "_test" creates "AnalysedResults/test")
             
         Returns:
@@ -862,7 +862,7 @@ class Analysis:
             print(f"Processed {len(combined_results)} neutron events across {len(batch_results)} batches")
         
         # Optional merging with simulation data
-        if merge_with_sim:
+        if merge:
             if verbosity >= VerbosityLevel.BASIC:
                 print("Merging processed results with simulation data...")
             
