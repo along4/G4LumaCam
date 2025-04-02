@@ -11,10 +11,10 @@ namespace Sim {
     extern std::default_random_engine randomEngine;
     
     constexpr G4double WORLD_SIZE = 50.0 * m;
-    constexpr G4double SCINT_THICKNESS = 2.0 * cm;
-    constexpr G4double SAMPLE_THICKNESS = 3.75 * cm;
-    constexpr G4double SCINT_SIZE = 6.0 * cm;
-    constexpr G4double COATING_THICKNESS = 0.01 * cm;
+    constexpr G4double SCINT_THICKNESS = 1.0 * cm; // half thickness
+    constexpr G4double SAMPLE_THICKNESS = 3.75 * cm; // half thickness
+    constexpr G4double SCINT_SIZE = 6.0 * cm; // half size
+    constexpr G4double COATING_THICKNESS = 0.01 * cm; // half thickness
 }
 
 #endif
