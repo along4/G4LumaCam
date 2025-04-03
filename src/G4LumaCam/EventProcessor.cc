@@ -73,7 +73,7 @@ G4bool EventProcessor::ProcessHits(G4Step* step, G4TouchableHistory*) {
             rec.dx = preDir.x();
             rec.dy = preDir.y();
             rec.dz = preDir.z();
-            rec.timeOfArrival = static_cast<G4long>(track->GetGlobalTime() / 1.56255 / ns);
+            rec.timeOfArrival = static_cast<G4long>(track->GetGlobalTime() / 1.5625 / ns);
             rec.wavelength = 1240. / (track->GetTotalEnergy() / eV);
             rec.parentType = tracks[rec.parentId].type;
             rec.px = tracks[rec.parentId].x / mm;
