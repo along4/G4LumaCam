@@ -20,7 +20,7 @@ private:
     struct PhotonRecord {
         G4int id, parentId, neutronId;
         G4double x, y, z, dx, dy, dz;
-        G4long timeOfArrival;
+        G4double timeOfArrival;
         G4double wavelength, parentEnergy, neutronEnergy;
         G4String parentType;
         G4double px, py, pz, nx, ny, nz;
