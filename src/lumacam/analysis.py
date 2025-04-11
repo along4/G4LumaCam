@@ -499,6 +499,7 @@ class Analysis:
                     durationMax_s: float = 500e-9,
                     dTime_ext: float = 1.0,
                     nBins: int = 1000,
+                    nPhotons_bins: int = None,
                     binning_time_resolution: float = 1.5625e-9,
                     binning_offset: float = 0.0,
                     verbosity: VerbosityLevel = VerbosityLevel.QUIET,
@@ -512,6 +513,7 @@ class Analysis:
             durationMax_s: Maximum event duration in seconds
             dTime_ext: Time extension factor for clustering
             nBins: Number of time bins
+            nPhotons_bins: Number of photon bins
             binning_time_resolution: Time resolution for binning in seconds
             binning_offset: Time offset for binning in seconds
             verbosity: Level of output verbosity
@@ -548,15 +550,22 @@ class Analysis:
         binning_config.binning_t.nBins = nBins
         binning_config.binning_t.resolution_s = binning_time_resolution
         binning_config.binning_t.offset_s = binning_offset
+        if nPhotons_bins is not None:
+            binning_config = binning_config.nphotons_binning()
+            binning_config.binning_nPhotons.nBins = nPhotons_bins
         event_params_file = suffix_dir / "parameterEvents.json"  # Save in suffixed folder
         binning_config.write(event_params_file)
         
         # Run event binning
         self._run_event_binning(config=binning_config, verbosity=verbosity)
         
+        
         # Read and process binned data
         result_df = self._read_binned_data()
-        result_df.columns = ["stacks", "counts"]
+        if nPhotons_bins is None:
+            result_df.columns = ["stacks", "counts"]
+        else:
+            result_df.columns = ["stacks", "nPhotons","counts"]
         result_df["err"] = np.sqrt(result_df["counts"])
         result_df["stacks"] = np.arange(len(result_df))
         
