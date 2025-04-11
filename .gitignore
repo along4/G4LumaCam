@@ -6,3 +6,4 @@ empir
 notebooks/archive/*
 nohup.out
 sim_data*.csv
+notebooks/gammas_sum.ipynb
