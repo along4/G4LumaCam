@@ -1,20 +1,22 @@
-#ifndef SIM_CONFIG_HH
-#define SIM_CONFIG_HH
+#ifndef SIMCONFIG_HH
+#define SIMCONFIG_HH
 
-#include "G4SystemOfUnits.hh"
-#include "G4String.hh"
+#include <string>
 #include <random>
+#include "G4SystemOfUnits.hh" // Include Geant4 units
 
-namespace Sim {
-    extern G4String outputFileName;
-    extern G4int batchSize;
-    extern std::default_random_engine randomEngine;
-    
-    constexpr G4double WORLD_SIZE = 50.0 * m;
-    constexpr G4double SCINT_THICKNESS = 1.0 * cm; // half thickness
-    constexpr G4double SAMPLE_THICKNESS = 3.75 * cm; // half thickness
-    constexpr G4double SCINT_SIZE = 6.0 * cm; // half size
-    constexpr G4double COATING_THICKNESS = 0.01 * cm; // half thickness
-}
+class Sim {
+public:
+    static std::string outputFileName;
+    static int batchSize;
+    static std::default_random_engine randomEngine;
+
+    // Add the missing static members with proper units
+    static constexpr double SCINT_SIZE = 5.0 * CLHEP::cm;          // Example value
+    static constexpr double SAMPLE_THICKNESS = 1.0 * CLHEP::cm;    // Example value
+    static constexpr double WORLD_SIZE = 10.0 * CLHEP::cm;         // Example value
+    static constexpr double SCINT_THICKNESS = 0.5 * CLHEP::cm;     // Example value
+    static constexpr double COATING_THICKNESS = 0.1 * CLHEP::cm;   // Example value
+};
 
 #endif
