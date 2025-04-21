@@ -77,6 +77,9 @@ MaterialBuilder::MaterialBuilder() {
     
     // Graphite
     sampleMaterial = nist->FindOrBuildMaterial("G4_GRAPHITE");
+    if (!sampleMaterial) {
+        G4cerr << "ERROR: G4_GRAPHITE material could not be found!" << G4endl;
+    }
     
     // Quartz Window
     windowMaterial = new G4Material("Quartz", 2.20 * g/cm3, 2);
