@@ -20,3 +20,9 @@ src/build/*
 
 # ignore all .testing directories
 .testing
+
+# ignore all output directories
+output
+
+# Ignore Python cache directories
+__pycache__/
