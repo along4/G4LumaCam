@@ -10,10 +10,7 @@
 #include "QGSP_BERT_HP.hh"
 #include "G4OpticalPhysics.hh"
 #include "G4RadioactiveDecayPhysics.hh"
-
-G4String Sim::outputFileName = "sim_data.csv";
-G4int Sim::batchSize = 10000;
-std::default_random_engine Sim::randomEngine(time(nullptr));
+#include "G4OpticalParameters.hh"
 
 int main(int argc, char** argv) {
     G4RunManager* runMgr = new G4RunManager();
@@ -21,8 +18,12 @@ int main(int argc, char** argv) {
     // Step 1: Set up the physics list first
     G4VModularPhysicsList* phys = new QGSP_BERT_HP();
     G4OpticalPhysics* optPhys = new G4OpticalPhysics();
-    optPhys->Configure(kCerenkov, true);
-    optPhys->Configure(kScintillation, true);
+
+    // Configure optical physics parameters
+    auto opticalParams = G4OpticalParameters::Instance();
+    opticalParams->SetProcessActivation("Cerenkov", true);       // Enable Cerenkov process
+    opticalParams->SetProcessActivation("Scintillation", true); // Enable Scintillation process
+
     phys->RegisterPhysics(optPhys);
     phys->RegisterPhysics(new G4RadioactiveDecayPhysics());
     runMgr->SetUserInitialization(phys);
