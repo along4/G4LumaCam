@@ -14,3 +14,9 @@ notebooks/test.json
 src/SSLG4
 
 src/build/*
+
+# ignore all .vscode directories
+.vscode
+
+# ignore all .testing directories
+.testing
