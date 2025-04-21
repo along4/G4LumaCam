@@ -1,7 +1,7 @@
 #include "SimConfig.hh"
+#include <ctime>
 
-namespace Sim {
-    G4String outputFileName = "sim_data.csv";  // Define it if not already
-    G4int batchSize = 0;  // Define batchSize here
-    std::default_random_engine randomEngine;
-}
+// Define static members
+std::string Sim::outputFileName = "sim_data.csv";
+int Sim::batchSize = 10000;
+std::default_random_engine Sim::randomEngine(time(nullptr));
