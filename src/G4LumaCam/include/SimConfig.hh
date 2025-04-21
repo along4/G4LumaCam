@@ -14,7 +14,7 @@ public:
     // Add the missing static members with proper units
     static constexpr double SCINT_SIZE = 5.0 * CLHEP::cm;          // Example value
     static constexpr double SAMPLE_THICKNESS = 1.0 * CLHEP::cm;    // Example value
-    static constexpr double WORLD_SIZE = 10.0 * CLHEP::cm;         // Example value
+    static constexpr double WORLD_SIZE = 200.0 * CLHEP::cm;         // Example value
     static constexpr double SCINT_THICKNESS = 0.5 * CLHEP::cm;     // Example value
     static constexpr double COATING_THICKNESS = 0.1 * CLHEP::cm;   // Example value
 };
