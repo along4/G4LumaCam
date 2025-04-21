@@ -7,3 +7,8 @@ notebooks/archive/*
 nohup.out
 sim_data*.csv
 notebooks/gammas_sum.ipynb
+notebooks/pupil.ipynb
+notebooks/simulation_vs_experiment_PTB.ipynb
+notebooks/simulation_vs_experiment_PTB(2).ipynb
+notebooks/test.json
+src/SSLG4

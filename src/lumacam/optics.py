@@ -249,21 +249,22 @@ class Lens:
         δ = zfocus
         sm.gaps[0].thi = self.dist_from_screen + δ - Δ
         sm.gaps[-9].thi = Δ0 + Δ
-        # sm.gaps[-3].thi = Δs + δ
         
         # Change the f-number if specified
         if fnumber is not None:
+            # Set the pupil specification directly
             osp.pupil = PupilSpec(osp, key=['image', 'f/#'], value=fnumber)
         
+        # Update the model with the new settings
         sm.do_apertures = False
         opm.update_model()
         apply_paraxial_vignetting(opm)
+        
         if save:
             fnumber_str = f"_f{fnumber:.2f}" if fnumber is not None else ""
             save_path = self.archive / f"refocus_zfocus_{zfocus}_zfine_{zfine}{fnumber_str}"
             opm.save_model(save_path)
         return opm
-
 
     def _chunk_rays(self, rays, chunk_size=1000):
         """Split rays into chunks to reduce multiprocessing overhead"""
