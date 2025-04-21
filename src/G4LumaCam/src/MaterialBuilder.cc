@@ -39,24 +39,24 @@ MaterialBuilder::MaterialBuilder() {
     // Convert wavelength (nm) to energy (eV) using E = hc/λ
     // Energy values in eV, calculated from wavelength data
     G4double pvtEnergy[nPVT] = {
-        3.26*eV, 3.25*eV, 3.23*eV, 3.21*eV, 3.20*eV, 3.18*eV, 3.16*eV, 3.15*eV, 3.13*eV, 3.12*eV,
-        3.10*eV, 3.08*eV, 3.07*eV, 3.05*eV, 3.04*eV, 3.02*eV, 3.01*eV, 2.99*eV, 2.98*eV, 2.96*eV,
-        2.95*eV, 2.94*eV, 2.92*eV, 2.91*eV, 2.90*eV, 2.88*eV, 2.87*eV, 2.85*eV, 2.84*eV, 2.82*eV,
-        2.81*eV, 2.80*eV, 2.79*eV, 2.77*eV, 2.76*eV, 2.75*eV, 2.74*eV, 2.73*eV, 2.72*eV, 2.70*eV,
-        2.69*eV, 2.68*eV, 2.67*eV, 2.66*eV, 2.65*eV, 2.64*eV, 2.63*eV, 2.62*eV, 2.61*eV, 2.59*eV,
-        2.58*eV, 2.57*eV, 2.56*eV, 2.55*eV, 2.54*eV, 2.52*eV, 2.51*eV, 2.50*eV, 2.49*eV, 2.48*eV,
-        2.48*eV
+        2.47*eV, 2.48*eV, 2.49*eV, 2.50*eV, 2.51*eV, 2.52*eV, 2.54*eV, 2.55*eV, 2.56*eV, 2.57*eV,
+        2.58*eV, 2.59*eV, 2.61*eV, 2.62*eV, 2.63*eV, 2.64*eV, 2.65*eV, 2.66*eV, 2.67*eV, 2.68*eV,
+        2.69*eV, 2.70*eV, 2.72*eV, 2.73*eV, 2.74*eV, 2.75*eV, 2.76*eV, 2.77*eV, 2.79*eV, 2.80*eV,
+        2.81*eV, 2.82*eV, 2.84*eV, 2.85*eV, 2.87*eV, 2.88*eV, 2.90*eV, 2.91*eV, 2.92*eV, 2.94*eV,
+        2.95*eV, 2.96*eV, 2.98*eV, 2.99*eV, 3.01*eV, 3.02*eV, 3.04*eV, 3.05*eV, 3.07*eV, 3.08*eV,
+        3.10*eV, 3.12*eV, 3.13*eV, 3.15*eV, 3.16*eV, 3.18*eV, 3.20*eV, 3.21*eV, 3.23*eV, 3.25*eV,
+        3.26*eV
     };
 
     // Scintillation intensity values from the provided table
     G4double pvtScint[nPVT] = {
-        0.001, 0.001, 0.001, 0.001, 0.001, 0.001, 0.001, 0.001, 0.000, 0.002,
-        0.006, 0.016, 0.044, 0.101, 0.173, 0.251, 0.348, 0.454, 0.596, 0.728,
-        0.861, 0.949, 0.991, 0.999, 0.982, 0.956, 0.926, 0.890, 0.850, 0.804,
-        0.755, 0.706, 0.658, 0.617, 0.582, 0.549, 0.519, 0.492, 0.468, 0.448,
-        0.429, 0.410, 0.389, 0.364, 0.337, 0.306, 0.271, 0.238, 0.212, 0.191,
-        0.171, 0.153, 0.137, 0.123, 0.109, 0.098, 0.087, 0.077, 0.068, 0.059,
-        0.056
+        0.056, 0.059, 0.068, 0.077, 0.087, 0.098, 0.109, 0.123, 0.137, 0.153,
+        0.171, 0.191, 0.212, 0.238, 0.271, 0.306, 0.337, 0.364, 0.389, 0.410,
+        0.429, 0.448, 0.468, 0.492, 0.519, 0.549, 0.582, 0.617, 0.658, 0.706,
+        0.755, 0.804, 0.850, 0.890, 0.926, 0.956, 0.982, 0.999, 0.991, 0.949,
+        0.861, 0.728, 0.596, 0.454, 0.348, 0.251, 0.173, 0.101, 0.044, 0.016,
+        0.006, 0.002, 0.000, 0.001, 0.001, 0.001, 0.001, 0.001, 0.001, 0.001,
+        0.001
     };
 
     // Refractive index values (constant at 1.58 as in the original code)
@@ -107,7 +107,10 @@ void MaterialBuilder::setupMaterialProperties(G4Material* mat, const G4double* e
     std::vector<G4double> rindexCopy(rindex, rindex + nEntries);
     std::vector<G4double> abslengthCopy(abslength, abslength + nEntries);
     
-    G4MaterialPropertiesTable* mpt = new G4MaterialPropertiesTable();
+    G4MaterialPropertiesTable* mpt = mat->GetMaterialPropertiesTable();
+    if (!mpt) {
+        mpt = new G4MaterialPropertiesTable();
+    }
     
     // Use the non-const copies
     mpt->AddProperty("RINDEX", energiesCopy.data(), rindexCopy.data(), nEntries);
@@ -115,14 +118,36 @@ void MaterialBuilder::setupMaterialProperties(G4Material* mat, const G4double* e
     
     if (scintillation) {
         std::vector<G4double> scintillationCopy(scintillation, scintillation + nEntries);
-        mpt->AddProperty("FASTCOMPONENT", energiesCopy.data(), scintillationCopy.data(), nEntries);
-        mpt->AddConstProperty("SCINTILLATIONYIELD", 10000./MeV);
-        mpt->AddConstProperty("RESOLUTIONSCALE", 1.0);
-        mpt->AddConstProperty("SCINTILLATIONTIMECONSTANT", 2.1 * ns);
-        mpt->AddConstProperty("SCINTILLATIONRISETIME", 0.9 * ns);
-        mpt->AddConstProperty("FASTTIMECONSTANT", 3.2 * ns);
-        mpt->AddConstProperty("YIELDRATIO", 0.);
+        // Allow creation of the FASTCOMPONENT key
+        mpt->AddProperty("FASTCOMPONENT", energiesCopy.data(), scintillationCopy.data(), nEntries, true);
+        
+        // Add SCINTILLATIONTIMECONSTANT as a property
+        std::vector<G4double> timeConstantValues(nEntries, 2.1 * ns); // Constant value for all energies
+        mpt->AddProperty("SCINTILLATIONTIMECONSTANT", energiesCopy.data(), timeConstantValues.data(), nEntries, true);
+        G4cout << "Added SCINTILLATIONTIMECONSTANT as a property" << G4endl;
 
+        // Add SCINTILLATIONRISETIME as a property
+        std::vector<G4double> riseTimeValues(nEntries, 0.9 * ns); // Constant value for all energies
+        mpt->AddProperty("SCINTILLATIONRISETIME", energiesCopy.data(), riseTimeValues.data(), nEntries, true);
+        G4cout << "Added SCINTILLATIONRISETIME as a property" << G4endl;
+
+        // Add FASTTIMECONSTANT as a property
+        std::vector<G4double> fastTimeValues(nEntries, 3.2 * ns); // Constant value for all energies
+        mpt->AddProperty("FASTTIMECONSTANT", energiesCopy.data(), fastTimeValues.data(), nEntries, true);
+        G4cout << "Added FASTTIMECONSTANT as a property" << G4endl;
+
+        // Add YIELDRATIO as a property
+        std::vector<G4double> yieldRatioValues(nEntries, 0.0); // Constant value for all energies
+        mpt->AddProperty("YIELDRATIO", energiesCopy.data(), yieldRatioValues.data(), nEntries, true);
+        G4cout << "Added YIELDRATIO as a property" << G4endl;
+
+        // Add other constant properties
+        if (!mpt->ConstPropertyExists("SCINTILLATIONYIELD")) {
+            mpt->AddConstProperty("SCINTILLATIONYIELD", 10000. / MeV);
+        }
+        if (!mpt->ConstPropertyExists("RESOLUTIONSCALE")) {
+            mpt->AddConstProperty("RESOLUTIONSCALE", 1.0);
+        }
     }
     
     mat->SetMaterialPropertiesTable(mpt);
