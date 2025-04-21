@@ -18,9 +18,6 @@ src/build/*
 # ignore all .vscode directories
 .vscode
 
-# ignore all .testing directories
-.testing
-
 # ignore all output directories
 output
 
