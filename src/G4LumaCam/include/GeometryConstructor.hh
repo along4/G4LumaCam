@@ -28,6 +28,7 @@ private:
     G4VPhysicalVolume* createWorld();
     G4LogicalVolume* buildLShape(G4LogicalVolume* worldLog);
     void addComponents(G4LogicalVolume* lShapeLog);
+    void constructAndAddSample(G4LogicalVolume* worldLog);
 };
 
 #endif
