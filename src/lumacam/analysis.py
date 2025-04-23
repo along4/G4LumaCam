@@ -1019,8 +1019,8 @@ class Analysis:
                                     merged_df.loc[sim_idx, 'spatial_diff_px'] = spatial_diffs[idx]
                 
                 # Compute additional columns
-                merged_df["x3"] = (128 - merged_df["x [px]"]) / 256 * 120
-                merged_df["y3"] = (128 - merged_df["y [px]"]) / 256 * 120
+                merged_df["x3"] = (128 - merged_df["x [px]"]) / 256 * 120*1.2
+                merged_df["y3"] = (128 - merged_df["y [px]"]) / 256 * 120*1.2
                 merged_df["delta_x"] = merged_df["x3"] - merged_df["nx"]
                 merged_df["delta_y"] = merged_df["y3"] - merged_df["ny"]
                 merged_df["delta_r"] = np.sqrt(merged_df["delta_x"]**2 + merged_df["delta_y"]**2)
