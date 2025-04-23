@@ -978,7 +978,7 @@ class Analysis:
                         sim_px = sim_group['photon_px'].values
                         sim_py = sim_group['photon_py'].values
                         
-                        time_diffs = np.abs(sim_times - recon_time_s) * 1e9  # in ns
+                        time_diffs = np.abs(sim_times * 1e-9 - recon_time_s) * 1e9  # Convert sim_times to seconds, compute difference, then convert to ns
                         spatial_diffs = np.sqrt((sim_px - recon_x)**2 + (sim_py - recon_y)**2)
                         
                         if np.all(np.isnan(sim_px)) or np.all(np.isnan(sim_py)) or np.all(np.isnan(sim_times)):
