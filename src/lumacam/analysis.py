@@ -630,6 +630,7 @@ class Analysis:
 
 
 
+
     def process_data_event_by_event(self,
                                 dSpace_px: float = 4.0,
                                 dTime_s: float = 50e-9,
@@ -743,7 +744,7 @@ class Analysis:
         p2e_config = self.Photon2EventConfig()
         p2e_config.dSpace_px = dSpace_px
         p2e_config.dTime_s = dTime_s
-        p2e_config.durationMax_s = durationMax_s  # Fixed: Removed invalid | operator
+        p2e_config.durationMax_s = durationMax_s
         p2e_config.dTime_ext = dTime_ext
         params_file = suffix_dir / "parameterSettings.json"
         p2e_config.write(params_file)
@@ -765,7 +766,7 @@ class Analysis:
                 batch_id = group['batch_id'].iloc[0]
                 
                 df = group[["x2", "y2", "toa2"]].dropna()
-                df["toa2"] *= 1e-9
+                df["toa2"] *= 1e-9  # Convert toa2 from ns to s for processing
                 df["px"] = (df["x2"] + 10) / 10 * 128
                 df["py"] = (df["y2"] + 10) / 10 * 128
                 df = df[["px", "py", "toa2"]]
@@ -883,6 +884,7 @@ class Analysis:
                 The reconstructed event position is the center of mass of photon hit positions,
                 and toa is the minimum of the photons in the group.
                 Adds event_id for each reconstructed event per neutron_id.
+                Assumes sim_data and traced_data are row-aligned.
                 """
                 sim_df = sim_data.copy()
                 traced_df = traced_data.copy()
@@ -896,7 +898,7 @@ class Analysis:
                         break
                 if time_col is None or not all(col in traced_df.columns for col in ['x2', 'y2']):
                     if verbosity >= 1:
-                        print("Warning: traced_data missing required columns (x2, y2, toa2/toa/time). Skipping merge with traced data.")
+                        print("Warning: traced_data missing required columns (x2, y2, toa2/toa/time). Filling with NaN.")
                     sim_df['x2'] = np.nan
                     sim_df['y2'] = np.nan
                     sim_df['z2'] = np.nan
@@ -907,24 +909,25 @@ class Analysis:
                     # Rename time column to toa2 for consistency
                     if time_col != 'toa2':
                         traced_df = traced_df.rename(columns={time_col: 'toa2'})
-                    # Convert traced_df toa2 to nanoseconds if in seconds (assuming sim_df toa is in ns)
-                    if traced_df['toa2'].max() < 1e3:  # Heuristic: if max toa2 < 1ms, assume seconds
-                        traced_df['toa2'] = traced_df['toa2'] * 1e9
-                    # Round toa and toa2 to avoid floating-point precision issues
-                    sim_df['toa'] = sim_df['toa'].round(6)
-                    traced_df['toa2'] = traced_df['toa2'].round(6)
-                    # Merge sim_df with traced_df based on toa
-                    if verbosity >= 2:
-                        print(f"sim_df toa sample: {sim_df['toa'].head().tolist()}")
-                        print(f"traced_df toa2 sample: {traced_df['toa2'].head().tolist()}")
-                        print(f"Number of sim_df rows before merge: {len(sim_df)}")
-                    sim_df = sim_df.merge(traced_df[['x2', 'y2', 'z2', 'toa2']], left_on='toa', right_on='toa2', how='left')
-                    if verbosity >= 2:
-                        print(f"Number of sim_df rows after merge: {len(sim_df)}")
-                        print(f"Non-NaN x2 count: {sim_df['x2'].notna().sum()}")
+                    # Ensure row alignment
+                    if len(traced_df) != len(sim_df):
+                        if verbosity >= 1:
+                            print(f"Warning: traced_data ({len(traced_df)} rows) and sim_data ({len(sim_df)} rows) have different lengths. Truncating to minimum.")
+                        min_len = min(len(traced_df), len(sim_df))
+                        sim_df = sim_df.iloc[:min_len].copy()
+                        traced_df = traced_df.iloc[:min_len].copy()
+                    # Directly assign traced columns to sim_df
+                    sim_df['x2'] = traced_df['x2'].values
+                    sim_df['y2'] = traced_df['y2'].values
+                    sim_df['z2'] = traced_df.get('z2', pd.Series(np.nan, index=traced_df.index)).values
+                    sim_df['toa2'] = traced_df['toa2'].values
                     # Compute photon_px, photon_py from x2, y2 for spatial matching
                     sim_df['photon_px'] = (sim_df['x2'] + 10) / 10 * 128
                     sim_df['photon_py'] = (sim_df['y2'] + 10) / 10 * 128
+                    if verbosity >= 2:
+                        print(f"Assigned traced columns. Non-NaN counts: x2={sim_df['x2'].notna().sum()}, toa2={sim_df['toa2'].notna().sum()}")
+                        print(f"toa2 sample: {sim_df['toa2'].head().tolist()}")
+                        print(f"photon_px sample: {sim_df['photon_px'].head().tolist()}")
                 
                 # Initialize list to store merged rows
                 merged_rows = []
@@ -960,21 +963,21 @@ class Analysis:
                     # Match reconstruction events to simulation photons
                     for recon_idx, recon_row in recon_group.iterrows():
                         n_photons = int(recon_row['nPhotons [1]'])  # Number of photons in this recon event
-                        recon_time_ns = recon_row['t [s]'] * 1e9  # Convert to ns
+                        recon_time_s = recon_row['t [s]']  # Already in seconds
                         recon_x = recon_row['x [px]']
                         recon_y = recon_row['y [px]']
                         event_id = recon_row['event_id']
                         
                         # Compute combined distance metric: temporal + spatial
-                        sim_times = sim_group['toa'].values
+                        sim_times = sim_group['toa2'].values  # toa2 is in seconds
                         sim_px = sim_group['photon_px'].values
                         sim_py = sim_group['photon_py'].values
                         
-                        time_diffs = np.abs(sim_times - recon_time_ns)
+                        time_diffs = np.abs(sim_times - recon_time_s) * 1e9  # Convert to ns for time_diff_ns
                         spatial_diffs = np.sqrt((sim_px - recon_x)**2 + (sim_py - recon_y)**2)
                         
-                        # Handle cases where photon_px, photon_py are NaN (no traced data)
-                        if np.all(np.isnan(sim_px)) or np.all(np.isnan(sim_py)):
+                        # Handle cases where photon_px, photon_py, or toa2 are NaN
+                        if np.all(np.isnan(sim_px)) or np.all(np.isnan(sim_py)) or np.all(np.isnan(sim_times)):
                             time_diffs_normalized = time_diffs / 1.0  # Use only time if spatial data is missing
                             combined_diffs = time_diffs_normalized
                             spatial_diffs = np.array([np.nan] * len(time_diffs))
