@@ -631,17 +631,20 @@ class Analysis:
 
 
 
+
     def process_data_event_by_event(self,
-                                dSpace_px: float = 4.0,
-                                dTime_s: float = 50e-9,
-                                durationMax_s: float = 500e-9,
-                                dTime_ext: float = 1.0,
-                                nBins: int = 1000,
-                                binning_time_resolution: float = 1.5625e-9,
-                                binning_offset: float = 0.0,
-                                verbosity: int = 0,
-                                merge: bool = False,
-                                suffix: str = "") -> pd.DataFrame:
+                                    dSpace_px: float = 4.0,
+                                    dTime_s: float = 50e-9,
+                                    durationMax_s: float = 500e-9,
+                                    dTime_ext: float = 1.0,
+                                    nBins: int = 1000,
+                                    binning_time_resolution: float = 1.5625e-9,
+                                    binning_offset: float = 0.0,
+                                    verbosity: int = 0,
+                                    merge: bool = False,
+                                    suffix: str = "",
+                                    time_norm_ns: float = 1.0,
+                                    spatial_norm_px: float = 1.0) -> pd.DataFrame:
         """
         Processes data event by event, grouping optical photons by neutron_id.
         
@@ -664,6 +667,8 @@ class Analysis:
             verbosity: Level of output verbosity
             merge: If True, merge results with simulation and traced data and save
             suffix: Optional suffix for output folder and files
+            time_norm_ns: Normalization factor for time differences (ns) in matching
+            spatial_norm_px: Normalization factor for spatial differences (px) in matching
         
         Returns:
             DataFrame with processed event data (optionally merged with sim_data and traced_data)
@@ -727,7 +732,7 @@ class Analysis:
             unique_neutron_ids = combined_data['neutron_id'].unique()
             events_per_batch = len(unique_neutron_ids) // num_batches + 1
             neutron_to_batch = {nid: min(i // events_per_batch, num_batches - 1) 
-                            for i, nid in enumerate(unique_neutron_ids)}
+                                for i, nid in enumerate(unique_neutron_ids)}
             combined_data['batch_id'] = combined_data['neutron_id'].map(neutron_to_batch)
             if verbosity >= 1:
                 print(f"Assigned {len(unique_neutron_ids)} neutron events to {num_batches} batches")
@@ -787,7 +792,7 @@ class Analysis:
                     print(f"Running: {cmd}")
                     subprocess.run(cmd, shell=True)
                 else:
-                    subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    subprocess.run(cmd, shell=True, stdout= subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 
                 empirevent_file = temp_dir / f"{event_prefix}.empirevent"
                 cmd = (
@@ -820,7 +825,7 @@ class Analysis:
                         result_df = pd.read_csv(event_result_csv)
                         result_df.columns = [col.strip() for col in result_df.columns]
                         expected_columns = ['x [px]', 'y [px]', 't [s]', 'nPhotons [1]', 'PSD value',
-                                        't_relToExtTrigger [s]']
+                                            't_relToExtTrigger [s]']
                         for col in expected_columns:
                             if col not in result_df.columns:
                                 raise ValueError(f"Missing expected column '{col}' in result CSV")
@@ -879,200 +884,154 @@ class Analysis:
             
             def merge_sim_and_recon_data(sim_data, traced_data, recon_data):
                 """
-                Merge simulation, traced photon, and reconstruction dataframes based on neutron_id,
-                spatial proximity (photon_px, photon_py vs x [px], y [px]), and temporal proximity (toa2 vs t [s]).
-                The reconstructed event position is the center of mass of photon hit positions,
-                and toa is the minimum of the photons in the group.
+                Merge simulation, traced photon, and reconstruction dataframes based on neutron_id
+                and row-by-row correspondence between sim_data and traced_data.
+                Matches reconstructed events to simulation photons by minimizing a combined
+                time and spatial distance metric.
                 Adds event_id for each reconstructed event per neutron_id.
-                Assumes sim_data and traced_data are row-aligned.
+                
+                Args:
+                    sim_data: DataFrame with simulation data
+                    traced_data: DataFrame with traced photon data (row-aligned with sim_data)
+                    recon_data: DataFrame with reconstructed event data
+                
+                Returns:
+                    Merged DataFrame with simulation, traced, and reconstruction columns
                 """
                 sim_df = sim_data.copy()
                 traced_df = traced_data.copy()
                 recon_df = recon_data.copy()
                 
-                # Check for required columns in traced_df
-                time_col = None
-                for candidate in ['toa2', 'toa', 'time']:
-                    if candidate in traced_df.columns:
-                        time_col = candidate
-                        break
-                if time_col is None or not all(col in traced_df.columns for col in ['x2', 'y2']):
-                    if verbosity >= 1:
-                        print("Warning: traced_data missing required columns (x2, y2, toa2/toa/time). Filling with NaN.")
-                    sim_df['x2'] = np.nan
-                    sim_df['y2'] = np.nan
-                    sim_df['z2'] = np.nan
-                    sim_df['toa2'] = np.nan
-                    sim_df['photon_px'] = np.nan
-                    sim_df['photon_py'] = np.nan
-                else:
-                    # Rename time column to toa2 for consistency
-                    if time_col != 'toa2':
-                        traced_df = traced_df.rename(columns={time_col: 'toa2'})
-                    # Ensure row alignment
+                # Initialize traced columns in sim_df
+                sim_df['x2'] = np.nan
+                sim_df['y2'] = np.nan
+                sim_df['z2'] = np.nan
+                sim_df['toa2'] = np.nan
+                sim_df['photon_px'] = np.nan
+                sim_df['photon_py'] = np.nan
+                
+                # Assign traced data columns (row-by-row correspondence)
+                if not traced_df.empty:
                     if len(traced_df) != len(sim_df):
                         if verbosity >= 1:
                             print(f"Warning: traced_data ({len(traced_df)} rows) and sim_data ({len(sim_df)} rows) have different lengths. Truncating to minimum.")
                         min_len = min(len(traced_df), len(sim_df))
                         sim_df = sim_df.iloc[:min_len].copy()
                         traced_df = traced_df.iloc[:min_len].copy()
-                    # Directly assign traced columns to sim_df
-                    sim_df['x2'] = traced_df['x2'].values
-                    sim_df['y2'] = traced_df['y2'].values
-                    sim_df['z2'] = traced_df.get('z2', pd.Series(np.nan, index=traced_df.index)).values
-                    sim_df['toa2'] = traced_df['toa2'].values
-                    # Compute photon_px, photon_py from x2, y2 for spatial matching
-                    sim_df['photon_px'] = (sim_df['x2'] + 10) / 10 * 128
-                    sim_df['photon_py'] = (sim_df['y2'] + 10) / 10 * 128
-                    if verbosity >= 2:
-                        print(f"Assigned traced columns. Non-NaN counts: x2={sim_df['x2'].notna().sum()}, toa2={sim_df['toa2'].notna().sum()}")
-                        print(f"toa2 sample: {sim_df['toa2'].head().tolist()}")
-                        print(f"photon_px sample: {sim_df['photon_px'].head().tolist()}")
+                    
+                    # Identify time column
+                    time_col = None
+                    for candidate in ['toa2', 'toa', 'time']:
+                        if candidate in traced_df.columns:
+                            time_col = candidate
+                            break
+                    
+                    if time_col and all(col in traced_df.columns for col in ['x2', 'y2']):
+                        sim_df['x2'] = traced_df['x2'].values
+                        sim_df['y2'] = traced_df['y2'].values
+                        sim_df['z2'] = traced_df.get('z2', pd.Series(np.nan, index=traced_df.index)).values
+                        sim_df['toa2'] = traced_df[time_col].values
+                        sim_df['photon_px'] = (sim_df['x2'] + 10) / 10 * 128
+                        sim_df['photon_py'] = (sim_df['y2'] + 10) / 10 * 128
+                        if verbosity >= 2:
+                            print(f"Assigned traced columns. Non-NaN counts: x2={sim_df['x2'].notna().sum()}, toa2={sim_df['toa2'].notna().sum()}")
+                    else:
+                        if verbosity >= 1:
+                            print("Warning: traced_data missing required columns (x2, y2, toa2/toa/time). Traced columns remain NaN.")
                 
-                # Initialize list to store merged rows
-                merged_rows = []
+                # Initialize merged DataFrame with sim_df
+                merged_df = sim_df.copy()
                 
-                # Group simulation and reconstruction data by neutron_id
-                sim_groups = sim_df.groupby('neutron_id')
+                # Add reconstruction columns with NaN
+                for col in recon_df.columns:
+                    if col != 'neutron_id':
+                        merged_df[col] = np.nan
+                merged_df['event_id'] = np.nan
+                merged_df['time_diff_ns'] = np.nan
+                merged_df['spatial_diff_px'] = np.nan
+                
+                # Group reconstruction data by neutron_id
                 recon_groups = recon_df.groupby('neutron_id')
                 
-                # Iterate over all unique neutron_ids in simulation data
-                for neutron_id in sorted(sim_df['neutron_id'].unique()):
-                    sim_group = sim_groups.get_group(neutron_id) if neutron_id in sim_groups.groups else pd.DataFrame()
+                # Match reconstruction events to simulation rows
+                for neutron_id in sorted(merged_df['neutron_id'].unique()):
+                    sim_group = merged_df[merged_df['neutron_id'] == neutron_id].copy()
                     recon_group = recon_groups.get_group(neutron_id) if neutron_id in recon_groups.groups else pd.DataFrame()
                     
-                    # Assign event_id to reconstruction events
-                    if not recon_group.empty:
-                        recon_group = recon_group.sort_values('t [s]').reset_index(drop=True)
-                        recon_group['event_id'] = recon_group.index + 1
-                    
-                    # If no reconstruction data for this neutron_id, append sim rows with NaN for recon cols
                     if recon_group.empty:
-                        for _, sim_row in sim_group.iterrows():
-                            merged_row = sim_row.to_dict()
-                            merged_row.update({col: np.nan for col in recon_df.columns if col != 'neutron_id'})
-                            merged_row['event_id'] = np.nan
-                            merged_row['time_diff_ns'] = np.nan
-                            merged_row['spatial_diff_px'] = np.nan
-                            merged_rows.append(merged_row)
                         continue
                     
-                    # Track matched simulation indices to identify unmatched photons
-                    matched_indices = []
+                    # Assign event_id to reconstruction events
+                    recon_group = recon_group.sort_values('t [s]').reset_index(drop=True)
+                    recon_group['event_id'] = recon_group.index + 1
                     
-                    # Match reconstruction events to simulation photons
-                    for recon_idx, recon_row in recon_group.iterrows():
-                        n_photons = int(recon_row['nPhotons [1]'])  # Number of photons in this recon event
-                        recon_time_s = recon_row['t [s]']  # Already in seconds
+                    # For each reconstruction event, find the closest simulation photon(s)
+                    for _, recon_row in recon_group.iterrows():
+                        n_photons = int(recon_row['nPhotons [1]'])
+                        recon_time_s = recon_row['t [s]']
                         recon_x = recon_row['x [px]']
                         recon_y = recon_row['y [px]']
                         event_id = recon_row['event_id']
                         
-                        # Compute combined distance metric: temporal + spatial
-                        sim_times = sim_group['toa2'].values  # toa2 is in seconds
+                        # Compute distances
+                        sim_times = sim_group['toa2'].values  # in seconds
                         sim_px = sim_group['photon_px'].values
                         sim_py = sim_group['photon_py'].values
                         
-                        time_diffs = np.abs(sim_times - recon_time_s) * 1e9  # Convert to ns for time_diff_ns
+                        time_diffs = np.abs(sim_times - recon_time_s) * 1e9  # in ns
                         spatial_diffs = np.sqrt((sim_px - recon_x)**2 + (sim_py - recon_y)**2)
                         
-                        # Handle cases where photon_px, photon_py, or toa2 are NaN
                         if np.all(np.isnan(sim_px)) or np.all(np.isnan(sim_py)) or np.all(np.isnan(sim_times)):
-                            time_diffs_normalized = time_diffs / 1.0  # Use only time if spatial data is missing
-                            combined_diffs = time_diffs_normalized
+                            combined_diffs = time_diffs / time_norm_ns
                             spatial_diffs = np.array([np.nan] * len(time_diffs))
                         else:
-                            # Normalize distances for combined metric (1 ns ~ 1 px)
-                            time_diffs_normalized = time_diffs / 1.0  # 1 ns
-                            spatial_diffs_normalized = spatial_diffs / 1.0  # 1 px
-                            combined_diffs = time_diffs_normalized + spatial_diffs_normalized
+                            combined_diffs = (time_diffs / time_norm_ns) + (spatial_diffs / spatial_norm_px)
                         
+                        # Select closest photon(s)
                         if n_photons == 1:
                             if len(sim_group) > 0:
                                 closest_idx = np.argmin(combined_diffs)
-                                sim_row = sim_group.iloc[closest_idx]
-                                merged_row = sim_row.to_dict()
+                                sim_idx = sim_group.index[closest_idx]
                                 for col in recon_df.columns:
                                     if col != 'neutron_id':
-                                        merged_row[f'recon_{col}'] = recon_row[col]
-                                merged_row['event_id'] = event_id
-                                merged_row['time_diff_ns'] = time_diffs[closest_idx]
-                                merged_row['spatial_diff_px'] = spatial_diffs[closest_idx]
-                                merged_rows.append(merged_row)
-                                matched_indices.append(closest_idx)
+                                        merged_df.loc[sim_idx, col] = recon_row[col]
+                                merged_df.loc[sim_idx, 'event_id'] = event_id
+                                merged_df.loc[sim_idx, 'time_diff_ns'] = time_diffs[closest_idx]
+                                merged_df.loc[sim_idx, 'spatial_diff_px'] = spatial_diffs[closest_idx]
                         else:
-                            # For n_photons > 1, select the top n_photons closest in combined distance
                             if len(sim_group) >= n_photons:
                                 closest_indices = np.argsort(combined_diffs)[:n_photons]
-                                # Verify center of mass
                                 selected_px = sim_group.iloc[closest_indices]['photon_px']
                                 selected_py = sim_group.iloc[closest_indices]['photon_py']
-                                if np.all(np.isnan(selected_px)) or np.all(np.isnan(selected_py)):
-                                    # Skip center-of-mass check if spatial data is missing
-                                    for idx in closest_indices:
-                                        sim_row = sim_group.iloc[idx]
-                                        merged_row = sim_row.to_dict()
-                                        for col in recon_df.columns:
-                                            if col != 'neutron_id':
-                                                merged_row[f'recon_{col}'] = recon_row[col]
-                                        merged_row['event_id'] = event_id
-                                        merged_row['time_diff_ns'] = time_diffs[idx]
-                                        merged_row['spatial_diff_px'] = np.nan
-                                        merged_rows.append(merged_row)
-                                        matched_indices.append(idx)
-                                else:
+                                if not (np.all(np.isnan(selected_px)) or np.all(np.isnan(selected_py))):
                                     com_x = selected_px.mean()
                                     com_y = selected_py.mean()
                                     com_dist = np.sqrt((com_x - recon_x)**2 + (com_y - recon_y)**2)
-                                    if com_dist <= dSpace_px:  # Ensure center of mass is close enough
-                                        for idx in closest_indices:
-                                            sim_row = sim_group.iloc[idx]
-                                            merged_row = sim_row.to_dict()
-                                            for col in recon_df.columns:
-                                                if col != 'neutron_id':
-                                                    merged_row[f'recon_{col}'] = recon_row[col]
-                                            merged_row['event_id'] = event_id
-                                            merged_row['time_diff_ns'] = time_diffs[idx]
-                                            merged_row['spatial_diff_px'] = spatial_diffs[idx]
-                                            merged_rows.append(merged_row)
-                                            matched_indices.append(idx)
-                    
-                    # Append unmatched simulation photons with NaN for reconstruction columns
-                    unmatched_indices = [i for i in range(len(sim_group)) if i not in matched_indices]
-                    for idx in unmatched_indices:
-                        sim_row = sim_group.iloc[idx]
-                        merged_row = sim_row.to_dict()
-                        merged_row.update({col: np.nan for col in recon_df.columns if col != 'neutron_id'})
-                        merged_row['event_id'] = np.nan
-                        merged_row['time_diff_ns'] = np.nan
-                        merged_row['spatial_diff_px'] = np.nan
-                        merged_rows.append(merged_row)
-                
-                # Create merged dataframe
-                merged_df = pd.DataFrame(merged_rows)
-                
-                # Ensure column order: simulation columns, traced columns, reconstruction columns
-                sim_cols = [col for col in sim_df.columns if col not in ['x2', 'y2', 'z2', 'toa2', 'photon_px', 'photon_py']]
-                traced_cols = ['x2', 'y2', 'z2', 'toa2', 'photon_px', 'photon_py']
-                recon_cols = [f'recon_{col}' for col in recon_df.columns if col != 'neutron_id']
-                final_cols = sim_cols + traced_cols + recon_cols + ['event_id', 'time_diff_ns', 'spatial_diff_px']
-                
-                # Reorder columns and handle missing columns
-                merged_df = merged_df[[col for col in final_cols if col in merged_df.columns]]
+                                    if com_dist > dSpace_px:
+                                        continue  # Skip if center of mass is too far
+                                for idx in closest_indices:
+                                    sim_idx = sim_group.index[idx]
+                                    for col in recon_df.columns:
+                                        if col != 'neutron_id':
+                                            merged_df.loc[sim_idx, col] = recon_row[col]
+                                    merged_df.loc[sim_idx, 'event_id'] = event_id
+                                    merged_df.loc[sim_idx, 'time_diff_ns'] = time_diffs[idx]
+                                    merged_df.loc[sim_idx, 'spatial_diff_px'] = spatial_diffs[idx]
                 
                 # Compute additional columns
-                merged_df["x3"] = (128 - merged_df["recon_x [px]"]) / 256 * 120
-                merged_df["y3"] = (128 - merged_df["recon_y [px]"]) / 256 * 120
+                merged_df["x3"] = (128 - merged_df["x [px]"]) / 256 * 120
+                merged_df["y3"] = (128 - merged_df["y [px]"]) / 256 * 120
                 merged_df["delta_x"] = merged_df["x3"] - merged_df["nx"]
                 merged_df["delta_y"] = merged_df["y3"] - merged_df["ny"]
                 merged_df["delta_r"] = np.sqrt(merged_df["delta_x"]**2 + merged_df["delta_y"]**2)
                 
-                return merged_df
-            
-            def merge_sim_and_recon_data_no_prefix(sim_data, traced_data, recon_data):
-                merged_df = merge_sim_and_recon_data(sim_data, traced_data, recon_data)
-                rename_dict = {col: col.replace('recon_', '') for col in merged_df.columns if col.startswith('recon_')}
-                merged_df = merged_df.rename(columns=rename_dict)
+                # Ensure column order
+                sim_cols = [col for col in sim_df.columns if col not in ['x2', 'y2', 'z2', 'toa2', 'photon_px', 'photon_py']]
+                traced_cols = ['x2', 'y2', 'z2', 'toa2', 'photon_px', 'photon_py']
+                recon_cols = [col for col in recon_df.columns if col != 'neutron_id']
+                final_cols = sim_cols + traced_cols + recon_cols + ['event_id', 'time_diff_ns', 'spatial_diff_px', 'x3', 'y3', 'delta_x', 'delta_y', 'delta_r']
+                merged_df = merged_df[[col for col in final_cols if col in merged_df.columns]]
+                
                 return merged_df
             
             # Load traced data
@@ -1084,12 +1043,11 @@ class Analysis:
                     traced_data = pd.concat(traced_dfs, ignore_index=True)
                     if verbosity >= 1:
                         print(f"Loaded traced data with columns: {list(traced_data.columns)}")
-                        print(f"Traced data toa2 sample: {traced_data.get('toa2', pd.Series()).head().tolist()}")
                 else:
                     if verbosity >= 1:
                         print("Warning: No traced photon CSV files found in TracedPhotons folder.")
             
-            merged_df = merge_sim_and_recon_data_no_prefix(self.sim_data, traced_data, combined_results)
+            merged_df = merge_sim_and_recon_data(self.sim_data, traced_data, combined_results)
             
             # Save merged results in suffixed folder
             merged_csv = suffix_dir / "merged_all_batches_results.csv"
@@ -1101,7 +1059,6 @@ class Analysis:
             return merged_df
         
         return combined_results
-
 
     def calculate_event_ellipsoid_shape(self, 
                                         results_df: pd.DataFrame=None,
