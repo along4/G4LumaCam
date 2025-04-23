@@ -691,11 +691,11 @@ class Analysis:
         result_dir.mkdir(parents=True, exist_ok=True)
         
         # Determine number of batches
-        sim_photons_path = self.archive.parent / "SimPhotons"
-        traced_photons_path = self.archive.parent / "TracedPhotons"
+        sim_photons_path = self.archive / "SimPhotons"
+        traced_photons_path = self.archive / "TracedPhotons"  
         
         if sim_photons_path.exists():
-            batch_files = list(sim_photons_path.glob("*.simphot"))
+            batch_files = list(sim_photons_path.glob("*.csv"))
             num_batches = len(batch_files)
             if verbosity >= 1:
                 print(f"Detected {num_batches} batches from SimPhotons folder")
@@ -1048,6 +1048,7 @@ class Analysis:
                         print("Warning: No traced photon CSV files found in TracedPhotons folder.")
             
             merged_df = merge_sim_and_recon_data(self.sim_data, traced_data, combined_results)
+
             
             # Save merged results in suffixed folder
             merged_csv = suffix_dir / "merged_all_batches_results.csv"
