@@ -644,7 +644,8 @@ class Analysis:
                                     merge: bool = False,
                                     suffix: str = "",
                                     time_norm_ns: float = 1.0,
-                                    spatial_norm_px: float = 1.0) -> pd.DataFrame:
+                                    spatial_norm_px: float = 1.0,
+                                    focus_factor: float = 1.2) -> pd.DataFrame:
         """
         Processes data event by event, grouping optical photons by neutron_id.
         
@@ -669,6 +670,7 @@ class Analysis:
             suffix: Optional suffix for output folder and files
             time_norm_ns: Normalization factor for time differences (ns) in matching
             spatial_norm_px: Normalization factor for spatial differences (px) in matching
+            focus_factor: Factor that relates the hit position on the sensor to the actual hit position on the sclintillator screen
         
         Returns:
             DataFrame with processed event data (optionally merged with sim_data and traced_data)
@@ -882,7 +884,7 @@ class Analysis:
             if verbosity >= 1:
                 print("Merging processed results with simulation and traced data...")
             
-            def merge_sim_and_recon_data(sim_data, traced_data, recon_data):
+            def merge_sim_and_recon_data(sim_data, traced_data, recon_data, focus_factor: float = 1.2):
                 """
                 Merge simulation, traced photon, and reconstruction dataframes based on neutron_id
                 and row-by-row correspondence between sim_data and traced_data.
@@ -894,6 +896,7 @@ class Analysis:
                     sim_data: DataFrame with simulation data
                     traced_data: DataFrame with traced photon data (row-aligned with sim_data)
                     recon_data: DataFrame with reconstructed event data
+                    focus_factor (float,oprtional): determines the ratio of position recorded on the sensor to the actual hit position on the sensor 
                 
                 Returns:
                     Merged DataFrame with simulation, traced, and reconstruction columns
@@ -1018,12 +1021,7 @@ class Analysis:
                                     merged_df.loc[sim_idx, 'time_diff_ns'] = time_diffs[idx]
                                     merged_df.loc[sim_idx, 'spatial_diff_px'] = spatial_diffs[idx]
                 
-                # Compute additional columns
-                merged_df["x3"] = (128 - merged_df["x [px]"]) / 256 * 120*1.2
-                merged_df["y3"] = (128 - merged_df["y [px]"]) / 256 * 120*1.2
-                merged_df["delta_x"] = merged_df["x3"] - merged_df["nx"]
-                merged_df["delta_y"] = merged_df["y3"] - merged_df["ny"]
-                merged_df["delta_r"] = np.sqrt(merged_df["delta_x"]**2 + merged_df["delta_y"]**2)
+                merged_df = self.calculate_reconstruction_stats(merged_df,focus_factor=focus_factor)
                 
                 # Ensure column order
                 sim_cols = [col for col in sim_df.columns if col not in ['x2', 'y2', 'z2', 'toa2', 'photon_px', 'photon_py']]
@@ -1047,7 +1045,7 @@ class Analysis:
                     if verbosity >= 1:
                         print("Warning: No traced photon CSV files found in TracedPhotons folder.")
             
-            merged_df = merge_sim_and_recon_data(self.sim_data, traced_data, combined_results)
+            merged_df = merge_sim_and_recon_data(self.sim_data, traced_data, combined_results, focus_factor=focus_factor)
 
             
             # Save merged results in suffixed folder
@@ -1060,6 +1058,27 @@ class Analysis:
             return merged_df
         
         return combined_results
+
+
+    def calculate_reconstruction_stats(self,df: pd.DataFrame, focus_factor:float = 1.2):
+        """
+        Calculates stats on reconstructed events, Adds columms to the analysis dataframe.
+
+        Input:
+            - df (pd.DataFrame): merged_df that contains all the reconstructed event-by-event columns
+            - focus_factor (float): A fcator that translates the position recorded on the sensor to the original position on the scintillator
+
+        Returns:
+            - df (pd.DataFrame): table with new stats columns
+        """
+                # Compute additional columns
+        df["x3"] = (128 - df["x [px]"]) / 256 * 120*focus_factor
+        df["y3"] = (128 - df["y [px]"]) / 256 * 120*focus_factor
+        df["delta_x"] = df["x3"] - df["nx"]
+        df["delta_y"] = df["y3"] - df["ny"]
+        df["delta_r"] = np.sqrt(df["delta_x"]**2 + df["delta_y"]**2)
+
+        return df
 
     def calculate_event_ellipsoid_shape(self, 
                                         results_df: pd.DataFrame=None,

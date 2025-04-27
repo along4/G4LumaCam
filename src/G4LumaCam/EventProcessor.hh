@@ -2,11 +2,15 @@
 #define EVENT_PROCESSOR_HH
 
 #include "G4VSensitiveDetector.hh"
+#include "G4SystemOfUnits.hh"
 #include <vector>
 #include <map>
 #include <fstream>
 
 class ParticleGenerator; // Forward declaration
+class G4HCofThisEvent;
+class G4Step;
+class G4TouchableHistory;
 
 class EventProcessor : public G4VSensitiveDetector {
 public:
@@ -29,6 +33,7 @@ private:
     struct TrackData {
         G4String type;
         G4double x, y, z, energy;
+        G4bool isLightProducer; // Flag to track light production
     };
 
     std::vector<PhotonRecord> photons;
@@ -38,6 +43,7 @@ private:
     G4int neutronCount, batchCount, eventCount;
     std::ofstream dataFile;
     ParticleGenerator* particleGen;
+    G4bool neutronRecorded;
 
     void resetData();
     void writeData();
