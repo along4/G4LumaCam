@@ -266,27 +266,26 @@ class Lens:
             opm.save_model(save_path)
         return opm
 
-    def _chunk_rays(self, rays, chunk_size=1000):
-        """Split rays into chunks to reduce multiprocessing overhead"""
-        # Pre-calculate length to avoid repeated len() calls
-        n_rays = len(rays)
-        return [rays[i:i + chunk_size] for i in range(0, n_rays, chunk_size)]
-
-    def _process_ray_chunk(self, chunk, opt_model):
-        """Process a chunk of rays at once"""
-        try:
-            return analyses.trace_list_of_rays(
-                opt_model,
-                chunk,
-                output_filter="last",
-                rayerr_filter="summary"
-            )
-        except Exception as e:
-            # Log the error and return empty results
-            # print(f"Error processing chunk: {str(e)}")
-            return [None] * len(chunk)
 
 
+
+    def _chunk_rays(self, rays, chunk_size):
+        """
+        Split rays into chunks for parallel processing while preserving ray identifiers.
+        
+        Parameters:
+        -----------
+        rays : list
+            List of ray tuples: (id, position, direction, wavelength)
+        chunk_size : int
+            Number of rays per chunk
+            
+        Returns:
+        --------
+        list
+            List of chunks, where each chunk is a list of ray tuples
+        """
+        return [rays[i:i+chunk_size] for i in range(0, len(rays), chunk_size)]
 
 
     def trace_rays(self, opm=None, join=False, print_stats=False, n_processes=None,
@@ -364,6 +363,9 @@ class Lens:
                     print(f"Skipping empty file: {csv_file.name}")
                 continue
 
+            # Verify data integrity - each row should have a unique position in the file
+            df['_row_index'] = np.arange(len(df))
+
             # Set up optical model
             opm = deepcopy(opm) if opm else deepcopy(self.opm0)
             wvl = df["wavelength"].value_counts().to_frame().reset_index()
@@ -378,52 +380,130 @@ class Lens:
                 for row in df.itertuples()
             ]
 
-            # Split rays into chunks
-            ray_chunks = self._chunk_rays(rays, chunk_size)
+            # Split rays into chunks while tracking original row indices
+            chunks = []
+            index_chunks = []
+            
+            for i in range(0, len(rays), chunk_size):
+                end = min(i + chunk_size, len(rays))
+                chunks.append(rays[i:end])
+                index_chunks.append(df['_row_index'].iloc[i:end].tolist())
+            
             rays = None  # Clear memory
 
             # Process chunks in parallel
             process_chunk = partial(self._process_ray_chunk, opt_model=opm)
             try:
                 with Pool(processes=n_processes) as pool:
-                    chunk_results = list(tqdm(pool.imap_unordered(process_chunk, ray_chunks),
-                                            total=len(ray_chunks), desc=f"Tracing rays ({csv_file.name})",
-                                            disable=not progress_bar or verbosity == VerbosityLevel.QUIET))
+                    # Process chunks and collect results with their indices
+                    results_with_indices = []
+                    
+                    # Use tqdm for progress bar
+                    for chunk_idx, (chunk_result, indices) in enumerate(
+                        tqdm(
+                            zip(pool.imap(process_chunk, chunks), index_chunks),
+                            total=len(chunks),
+                            desc=f"Tracing rays ({csv_file.name})",
+                            disable=not progress_bar or verbosity == VerbosityLevel.QUIET
+                        )
+                    ):
+                        # Check if we have correct number of results
+                        if chunk_result is None:
+                            # Handle failed chunk
+                            chunk_result = [None] * len(indices)
+                        elif len(chunk_result) != len(indices):
+                            if verbosity >= VerbosityLevel.DETAILED:
+                                print(f"Warning: Chunk {chunk_idx} returned {len(chunk_result)} results but expected {len(indices)}")
+                            # Ensure we have the right number of results
+                            if len(chunk_result) < len(indices):
+                                # Pad with None if we have fewer results
+                                chunk_result = chunk_result + [None] * (len(indices) - len(chunk_result))
+                            else:
+                                # Truncate if we have more results
+                                chunk_result = chunk_result[:len(indices)]
+                        
+                        results_with_indices.extend(zip(chunk_result, indices))
+                    
                     pool.close()
                     pool.join()
+                    
             except Exception as e:
                 if verbosity >= VerbosityLevel.BASIC:
                     print(f"Error in parallel processing for {csv_file.name}: {str(e)}")
                 raise
 
-            # Process results
-            processed_results = []
-            for chunk_result in chunk_results:
-                if chunk_result is None:
-                    processed_results.append({"x2": np.nan, "y2": np.nan, "z2": np.nan})
-                    continue
-                for entry in chunk_result:
-                    if entry is None:
-                        processed_results.append({"x2": np.nan, "y2": np.nan, "z2": np.nan})
-                    else:
-                        try:
-                            ray, path_length, wvl = entry
-                            position = ray[0]
-                            processed_results.append({
-                                "x2": position[0], "y2": position[1], "z2": position[2]
-                            })
-                        except Exception as e:
-                            if verbosity >= VerbosityLevel.DETAILED:
-                                print(f"Error processing result entry: {str(e)}")
-                            processed_results.append({"x2": np.nan, "y2": np.nan, "z2": np.nan})
-
+            # Sort results by original row index
+            results_with_indices.sort(key=lambda x: x[1])
+            
             # Create result DataFrame
-            result = pd.DataFrame(processed_results)
-            if "toa" in df.columns:
-                result["toa2"] = df["toa"]  # Preserve original time of arrival
+            processed_results = []
+            
+            # Sanity check
+            if len(results_with_indices) != len(df):
+                if verbosity >= VerbosityLevel.BASIC:
+                    print(f"Warning: Mismatch in result count. Expected {len(df)}, got {len(results_with_indices)}")
+                # Ensure we have the right number of results
+                if len(results_with_indices) < len(df):
+                    # Add None results for missing indices
+                    missing_indices = set(range(len(df))) - set(idx for _, idx in results_with_indices)
+                    for idx in missing_indices:
+                        results_with_indices.append((None, idx))
+                    # Re-sort
+                    results_with_indices.sort(key=lambda x: x[1])
+                else:
+                    # Truncate to expected length
+                    results_with_indices = results_with_indices[:len(df)]
+            
+            # Process results
+            for entry, row_idx in results_with_indices:
+                if entry is None:
+                    processed_results.append({
+                        "_row_index": row_idx,
+                        "x2": np.nan, "y2": np.nan, "z2": np.nan
+                    })
+                else:
+                    try:
+                        ray, path_length, wvl = entry
+                        position = ray[0]
+                        processed_results.append({
+                            "_row_index": row_idx,
+                            "x2": position[0], "y2": position[1], "z2": position[2]
+                        })
+                    except Exception as e:
+                        if verbosity >= VerbosityLevel.DETAILED:
+                            print(f"Error processing result entry: {str(e)}")
+                        processed_results.append({
+                            "_row_index": row_idx,
+                            "x2": np.nan, "y2": np.nan, "z2": np.nan
+                        })
 
+            # Create a DataFrame from processed results
+            result_df = pd.DataFrame(processed_results)
+            
+            # Ensure results are in original order
+            result_df = result_df.sort_values(by="_row_index").reset_index(drop=True)
+
+            # Join with original data
             if join:
-                result = pd.concat([df, result], axis=1)
+                # Add all columns from original DataFrame
+                result = pd.merge(df, result_df.drop(columns=["_row_index"]), 
+                                left_on="_row_index", right_index=True, how="left")
+            else:
+                # Just keep necessary columns
+                result = result_df.drop(columns=["_row_index"])
+                # Add ID columns back from original data for easier matching
+                id_cols = ["id", "neutron_id"]
+                for col in id_cols:
+                    if col in df.columns:
+                        result[col] = df[col].values
+                
+                # Add toa if it exists in the original data
+                if "toa" in df.columns:
+                    result["toa2"] = df["toa"].values
+
+            # Drop the row index column if present
+            if "_row_index" in result.columns:
+                result = result.drop(columns=["_row_index"])
 
             if print_stats and verbosity >= VerbosityLevel.BASIC:
                 total = len(df)
@@ -449,6 +529,20 @@ class Lens:
             return combined_df
 
         return None
+
+    def _process_ray_chunk(self, chunk, opt_model):
+        """Process a chunk of rays at once"""
+        try:
+            return analyses.trace_list_of_rays(
+                opt_model,
+                chunk,
+                output_filter="last",
+                rayerr_filter="summary"
+            )
+        except Exception as e:
+            # Log the error and return empty results
+            # print(f"Error processing chunk: {str(e)}")
+            return [None] * len(chunk)
 
 
     def zscan(self, zfocus_range: Union[np.ndarray, list, float] = 0.,
