@@ -19,10 +19,6 @@ class VerbosityLevel(IntEnum):
     BASIC = 1    # Show progress bar and basic info
     DETAILED = 2 # Show everything
 
-from dataclasses import dataclass
-from enum import Enum, auto
-from typing import Optional
-
 @dataclass
 class Config:
     """Configuration for Geant4 simulation."""
@@ -52,6 +48,10 @@ class Config:
     angle_unit: str = "deg"
     sample_material: str = "G4_Galactic" # Material of the sample
     csv_batch_size: int = 0
+    # Ion parameters for radioactive decay
+    ion_z: Optional[int] = None  # Atomic number
+    ion_a: Optional[int] = None  # Mass number
+    ion_excitation: float = 0.0  # Excitation energy in keV
     
     # Run parameters
     num_events: int = 100000
@@ -100,7 +100,6 @@ class Config:
             csv_batch_size=0,
         )
 
-
     @classmethod
     def opticalphoton_point(cls) -> 'Config':
         """Point source optical photon configuration."""
@@ -143,6 +142,38 @@ class Config:
             csv_batch_size=1000,
         )
 
+    @classmethod
+    def point_ion(cls, ion_z: int = 39, ion_a: int = 88, ion_excitation: float = 0.0) -> 'Config':
+        """Point source configuration for a gamma-emitting isotope using radioactive decay.
+        
+        Args:
+            ion_z: Atomic number of the isotope (default: 39 for Yttrium)
+            ion_a: Mass number of the isotope (default: 88 for Y-88)
+            ion_excitation: Excitation energy in keV (default: 0.0)
+        
+        Returns:
+            Config object for ion-based point source
+        """
+        return cls(
+            particle="ion",
+            ion_z=ion_z,
+            ion_a=ion_a,
+            ion_excitation=ion_excitation,
+            position_z=0,
+            position_unit="mm",
+            halfx=0.0001,
+            halfy=0.0001,
+            shape_unit="um",
+            angle_type="iso",
+            max_theta=180,
+            min_theta=0,
+            num_events=100000,
+            progress_interval=100,
+            csv_filename=f"ion_z{ion_z}_a{ion_a}_data.csv",
+            sample_material="G4_Galactic",
+            csv_batch_size=0,
+        )
+
     def write(self, output_file: str) -> str:
         """
         Write configuration to a Geant4 macro file.
@@ -153,13 +184,21 @@ class Config:
         Returns:
             Path to the created macro file
         """
-        macro_content = f"""
+        macro_content = ""
+        if self.particle == "ion" and self.ion_z is not None and self.ion_a is not None:
+            macro_content += f"""
+/gps/particle ion
+/gps/ion {self.ion_z} {self.ion_a} 0 {self.ion_excitation}
+/grdm/nucleusLimits {self.ion_a} {self.ion_a} {self.ion_z} {self.ion_z}
+"""
+        else:
+            macro_content += f"""
 /gps/particle {self.particle}
 """
-        if self.energy_type == "Mono":
-            macro_content += f"/gps/energy {self.energy} {self.energy_unit}\n"
-        elif self.energy_type == "Lin":
-            macro_content += f"""
+            if self.energy_type == "Mono":
+                macro_content += f"/gps/energy {self.energy} {self.energy_unit}\n"
+            elif self.energy_type == "Lin":
+                macro_content += f"""
 /gps/ene/type Lin
 /gps/ene/min {self.energy_min} {self.energy_unit}
 /gps/ene/max {self.energy_max} {self.energy_unit}
@@ -182,10 +221,6 @@ class Config:
 /lumacam/batchSize {self.csv_batch_size}
 /run/beamOn {self.num_events}
 """
-        # Ensure the directory exists
-        # Path(output_file).parent.mkdir(parents=True, exist_ok=True)
-        
-        # Write the macro file
         with open(output_file, 'w') as f:
             f.write(macro_content.strip())
             
@@ -193,17 +228,21 @@ class Config:
 
     def __str__(self) -> str:
         """Return a human-readable string representation of the configuration."""
-        energy_info = ""
-        if self.energy_type == "Mono":
-            energy_info = f"Energy: {self.energy} {self.energy_unit}\n"
-        elif self.energy_type == "Lin":
-            energy_info = (f"Energy: uniform distribution from {self.energy_min} to {self.energy_max} {self.energy_unit}\n"
-                          f"  (gradient: {self.energy_gradient}, intercept: {self.energy_intercept})\n")
+        source_info = ""
+        if self.particle == "ion" and self.ion_z is not None and self.ion_a is not None:
+            source_info = f"Source: Ion (Z={self.ion_z}, A={self.ion_a}, Excitation={self.ion_excitation} keV)\n"
+        else:
+            energy_info = ""
+            if self.energy_type == "Mono":
+                energy_info = f"Energy: {self.energy} {self.energy_unit}\n"
+            elif self.energy_type == "Lin":
+                energy_info = (f"Energy: uniform distribution from {self.energy_min} to {self.energy_max} {self.energy_unit}\n"
+                              f"  (gradient: {self.energy_gradient}, intercept: {self.energy_intercept})\n")
+            source_info = f"Particle: {self.particle}\n  {energy_info}"
             
         return (
             f"Configuration:\n"
-            f"  Particle: {self.particle}\n"
-            f"  {energy_info}"
+            f"  {source_info}"
             f"  Position: ({self.position_x}, {self.position_y}, {self.position_z}) {self.position_unit}\n"
             f"  Direction: ({self.direction_x}, {self.direction_y}, {self.direction_z})\n"
             f"  Shape: {self.shape} ({self.halfx}x{self.halfy} {self.shape_unit})\n"
@@ -215,8 +254,6 @@ class Config:
     def __repr__(self) -> str:
         """Return a string representation of the configuration."""
         return str(self)
-
-
 
 class Simulate:
     """Class to simulate the lumacam executable."""
