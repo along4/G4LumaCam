@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass
 from importlib import resources
 import shutil
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 from pathlib import Path
 from enum import IntEnum
 from tqdm.notebook import tqdm
@@ -26,11 +26,12 @@ class Config:
     particle: str = "neutron"
     energy: float = 10.0
     energy_unit: str = "MeV"
-    energy_type: str = "Mono"  # Can be "Mono" or "Lin" for linear distribution
+    energy_type: str = "Mono"  # Can be "Mono", "Lin", or "Hist" for histogram distribution
     energy_min: Optional[float] = None  # Used for Lin distribution
     energy_max: Optional[float] = None  # Used for Lin distribution
     energy_gradient: Optional[float] = None  # Used for Lin distribution
     energy_intercept: Optional[float] = None  # Used for Lin distribution
+    energy_histogram: Optional[List[Tuple[float, float]]] = None  # Used for Hist distribution: (energy, intensity)
     position_x: float = 0
     position_y: float = 0
     position_z: float = -1059
@@ -169,7 +170,46 @@ class Config:
             min_theta=0,
             num_events=100000,
             progress_interval=100,
-            csv_filename=f"ion_z{ion_z}_a{ion_a}_data.csv",
+            csv_filename=f"sim_data.csv",
+            sample_material="G4_Galactic",
+            csv_batch_size=0,
+        )
+
+    @classmethod
+    def point_gamma_lines(cls, gamma_lines: List[Tuple[float, float]] = None) -> 'Config':
+        """Point source configuration for gamma rays with specified energies and intensities.
+        
+        Args:
+            gamma_lines: List of (energy, intensity) tuples in (MeV, per 100 disintegrations).
+                         Default: Y-88 gamma lines [(0.898, 93), (1.836, 99), (2.734, 0.6)].
+        
+        Returns:
+            Config object for gamma line point source
+        """
+        if gamma_lines is None:
+            # Default to Y-88 gamma lines
+            gamma_lines = [(0.898, 93), (1.836, 99), (2.734, 0.6)]
+        
+        # Normalize intensities to sum to 1
+        total_intensity = sum(intensity for energy, intensity in gamma_lines)
+        normalized_lines = [(energy, intensity / total_intensity) for energy, intensity in gamma_lines]
+        
+        return cls(
+            particle="gamma",
+            energy_type="Hist",
+            energy_histogram=normalized_lines,
+            energy_unit="MeV",
+            position_z=0,
+            position_unit="mm",
+            halfx=0.0001,
+            halfy=0.0001,
+            shape_unit="um",
+            angle_type="iso",
+            max_theta=180,
+            min_theta=0,
+            num_events=100000,
+            progress_interval=100,
+            csv_filename="sim_data.csv",
             sample_material="G4_Galactic",
             csv_batch_size=0,
         )
@@ -190,6 +230,8 @@ class Config:
 /gps/particle ion
 /gps/ion {self.ion_z} {self.ion_a} 0 {self.ion_excitation}
 /grdm/nucleusLimits {self.ion_a} {self.ion_a} {self.ion_z} {self.ion_z}
+/grdm/applyICM true
+/grdm/applyARM true
 """
         else:
             macro_content += f"""
@@ -205,6 +247,14 @@ class Config:
 /gps/ene/gradient {self.energy_gradient}
 /gps/ene/intercept {self.energy_intercept}
 """
+            elif self.energy_type == "Hist" and self.energy_histogram is not None:
+                macro_content += f"""
+/gps/ene/type User
+/gps/hist/type energy
+"""
+                # Add histogram points (energy, normalized intensity)
+                for energy, intensity in self.energy_histogram:
+                    macro_content += f"/gps/hist/point {energy} {intensity}\n"
         
         macro_content += f"""
 /gps/position {self.position_x} {self.position_y} {self.position_z} {self.position_unit}
@@ -238,6 +288,10 @@ class Config:
             elif self.energy_type == "Lin":
                 energy_info = (f"Energy: uniform distribution from {self.energy_min} to {self.energy_max} {self.energy_unit}\n"
                               f"  (gradient: {self.energy_gradient}, intercept: {self.energy_intercept})\n")
+            elif self.energy_type == "Hist" and self.energy_histogram is not None:
+                energy_info = "Energy: discrete lines\n"
+                for energy, intensity in self.energy_histogram:
+                    energy_info += f"  {energy} {self.energy_unit} (intensity: {intensity:.3f})\n"
             source_info = f"Particle: {self.particle}\n  {energy_info}"
             
         return (
