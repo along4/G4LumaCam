@@ -14,12 +14,12 @@
 #include "LumaCamMessenger.hh"
 
 GeometryConstructor::GeometryConstructor(ParticleGenerator* gen) 
-    : matBuilder(new MaterialBuilder()), eventProc(nullptr), sampleLog(nullptr) {
+    : matBuilder(new MaterialBuilder()), eventProc(nullptr), sampleLog(nullptr), scintLog(nullptr) {
     eventProc = new EventProcessor("EventProcessor", gen);
     G4SDManager* sdManager = G4SDManager::GetSDMpointer();
     sdManager->AddNewDetector(eventProc);
     G4String filename = "";
-    lumaCamMessenger = new LumaCamMessenger(&filename, sampleLog);
+    lumaCamMessenger = new LumaCamMessenger(&filename, sampleLog, scintLog);
 }
 
 GeometryConstructor::~GeometryConstructor() {
@@ -46,7 +46,7 @@ G4VPhysicalVolume* GeometryConstructor::Construct() {
         delete lumaCamMessenger;
     }
     G4String filename = "";
-    lumaCamMessenger = new LumaCamMessenger(&filename, sampleLog);
+    lumaCamMessenger = new LumaCamMessenger(&filename, sampleLog, scintLog);
 
     addComponents(lShapeLog);
     return worldPhys;
@@ -95,15 +95,13 @@ G4LogicalVolume* GeometryConstructor::buildLShape(G4LogicalVolume* worldLog) {
     return lShapeLog;
 }
 
-
-
 void GeometryConstructor::addComponents(G4LogicalVolume* lShapeLog) {
     // Scintillator
     G4Box* scintSolid = new G4Box("ScintSolid", Sim::SCINT_SIZE, Sim::SCINT_SIZE, Sim::SCINT_THICKNESS);
     G4VisAttributes* scintVisAttributes = new G4VisAttributes(G4Colour(0.5, 0.5, 0.5, 0.5));
     scintVisAttributes->SetForceSolid(true);
     scintVisAttributes->SetVisibility(true);
-    G4LogicalVolume* scintLog = new G4LogicalVolume(scintSolid, matBuilder->getPVT(), "ScintLog");
+    scintLog = new G4LogicalVolume(scintSolid, matBuilder->getScintillator(), "ScintLog");
     new G4PVPlacement(nullptr, G4ThreeVector(0, 0, Sim::SCINT_THICKNESS), scintLog, "ScintPhys", lShapeLog, false, 0);
     scintLog->SetVisAttributes(scintVisAttributes);
     scintLog->SetSensitiveDetector(eventProc);

@@ -18,11 +18,13 @@ public:
     GeometryConstructor(ParticleGenerator* gen = nullptr);
     ~GeometryConstructor() override;
     G4VPhysicalVolume* Construct() override;
+    G4LogicalVolume* getScintillatorLog() const { return scintLog; }
 
 private:
     MaterialBuilder* matBuilder;
     EventProcessor* eventProc;
     G4LogicalVolume* sampleLog;
+    G4LogicalVolume* scintLog;
     LumaCamMessenger* lumaCamMessenger;
 
     G4VPhysicalVolume* createWorld();

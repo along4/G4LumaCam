@@ -29,7 +29,7 @@ int main(int argc, char** argv) {
 
     // Step 2: Now instantiate user actions
     ParticleGenerator* gen = new ParticleGenerator();
-    GeometryConstructor* geo = new GeometryConstructor(gen); // Pass gen to GeometryConstructor
+    GeometryConstructor* geo = new GeometryConstructor(gen);
     runMgr->SetUserInitialization(geo);
 
     runMgr->SetUserAction(gen);
@@ -58,6 +58,7 @@ int main(int argc, char** argv) {
         uiMgr->ApplyCommand("/gps/energy 10 MeV");
         uiMgr->ApplyCommand("/gps/particle neutron");
         uiMgr->ApplyCommand("/lumacam/sampleMaterial G4_Galactic");
+        uiMgr->ApplyCommand("/lumacam/scintMaterial EJ200");
         uiMgr->ApplyCommand("/vis/filtering/trajectories/particleFilter-0/add proton");
         uiMgr->ApplyCommand("/vis/filtering/trajectories/particleFilter-0/add opticalphoton");
         uiMgr->ApplyCommand("/vis/filtering/trajectories/particleFilter-0/add neutron");
