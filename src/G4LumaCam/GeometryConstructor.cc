@@ -19,7 +19,6 @@ GeometryConstructor::GeometryConstructor(ParticleGenerator* gen)
     eventProc = new EventProcessor("EventProcessor", gen);
     G4SDManager* sdManager = G4SDManager::GetSDMpointer();
     sdManager->AddNewDetector(eventProc);
-    // Do not instantiate lumaCamMessenger here; wait until Construct()
 }
 
 GeometryConstructor::~GeometryConstructor() {
@@ -53,9 +52,12 @@ G4VPhysicalVolume* GeometryConstructor::Construct() {
     // Build other components, including scintillator
     addComponents(lShapeLog);
 
-    // Instantiate LumaCamMessenger after sampleLog and scintLog are set
+    // Update LumaCamMessenger with new logical volumes
+    if (lumaCamMessenger) {
+        delete lumaCamMessenger; // Delete old messenger
+    }
     G4String filename = "sim_data.csv";
-    lumaCamMessenger = new LumaCamMessenger(&filename, sampleLog, scintLog);
+    lumaCamMessenger = new LumaCamMessenger(&filename, sampleLog, scintLog, Sim::batchSize);
     if (!lumaCamMessenger) {
         G4cerr << "ERROR: lumaCamMessenger is nullptr!" << G4endl;
     } else {
@@ -66,6 +68,7 @@ G4VPhysicalVolume* GeometryConstructor::Construct() {
 
     return worldPhys;
 }
+
 
 G4VPhysicalVolume* GeometryConstructor::createWorld() {
     G4cout << "GeometryConstructor: Creating world volume..." << G4endl;

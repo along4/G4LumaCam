@@ -16,6 +16,8 @@ public:
     ~LumaCamMessenger();
     void SetMaterial(const G4String& materialName);
     void SetScintillatorMaterial(const G4String& materialName);
+    void SetScintThickness(G4double thickness);
+    void SetSampleThickness(G4double thickness);
 
 private:
     G4String* csvFilename;

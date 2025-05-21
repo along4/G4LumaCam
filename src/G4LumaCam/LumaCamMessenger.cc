@@ -1,11 +1,13 @@
 #include "LumaCamMessenger.hh"
+#include "SimConfig.hh"
+#include "G4RunManager.hh"
+#include "G4VUserDetectorConstruction.hh"
 
 LumaCamMessenger::LumaCamMessenger(G4String* filename, G4LogicalVolume* sampleLogVolume, 
                                    G4LogicalVolume* scintLogVolume, G4int batch)
  : csvFilename(filename), sampleLog(sampleLogVolume), scintLog(scintLogVolume), batchSize(batch), matBuilder(new MaterialBuilder()) {
     messenger = new G4GenericMessenger(this, "/lumacam/", "lumacam control commands");
 
-    // Debug output to check input parameters
     G4cout << "LumaCamMessenger: Initializing with csvFilename=" << (csvFilename ? *csvFilename : "null")
            << ", sampleLog=" << (sampleLog ? sampleLog->GetName() : "null")
            << ", scintLog=" << (scintLog ? scintLog->GetName() : "null")
@@ -27,7 +29,6 @@ LumaCamMessenger::LumaCamMessenger(G4String* filename, G4LogicalVolume* sampleLo
         G4cerr << "WARNING: sampleLog is nullptr, /lumacam/sampleMaterial command will not be available" << G4endl;
     }
 
-    // Always register scintMaterial command to avoid COMMAND NOT FOUND
     messenger->DeclareMethod("scintMaterial", &LumaCamMessenger::SetScintillatorMaterial)
         .SetGuidance("Set the scintillator material (EJ200 or GS20)")
         .SetParameterName("material", false)
@@ -36,6 +37,17 @@ LumaCamMessenger::LumaCamMessenger(G4String* filename, G4LogicalVolume* sampleLo
     if (!scintLog) {
         G4cerr << "WARNING: scintLog is nullptr, /lumacam/scintMaterial command will fail until scintLog is set" << G4endl;
     }
+
+    // Thickness commands (input in cm)
+    messenger->DeclareMethod("ScintThickness", &LumaCamMessenger::SetScintThickness)
+        .SetGuidance("Set the scintillator half-thickness in cm")
+        .SetParameterName("thickness", false)
+        .SetDefaultValue("1.0");
+
+    messenger->DeclareMethod("SampleThickness", &LumaCamMessenger::SetSampleThickness)
+        .SetGuidance("Set the sample half-thickness in cm")
+        .SetParameterName("thickness", false)
+        .SetDefaultValue("3.75");
 
     messenger->DeclareProperty("batchSize", batchSize)
         .SetGuidance("Set the number of events per CSV file (0 for single file)")
@@ -94,5 +106,37 @@ void LumaCamMessenger::SetScintillatorMaterial(const G4String& materialName) {
     } else {
         G4cerr << "Scintillator material " << materialName << " not found!" << G4endl;
         G4cout << "Available scintillator materials: EJ200, GS20" << G4endl;
+    }
+}
+
+void LumaCamMessenger::SetScintThickness(G4double thickness) {
+    // Convert thickness from cm (user input) to Geant4 internal units
+    Sim::SetScintThickness(thickness * cm);
+    // Rebuild geometry
+    G4RunManager* runManager = G4RunManager::GetRunManager();
+    if (runManager && runManager->GetUserDetectorConstruction()) {
+        G4VUserDetectorConstruction* detector = const_cast<G4VUserDetectorConstruction*>(
+            runManager->GetUserDetectorConstruction());
+        runManager->DefineWorldVolume(detector->Construct());
+        runManager->GeometryHasBeenModified();
+        G4cout << "Geometry rebuilt with new scintillator half-thickness: " << thickness << " cm" << G4endl;
+    } else {
+        G4cerr << "ERROR: RunManager or DetectorConstruction is nullptr, cannot rebuild geometry" << G4endl;
+    }
+}
+
+void LumaCamMessenger::SetSampleThickness(G4double thickness) {
+    // Convert thickness from cm (user input) to Geant4 internal units
+    Sim::SetSampleThickness(thickness * cm);
+    // Rebuild geometry
+    G4RunManager* runManager = G4RunManager::GetRunManager();
+    if (runManager && runManager->GetUserDetectorConstruction()) {
+        G4VUserDetectorConstruction* detector = const_cast<G4VUserDetectorConstruction*>(
+            runManager->GetUserDetectorConstruction());
+        runManager->DefineWorldVolume(detector->Construct());
+        runManager->GeometryHasBeenModified();
+        G4cout << "Geometry rebuilt with new sample half-thickness: " << thickness << " cm" << G4endl;
+    } else {
+        G4cerr << "ERROR: RunManager or DetectorConstruction is nullptr, cannot rebuild geometry" << G4endl;
     }
 }

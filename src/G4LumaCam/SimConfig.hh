@@ -5,16 +5,22 @@
 #include "G4String.hh"
 #include <random>
 
+// This header should ONLY contain declarations, not definitions
+
 namespace Sim {
+    // Declare extern variables (don't define/initialize them here)
     extern G4String outputFileName;
     extern G4int batchSize;
     extern std::default_random_engine randomEngine;
+    extern G4double WORLD_SIZE;
+    extern G4double SCINT_THICKNESS; // half thickness
+    extern G4double SAMPLE_THICKNESS; // half thickness
+    extern G4double SCINT_SIZE; // half size
+    extern G4double COATING_THICKNESS; // half thickness
     
-    constexpr G4double WORLD_SIZE = 50.0 * m;
-    constexpr G4double SCINT_THICKNESS = 1.0 * cm; // half thickness
-    constexpr G4double SAMPLE_THICKNESS = 3.75 * cm; // half thickness
-    constexpr G4double SCINT_SIZE = 6.0 * cm; // half size
-    constexpr G4double COATING_THICKNESS = 0.01 * cm; // half thickness
+    // Function declarations only (no implementations here)
+    void SetScintThickness(G4double thickness);
+    void SetSampleThickness(G4double thickness);
 }
 
-#endif
+#endif // SIM_CONFIG_HH

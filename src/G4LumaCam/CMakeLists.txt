@@ -13,6 +13,7 @@ set(SOURCES
     EventProcessor.cc
     SimulationManager.cc
     LumaCamMessenger.cc
+    SimConfig.cc
 )
 
 set(HEADERS

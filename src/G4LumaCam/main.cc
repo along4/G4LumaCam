@@ -11,13 +11,16 @@
 #include "G4OpticalPhysics.hh"
 #include "G4RadioactiveDecayPhysics.hh"
 
-G4String Sim::outputFileName = "sim_data.csv";
-G4int Sim::batchSize = 10000;
-std::default_random_engine Sim::randomEngine(time(nullptr));
+// Remove these lines to avoid multiple definitions
+// G4String Sim::outputFileName = "sim_data.csv";
+// G4int Sim::batchSize = 10000;
+// std::default_random_engine Sim::randomEngine(time(nullptr));
 
 int main(int argc, char** argv) {
+    // Override default batchSize if needed
+    Sim::batchSize = 10000;  // Only set value, don't redefine the variable
+    
     G4RunManager* runMgr = new G4RunManager();
-
     // Step 1: Set up the physics list first
     G4VModularPhysicsList* phys = new QGSP_BERT_HP();
     G4OpticalPhysics* optPhys = new G4OpticalPhysics();
@@ -26,23 +29,17 @@ int main(int argc, char** argv) {
     phys->RegisterPhysics(optPhys);
     phys->RegisterPhysics(new G4RadioactiveDecayPhysics());
     runMgr->SetUserInitialization(phys);
-
     // Step 2: Now instantiate user actions
     ParticleGenerator* gen = new ParticleGenerator();
     GeometryConstructor* geo = new GeometryConstructor(gen);
     runMgr->SetUserInitialization(geo);
-
     runMgr->SetUserAction(gen);
-
     SimulationManager* simMgr = new SimulationManager();
     runMgr->SetUserAction(simMgr);
     runMgr->SetUserAction(new SimulationManager::EventHandler(simMgr));
-
     runMgr->Initialize();
-
     G4VisManager* visMgr = new G4VisExecutive();
     visMgr->Initialize();
-
     G4UImanager* uiMgr = G4UImanager::GetUIpointer();
     if (argc > 1) {
         uiMgr->ApplyCommand("/control/execute " + G4String(argv[1]));
@@ -72,7 +69,6 @@ int main(int argc, char** argv) {
         ui->SessionStart();
         delete ui;
     }
-
     delete visMgr;
     delete runMgr;
     return 0;
