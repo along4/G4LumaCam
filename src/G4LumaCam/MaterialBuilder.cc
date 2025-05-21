@@ -7,6 +7,8 @@
 MaterialBuilder::MaterialBuilder() : currentScintType(ScintType::EJ200) {
     G4NistManager* nist = G4NistManager::Instance();
     
+    G4cout << "MaterialBuilder: Initializing materials..." << G4endl;
+    
     // Elements
     G4Element* H = new G4Element("H", "H", 1., 1.01 * g/mole);
     G4Element* C = new G4Element("C", "C", 6., 12.01 * g/mole);
@@ -18,6 +20,7 @@ MaterialBuilder::MaterialBuilder() : currentScintType(ScintType::EJ200) {
     // Vacuum
     vacuum = new G4Material("Vacuum", 1., 1.01 * g/mole, CLHEP::universe_mean_density,
         kStateGas, 2.73 * kelvin, 3.e-18 * pascal);
+    G4cout << "MaterialBuilder: Vacuum material created" << G4endl;
     
     // Air
     air = new G4Material("Air", 1.290 * mg/cm3, 2);
@@ -28,6 +31,7 @@ MaterialBuilder::MaterialBuilder() : currentScintType(ScintType::EJ200) {
     G4double airRIndex[2] = {1.0, 1.0};
     G4double airAbs[2] = {100.0 * m, 100.0 * m};
     setupMaterialProperties(air, airEnergy, airRIndex, airAbs, 2);
+    G4cout << "MaterialBuilder: Air material created" << G4endl;
     
     // Scintillator (PVT)
     scintMaterialPVT = new G4Material("ScintillatorPVT", 1.023 * g/cm3, 2);
@@ -63,15 +67,19 @@ MaterialBuilder::MaterialBuilder() : currentScintType(ScintType::EJ200) {
     }
     setupMaterialProperties(scintMaterialPVT, pvtEnergy, pvtRIndex, pvtAbs, nPVT, pvtScint);
     scintMaterialPVT->GetIonisation()->SetBirksConstant(0.126 * mm/MeV);
+    G4cout << "MaterialBuilder: ScintillatorPVT material created" << G4endl;
     
     // Scintillator (GS20)
     buildGS20();
+    G4cout << "MaterialBuilder: ScintillatorGS20 material created" << G4endl;
     
     // Set default scintillator
     scintMaterial = scintMaterialPVT;
+    G4cout << "MaterialBuilder: Default scintillator set to ScintillatorPVT" << G4endl;
     
     // Graphite
     sampleMaterial = nist->FindOrBuildMaterial("G4_GRAPHITE");
+    G4cout << "MaterialBuilder: Graphite material created" << G4endl;
     
     // Quartz Window
     windowMaterial = new G4Material("Quartz", 2.20 * g/cm3, 2);
@@ -82,6 +90,7 @@ MaterialBuilder::MaterialBuilder() : currentScintType(ScintType::EJ200) {
     G4double quartzRIndex[2] = {1.59, 1.59};
     G4double quartzAbs[2] = {160.0 * cm, 160.0 * cm};
     setupMaterialProperties(windowMaterial, quartzEnergy, quartzRIndex, quartzAbs, 2);
+    G4cout << "MaterialBuilder: Quartz material created" << G4endl;
     
     // Black Material
     absorberMaterial = new G4Material("Absorber", 1.290 * mg/cm3, 2);
@@ -92,6 +101,7 @@ MaterialBuilder::MaterialBuilder() : currentScintType(ScintType::EJ200) {
     G4double blackRIndex[2] = {1.58, 1.58};
     G4double blackAbs[2] = {0.0 * mm, 0.0 * mm};
     setupMaterialProperties(absorberMaterial, blackEnergy, blackRIndex, blackAbs, 2);
+    G4cout << "MaterialBuilder: Absorber material created" << G4endl;
 }
 
 void MaterialBuilder::buildGS20() {
@@ -191,18 +201,30 @@ void MaterialBuilder::buildGS20() {
     pt20->AddProperty("ABSLENGTH", ScintEnergy, abs, nPoints);
     
     scintMaterialGS20->SetMaterialPropertiesTable(pt20);
+    G4cout << "MaterialBuilder: GS20 optical properties set" << G4endl;
 }
 
 void MaterialBuilder::setScintillatorType(ScintType type) {
     currentScintType = type;
     if (type == ScintType::EJ200) {
-        scintMaterial = scintMaterialPVT;
+        if (scintMaterialPVT) {
+            scintMaterial = scintMaterialPVT;
+            G4cout << "MaterialBuilder: Scintillator set to EJ200 (ScintillatorPVT)" << G4endl;
+        } else {
+            G4cerr << "ERROR: scintMaterialPVT is nullptr!" << G4endl;
+        }
     } else if (type == ScintType::GS20) {
-        scintMaterial = scintMaterialGS20;
+        if (scintMaterialGS20) {
+            scintMaterial = scintMaterialGS20;
+            G4cout << "MaterialBuilder: Scintillator set to GS20 (ScintillatorGS20)" << G4endl;
+        } else {
+            G4cerr << "ERROR: scintMaterialGS20 is nullptr!" << G4endl;
+        }
     }
 }
 
 void MaterialBuilder::setScintillatorType(const G4String& typeName) {
+    G4cout << "MaterialBuilder: Attempting to set scintillator type to " << typeName << G4endl;
     if (typeName == "EJ200") {
         setScintillatorType(ScintType::EJ200);
     } else if (typeName == "GS20") {
@@ -215,6 +237,10 @@ void MaterialBuilder::setScintillatorType(const G4String& typeName) {
 void MaterialBuilder::setupMaterialProperties(G4Material* mat, const G4double* energies,
     const G4double* rindex, const G4double* abslength,
     int nEntries, const G4double* scintillation) {
+    if (!mat) {
+        G4cerr << "ERROR: Material is nullptr in setupMaterialProperties!" << G4endl;
+        return;
+    }
     std::vector<G4double> energiesCopy(energies, energies + nEntries);
     std::vector<G4double> rindexCopy(rindex, rindex + nEntries);
     std::vector<G4double> abslengthCopy(abslength, abslength + nEntries);
@@ -234,14 +260,17 @@ void MaterialBuilder::setupMaterialProperties(G4Material* mat, const G4double* e
             mpt->AddConstProperty("SCINTILLATIONRISETIME", 0.9 * ns);
             mpt->AddConstProperty("FASTTIMECONSTANT", 3.2 * ns);
             mpt->AddConstProperty("YIELDRATIO", 0.);
+            G4cout << "MaterialBuilder: ScintillatorPVT properties set" << G4endl;
         } else if (mat == scintMaterialGS20) {
             mpt->AddConstProperty("SCINTILLATIONYIELD", 1255.23 / MeV);
             mpt->AddConstProperty("RESOLUTIONSCALE", 1.);
             mpt->AddConstProperty("FASTTIMECONSTANT", 57. * ns);
             mpt->AddConstProperty("SLOWTIMECONSTANT", 98. * ns);
             mpt->AddConstProperty("YIELDRATIO", 1.);
+            G4cout << "MaterialBuilder: ScintillatorGS20 properties set" << G4endl;
         }
     }
     
     mat->SetMaterialPropertiesTable(mpt);
+    G4cout << "MaterialBuilder: Material properties set for " << mat->GetName() << G4endl;
 }

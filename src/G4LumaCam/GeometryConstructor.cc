@@ -14,20 +14,23 @@
 #include "LumaCamMessenger.hh"
 
 GeometryConstructor::GeometryConstructor(ParticleGenerator* gen) 
-    : matBuilder(new MaterialBuilder()), eventProc(nullptr), sampleLog(nullptr), scintLog(nullptr) {
+    : matBuilder(new MaterialBuilder()), eventProc(nullptr), sampleLog(nullptr), scintLog(nullptr), lumaCamMessenger(nullptr) {
+    G4cout << "GeometryConstructor: Initializing..." << G4endl;
     eventProc = new EventProcessor("EventProcessor", gen);
     G4SDManager* sdManager = G4SDManager::GetSDMpointer();
     sdManager->AddNewDetector(eventProc);
-    G4String filename = "";
-    lumaCamMessenger = new LumaCamMessenger(&filename, sampleLog, scintLog);
+    // Do not instantiate lumaCamMessenger here; wait until Construct()
 }
 
 GeometryConstructor::~GeometryConstructor() {
+    G4cout << "GeometryConstructor: Cleaning up..." << G4endl;
     delete matBuilder;
     delete lumaCamMessenger;
+    delete eventProc;
 }
 
 G4VPhysicalVolume* GeometryConstructor::Construct() {
+    G4cout << "GeometryConstructor: Constructing geometry..." << G4endl;
     G4VPhysicalVolume* worldPhys = createWorld();
     G4LogicalVolume* worldLog = worldPhys->GetLogicalVolume();
     G4LogicalVolume* lShapeLog = buildLShape(worldLog);
@@ -36,23 +39,36 @@ G4VPhysicalVolume* GeometryConstructor::Construct() {
     G4Box* sampleSolid = new G4Box("SampleSolid", Sim::SCINT_SIZE, Sim::SCINT_SIZE, Sim::SAMPLE_THICKNESS);
     G4NistManager* nistManager = G4NistManager::Instance();
     sampleLog = new G4LogicalVolume(sampleSolid, nistManager->FindOrBuildMaterial("G4_Galactic"), "SampleLog");
+    if (!sampleLog) {
+        G4cerr << "ERROR: sampleLog is nullptr!" << G4endl;
+    } else {
+        G4cout << "GeometryConstructor: Sample logical volume created" << G4endl;
+    }
     G4VisAttributes* sampleVisAttributes = new G4VisAttributes(G4Colour(0.8, 0.2, 0.2, 0.5));
     sampleVisAttributes->SetForceSolid(true);
     sampleVisAttributes->SetVisibility(true);
     new G4PVPlacement(nullptr, G4ThreeVector(0, 0, -20*cm), sampleLog, "SamplePhys", worldLog, false, 0);
     sampleLog->SetVisAttributes(sampleVisAttributes);
 
-    if (lumaCamMessenger) {
-        delete lumaCamMessenger;
-    }
-    G4String filename = "";
-    lumaCamMessenger = new LumaCamMessenger(&filename, sampleLog, scintLog);
-
+    // Build other components, including scintillator
     addComponents(lShapeLog);
+
+    // Instantiate LumaCamMessenger after sampleLog and scintLog are set
+    G4String filename = "sim_data.csv";
+    lumaCamMessenger = new LumaCamMessenger(&filename, sampleLog, scintLog);
+    if (!lumaCamMessenger) {
+        G4cerr << "ERROR: lumaCamMessenger is nullptr!" << G4endl;
+    } else {
+        G4cout << "GeometryConstructor: LumaCamMessenger initialized with sampleLog=" 
+               << (sampleLog ? sampleLog->GetName() : "null") 
+               << ", scintLog=" << (scintLog ? scintLog->GetName() : "null") << G4endl;
+    }
+
     return worldPhys;
 }
 
 G4VPhysicalVolume* GeometryConstructor::createWorld() {
+    G4cout << "GeometryConstructor: Creating world volume..." << G4endl;
     G4Box* worldSolid = new G4Box("WorldSolid", Sim::WORLD_SIZE, Sim::WORLD_SIZE, Sim::WORLD_SIZE);
     G4LogicalVolume* worldLog = new G4LogicalVolume(worldSolid, matBuilder->getVacuum(), "WorldLog");
     G4VPhysicalVolume* worldPhys = new G4PVPlacement(nullptr, G4ThreeVector(), worldLog, "World", nullptr, false, 0);
@@ -65,6 +81,7 @@ G4VPhysicalVolume* GeometryConstructor::createWorld() {
 }
 
 G4LogicalVolume* GeometryConstructor::buildLShape(G4LogicalVolume* worldLog) {
+    G4cout << "GeometryConstructor: Building L-shape volume..." << G4endl;
     G4Box* arm1 = new G4Box("Arm1", 10*cm, 10*cm, 30*cm);
     G4Box* arm2 = new G4Box("Arm2", 15*cm, 10*cm, 10*cm);
     G4UnionSolid* lShapeSolid = new G4UnionSolid("LShapeSolid", arm1, arm2, nullptr, G4ThreeVector(25*cm, 0, 20*cm));
@@ -96,12 +113,18 @@ G4LogicalVolume* GeometryConstructor::buildLShape(G4LogicalVolume* worldLog) {
 }
 
 void GeometryConstructor::addComponents(G4LogicalVolume* lShapeLog) {
+    G4cout << "GeometryConstructor: Adding components..." << G4endl;
     // Scintillator
     G4Box* scintSolid = new G4Box("ScintSolid", Sim::SCINT_SIZE, Sim::SCINT_SIZE, Sim::SCINT_THICKNESS);
     G4VisAttributes* scintVisAttributes = new G4VisAttributes(G4Colour(0.5, 0.5, 0.5, 0.5));
     scintVisAttributes->SetForceSolid(true);
     scintVisAttributes->SetVisibility(true);
     scintLog = new G4LogicalVolume(scintSolid, matBuilder->getScintillator(), "ScintLog");
+    if (!scintLog) {
+        G4cerr << "ERROR: scintLog is nullptr!" << G4endl;
+    } else {
+        G4cout << "GeometryConstructor: Scintillator logical volume created" << G4endl;
+    }
     new G4PVPlacement(nullptr, G4ThreeVector(0, 0, Sim::SCINT_THICKNESS), scintLog, "ScintPhys", lShapeLog, false, 0);
     scintLog->SetVisAttributes(scintVisAttributes);
     scintLog->SetSensitiveDetector(eventProc);

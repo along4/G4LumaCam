@@ -8,6 +8,7 @@
 #include "SimConfig.hh"
 #include "G4GenericMessenger.hh"
 #include "G4SDManager.hh"
+#include "G4ios.hh" // Added for G4cout/G4cerr
 
 class EventProcessor;
 class ParticleGenerator;

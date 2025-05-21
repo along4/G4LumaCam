@@ -5,6 +5,12 @@ LumaCamMessenger::LumaCamMessenger(G4String* filename, G4LogicalVolume* sampleLo
  : csvFilename(filename), sampleLog(sampleLogVolume), scintLog(scintLogVolume), batchSize(batch), matBuilder(new MaterialBuilder()) {
     messenger = new G4GenericMessenger(this, "/lumacam/", "lumacam control commands");
 
+    // Debug output to check input parameters
+    G4cout << "LumaCamMessenger: Initializing with csvFilename=" << (csvFilename ? *csvFilename : "null")
+           << ", sampleLog=" << (sampleLog ? sampleLog->GetName() : "null")
+           << ", scintLog=" << (scintLog ? scintLog->GetName() : "null")
+           << ", batchSize=" << batchSize << G4endl;
+
     if (csvFilename) {
         messenger->DeclareProperty("csvFilename", *csvFilename)
             .SetGuidance("Set the CSV filename")
@@ -17,13 +23,18 @@ LumaCamMessenger::LumaCamMessenger(G4String* filename, G4LogicalVolume* sampleLo
             .SetGuidance("Set the material of the sample_log")
             .SetParameterName("material", false)
             .SetDefaultValue("G4_GRAPHITE");
+    } else {
+        G4cerr << "WARNING: sampleLog is nullptr, /lumacam/sampleMaterial command will not be available" << G4endl;
     }
 
-    if (scintLog) {
-        messenger->DeclareMethod("scintMaterial", &LumaCamMessenger::SetScintillatorMaterial)
-            .SetGuidance("Set the scintillator material (EJ200 or GS20)")
-            .SetParameterName("material", false)
-            .SetDefaultValue("EJ200");
+    // Always register scintMaterial command to avoid COMMAND NOT FOUND
+    messenger->DeclareMethod("scintMaterial", &LumaCamMessenger::SetScintillatorMaterial)
+        .SetGuidance("Set the scintillator material (EJ200 or GS20)")
+        .SetParameterName("material", false)
+        .SetDefaultValue("EJ200");
+
+    if (!scintLog) {
+        G4cerr << "WARNING: scintLog is nullptr, /lumacam/scintMaterial command will fail until scintLog is set" << G4endl;
     }
 
     messenger->DeclareProperty("batchSize", batchSize)
@@ -39,7 +50,7 @@ LumaCamMessenger::~LumaCamMessenger() {
 
 void LumaCamMessenger::SetMaterial(const G4String& materialName) {
     if (!sampleLog) {
-        G4cerr << "ERROR: sampleLog is nullptr!" << G4endl;
+        G4cerr << "ERROR: sampleLog is nullptr, cannot set material to " << materialName << G4endl;
         return;
     }
     
@@ -65,10 +76,11 @@ void LumaCamMessenger::SetMaterial(const G4String& materialName) {
 
 void LumaCamMessenger::SetScintillatorMaterial(const G4String& materialName) {
     if (!scintLog) {
-        G4cerr << "ERROR: scintLog is nullptr!" << G4endl;
+        G4cerr << "ERROR: scintLog is nullptr, cannot set scintillator material to " << materialName << G4endl;
         return;
     }
     
+    G4cout << "Setting scintillator material to: " << materialName << G4endl;
     matBuilder->setScintillatorType(materialName);
     G4Material* material = matBuilder->getScintillator();
     

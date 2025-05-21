@@ -4,6 +4,7 @@
 #include "G4Material.hh"
 #include "G4NistManager.hh"
 #include "G4MaterialPropertiesTable.hh"
+#include "G4ios.hh" // Added for G4cout/G4cerr
 
 class MaterialBuilder {
 public:
