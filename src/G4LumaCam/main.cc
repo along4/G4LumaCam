@@ -68,8 +68,21 @@ int main(int argc, char** argv) {
         uiMgr->ApplyCommand("/vis/modeling/trajectories/drawByParticleID-0/setRGBA e- 0.0 1.0 0.0 0.6");
         ui->SessionStart();
         delete ui;
+        ui = nullptr;
     }
-    delete visMgr;
-    delete runMgr;
+    
+    // Delete visualization manager first
+    if (visMgr) {
+        delete visMgr;
+        visMgr = nullptr;
+    }
+    
+    // Delete run manager last, as it owns many other components
+    if (runMgr) {
+        // This will trigger cleanup of owned components like detector construction
+        delete runMgr;
+        runMgr = nullptr;
+    }
+    
     return 0;
 }

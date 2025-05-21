@@ -25,7 +25,7 @@ GeometryConstructor::~GeometryConstructor() {
     G4cout << "GeometryConstructor: Cleaning up..." << G4endl;
     delete matBuilder;
     delete lumaCamMessenger;
-    delete eventProc;
+    // delete eventProc;
 }
 
 G4VPhysicalVolume* GeometryConstructor::Construct() {
