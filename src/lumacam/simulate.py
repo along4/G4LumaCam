@@ -50,6 +50,7 @@ class Config:
     sample_material: str = "G4_Galactic"  # Material of the sample
     scintillator: str = "PVT"  # Scintillator type: PVT, EJ-200, GS20
     sample_thickness: float = 0.02  # Sample thickness in cm (default 0.02 cm = 200 microns)
+    scintillator_thickness: float = 20  # Scintillator thickness in cm (default is 20 cm)
     csv_batch_size: int = 0
     # Ion parameters for radioactive decay
     ion_z: Optional[int] = None  # Atomic number
@@ -78,7 +79,7 @@ class Config:
             csv_filename="sim_data.csv",
             sample_material="G4_Graphite",
             scintillator="PVT",
-            sample_thickness=0.02,
+            sample_thickness=20,
             csv_batch_size=0,
         )
     
@@ -103,7 +104,7 @@ class Config:
             csv_filename="sim_data.csv",
             sample_material="G4_Graphite",
             scintillator="PVT",
-            sample_thickness=0.02,
+            sample_thickness=20,
             csv_batch_size=0,
         )
 
@@ -126,7 +127,7 @@ class Config:
             csv_filename="sim_data.csv",
             sample_material="G4_Galactic",
             scintillator="PVT",
-            sample_thickness=0.02,
+            sample_thickness=20,
             csv_batch_size=1000,
         )
 
@@ -149,7 +150,7 @@ class Config:
             csv_filename="sim_data.csv",
             sample_material="G4_Galactic",
             scintillator="PVT",
-            sample_thickness=0.02,
+            sample_thickness=20,
             csv_batch_size=1000,
         )
 
@@ -174,7 +175,7 @@ class Config:
             csv_filename="sim_data.csv",
             sample_material="G4_Galactic",
             scintillator="PVT",
-            sample_thickness=0.02,
+            sample_thickness=20,
             csv_batch_size=0,
         )
 
@@ -207,7 +208,7 @@ class Config:
             csv_filename="sim_data.csv",
             sample_material="G4_Galactic",
             scintillator="PVT",
-            sample_thickness=0.02,
+            sample_thickness=20,
             csv_batch_size=0,
         )
 
@@ -233,6 +234,7 @@ class Config:
             sample_material="G4_TUNGSTEN",
             scintillator="GS20",
             sample_thickness=0.005,  # 50 microns = 0.005 cm
+            scintillator_thickness=1,  # 1 mm thick scintillator
             csv_batch_size=0,
         )
 
@@ -284,7 +286,8 @@ class Config:
 /run/printProgress {self.progress_interval}
 /lumacam/sampleMaterial {self.sample_material}
 /lumacam/scintMaterial {self.scintillator}
-# /lumacam/sampleThickness {self.sample_thickness} cm
+/lumacam/SampleThickness {self.sample_thickness} cm
+/lumacam/ScintThickness {self.scintillator_thickness} cm
 /lumacam/batchSize {self.csv_batch_size}
 /run/beamOn {self.num_events}
 """
@@ -490,10 +493,11 @@ class Simulate:
             for csv_file in csv_files:
                 if csv_file.exists():
                     df = pd.read_csv(csv_file)
-                    if df.empty:
+                    # Check if file has actual data (more than just headers)
+                    if df.shape[0] == 0:  # No data rows
                         csv_file.unlink()
                         if verbosity >= VerbosityLevel.BASIC:
-                            print(f"Removed empty CSV file: {csv_file}")
+                            print(f"Removed header-only CSV file: {csv_file}")
                     else:
                         dfs.append(df)
             
