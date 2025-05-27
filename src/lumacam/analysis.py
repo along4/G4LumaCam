@@ -349,24 +349,27 @@ class Analysis:
                 return
             
             df = df[["x2", "y2", "toa2"]].dropna()
-            df["toa2"]*=1e-9
-            df["px"] = (df["x2"] + 10)/10*128 # convert between px and mm
-            df["py"] = (df["y2"] + 10)/10*128 # convert between px and mm
+            df["toa2"] *= 1e-9
+            df["px"] = (df["x2"] + 10) / 10 * 128  # convert between px and mm
+            df["py"] = (df["y2"] + 10) / 10 * 128  # convert between px and mm
             df = df[["px", "py", "toa2"]]
             df.columns = ["x [px]", "y [px]", "t [s]"]
             df["t_relToExtTrigger [s]"] = df["t [s]"]
             df = df.loc[(df["t [s]"] >= 0) & (df["t [s]"] < 1)]
 
-            # Sort and save
-            temp_csv = self.archive / f"{file.stem}.csv"
-            df.sort_values("t [s]").to_csv(temp_csv, index=False)
+            # Create ImportedPhotons directory if it doesn't exist
+            imported_photons_dir = self.archive / "ImportedPhotons"
+            imported_photons_dir.mkdir(exist_ok=True)
+
+            # Save to ImportedPhotons directory
+            output_csv = imported_photons_dir / f"imported_{file.stem}.csv"
+            df.sort_values("t [s]").to_csv(output_csv, index=False)
 
             # Output empirphot file
             empir_file = self.photon_files_dir / f"{file.stem}.empirphot"
-            os.system(f"{self.empir_import_photons} {temp_csv} {empir_file} csv")
+            os.system(f"{self.empir_import_photons} {output_csv} {empir_file} csv")
             if verbosity >= VerbosityLevel.BASIC:
                 print(f"✔ Processed {file.name} → {empir_file.name}")
-            temp_csv.unlink()  # Remove temporary CSV file
 
         except Exception as e:
             if verbosity >= VerbosityLevel.BASIC: 
@@ -493,7 +496,6 @@ class Analysis:
         binned_data = pd.read_csv(archive/"binned.empirevent",header=0)
         return binned_data
 
-
     def process_data(self, 
                     dSpace_px: float = 4.0,
                     dTime_s: float = 50e-9,
@@ -523,9 +525,13 @@ class Analysis:
         Returns:
             DataFrame with processed data including stacks, counts, and error
         """
-        # Create base directory for analysed results
+        # Create base directories
         analysed_dir = self.archive / "AnalysedResults"
         analysed_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Create ImportedPhotons directory
+        imported_photons_dir = self.archive / "ImportedPhotons"
+        imported_photons_dir.mkdir(parents=True, exist_ok=True)
         
         # Create suffixed subfolder
         suffix_dir = analysed_dir / (suffix.strip("_") if suffix else "default")
@@ -560,13 +566,12 @@ class Analysis:
         # Run event binning
         self._run_event_binning(config=binning_config, verbosity=verbosity)
         
-        
         # Read and process binned data
         result_df = self._read_binned_data()
         if nPhotons_bins is None:
             result_df.columns = ["stacks", "counts"]
         else:
-            result_df.columns = ["stacks", "nPhotons","counts"]
+            result_df.columns = ["stacks", "nPhotons", "counts"]
         result_df["err"] = np.sqrt(result_df["counts"])
         result_df["stacks"] = np.arange(len(result_df))
         
@@ -579,6 +584,7 @@ class Analysis:
         
         return result_df
 
+        
     def process_data_advanced(self,
                             photon2event_config: dict = None,
                             event_binning_config: dict = None,
@@ -630,8 +636,6 @@ class Analysis:
 
 
 
-
-
     def process_data_event_by_event(self,
                                     dSpace_px: float = 4.0,
                                     dTime_s: float = 50e-9,
@@ -656,6 +660,7 @@ class Analysis:
         4. Processes each neutron event independently
         5. Combines results by batch into separate files in a suffixed subfolder
         6. Optionally merges results with simulation and traced data, adding event_id
+        7. Saves processed photon CSV files in ImportedPhotons directory
         
         Args:
             dSpace_px: Spatial clustering distance in pixels
@@ -670,15 +675,19 @@ class Analysis:
             suffix: Optional suffix for output folder and files
             time_norm_ns: Normalization factor for time differences (ns) in matching
             spatial_norm_px: Normalization factor for spatial differences (px) in matching
-            focus_factor: Factor that relates the hit position on the sensor to the actual hit position on the sclintillator screen
+            focus_factor: Factor that relates the hit position on the sensor to the actual hit position on the scintillator screen
         
         Returns:
             DataFrame with processed event data (optionally merged with sim_data and traced_data)
         """
         
-        # Create base directory for analysed results
+        # Create base directories
         analysed_dir = self.archive / "AnalysedResults"
         analysed_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Create ImportedPhotons directory
+        imported_photons_dir = self.archive / "ImportedPhotons"
+        imported_photons_dir.mkdir(parents=True, exist_ok=True)
         
         # Create suffixed subfolder
         suffix_dir = analysed_dir / (suffix.strip("_") if suffix else "default")
@@ -783,8 +792,13 @@ class Analysis:
                 
                 if df.empty:
                     continue
-                    
+                
                 event_prefix = f"event_{neutron_id}"
+                # Save to ImportedPhotons directory
+                imported_csv = imported_photons_dir / f"imported_{event_prefix}.csv"
+                df.sort_values("t [s]").to_csv(imported_csv, index=False)
+                
+                # Still use temp_dir for intermediate files
                 temp_csv = temp_dir / f"{event_prefix}.csv"
                 df.sort_values("t [s]").to_csv(temp_csv, index=False)
                 
@@ -794,7 +808,7 @@ class Analysis:
                     print(f"Running: {cmd}")
                     subprocess.run(cmd, shell=True)
                 else:
-                    subprocess.run(cmd, shell=True, stdout= subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 
                 empirevent_file = temp_dir / f"{event_prefix}.empirevent"
                 cmd = (
@@ -837,6 +851,7 @@ class Analysis:
                         if verbosity >= 1:
                             print(f"Empty result for neutron_id {neutron_id}")
                 
+                # Clean up temporary files (but keep imported_csv)
                 if verbosity < 2:
                     temp_csv.unlink(missing_ok=True)
                     empirphot_file.unlink(missing_ok=True)
@@ -896,7 +911,7 @@ class Analysis:
                     sim_data: DataFrame with simulation data
                     traced_data: DataFrame with traced photon data (row-aligned with sim_data)
                     recon_data: DataFrame with reconstructed event data
-                    focus_factor (float,oprtional): determines the ratio of position recorded on the sensor to the actual hit position on the sensor 
+                    focus_factor (float, optional): determines the ratio of position recorded on the sensor to the actual hit position on the scintillator screen 
                 
                 Returns:
                     Merged DataFrame with simulation, traced, and reconstruction columns
@@ -1017,11 +1032,11 @@ class Analysis:
                                     for col in recon_df.columns:
                                         if col != 'neutron_id':
                                             merged_df.loc[sim_idx, col] = recon_row[col]
-                                    merged_df.loc[sim_idx, 'event_id'] = event_id
-                                    merged_df.loc[sim_idx, 'time_diff_ns'] = time_diffs[idx]
-                                    merged_df.loc[sim_idx, 'spatial_diff_px'] = spatial_diffs[idx]
+                                        merged_df.loc[sim_idx, 'event_id'] = event_id
+                                        merged_df.loc[sim_idx, 'time_diff_ns'] = time_diffs[idx]
+                                        merged_df.loc[sim_idx, 'spatial_diff_px'] = spatial_diffs[idx]
                 
-                merged_df = self.calculate_reconstruction_stats(merged_df,focus_factor=focus_factor)
+                merged_df = self.calculate_reconstruction_stats(merged_df, focus_factor=focus_factor)
                 
                 # Ensure column order
                 sim_cols = [col for col in sim_df.columns if col not in ['x2', 'y2', 'z2', 'toa2', 'photon_px', 'photon_py']]
@@ -1046,7 +1061,6 @@ class Analysis:
                         print("Warning: No traced photon CSV files found in TracedPhotons folder.")
             
             merged_df = merge_sim_and_recon_data(self.sim_data, traced_data, combined_results, focus_factor=focus_factor)
-
             
             # Save merged results in suffixed folder
             merged_csv = suffix_dir / "merged_all_batches_results.csv"
@@ -1058,8 +1072,7 @@ class Analysis:
             return merged_df
         
         return combined_results
-
-
+        
     def calculate_reconstruction_stats(self,df: pd.DataFrame, focus_factor:float = 1.2):
         """
         Calculates stats on reconstructed events, Adds columms to the analysis dataframe.
