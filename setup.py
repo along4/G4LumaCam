@@ -72,7 +72,8 @@ setup(
     packages=find_packages(where="src"),
     package_dir={"": "src"},
     package_data={
-        'G4LumaCam': ['bin/*', 'config/*'],  # Include binary files and config in the package
+        'G4LumaCam': ['bin/*', 'config/*'],
+        'lumacam': ['data/*.zmx'],  # Include .zmx files in lumacam/data
     },
     install_requires=[
         "rayoptics",

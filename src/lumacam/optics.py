@@ -16,7 +16,7 @@ import warnings
 warnings.filterwarnings("ignore")
 from copy import deepcopy
 import glob
-
+import importlib.resources
 from enum import IntEnum
 
 class VerbosityLevel(IntEnum):
@@ -83,6 +83,69 @@ class Lens:
         else:
             raise ValueError(f"Unknown lens kind: {kind}, supported lenses are ['Nikkor_58mm_095']")
 
+
+
+    def microscope_nikor_80_200mm_canon_50mm(self, zoom: float = 80,
+                                            dist_from_obj: float = 461.535,
+                                            gap_between_lenses: float = 20., 
+                                            dist_to_screen: float = 20,
+                                            save: bool = False):
+        """
+        Microscope lens model
+        With first lens is Nikkor 80-200mm f/2.8 and second lens is Canon 50mm f/1.8 flipped
+        
+        Input:
+        zoom: float
+            Zoom focal lens in mm for the microscope lens model (default is 80mm)
+        dist_from_obj: float
+            Distance from the object to the first lens in mm (default is 461.535mm)
+        gap_between_lenses: float
+            Gap between the two lenses in mm (default is 20mm)
+        dist_to_screen: float
+            Distance from the second lens to the screen in mm (default is 20mm)
+        save: bool
+            Save the optical model to a file
+        Returns:
+            OpticalModel
+        """
+        opm = OpticalModel()
+        sm = opm['seq_model']
+        osp = opm['optical_spec']
+        pm = opm['parax_model']
+        em = opm['ele_model']
+        pt = opm['part_tree']
+
+        sm.do_apertures = False
+        opm.system_spec.title = 'Microscope Lens Model'
+        opm.system_spec.dimensions = 'MM'
+        opm.radius_mode = True
+
+        sm.gaps[0].thi = dist_from_obj
+        osp.pupil.value = 20
+        opm.update_model()
+
+        # Access .zmx files from the package's data directory
+        package = 'lumacam.data'
+        zmx_files = [
+            'JP2000-019398_Example01_Tale67_80_200_AF-S_2.4f.zmx',
+            'JP1985-040604_Example01P_50mm_1.2f.zmx'
+        ]
+
+        # Read first lens
+        with importlib.resources.as_file(importlib.resources.files(package).joinpath(zmx_files[0])) as zmx_path:
+            opm.add_from_file(str(zmx_path), t=gap_between_lenses)
+
+        # Read second lens
+        with importlib.resources.as_file(importlib.resources.files(package).joinpath(zmx_files[1])) as zmx_path:
+            opm.add_from_file(str(zmx_path), t=dist_to_screen)
+
+        opm.flip(39, 48)
+        opm.update_model()
+
+        if save:
+            output_path = Path.cwd() / "Microscope_Lens.roa"
+            opm.save_model(str(output_path))
+        return opm
 
     def nikkor_58mm(self, save: bool = False):
         """
