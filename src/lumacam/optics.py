@@ -18,6 +18,8 @@ from copy import deepcopy
 import glob
 import importlib.resources
 from enum import IntEnum
+from io import StringIO
+from contextlib import redirect_stdout
 
 class VerbosityLevel(IntEnum):
     """Verbosity levels for simulation output."""
@@ -124,6 +126,117 @@ class Lens:
             self.opm0 = self.load_zmx_lens(zmx_file, focus=focus, save=False)
         else:
             raise ValueError(f"Unknown lens kind: {kind}, supported lenses are ['nikkor_58mm', 'microscope', 'zmx_file']")
+
+    def get_first_order_parameters(self, opm: "OpticalModel" = None) -> pd.DataFrame:
+            """
+            Calculate the first-order optical parameters of the system and return them in a pandas DataFrame.
+            
+            Input:
+                - opm: OpticalModel, Optional, Optical model to analyze. If None, uses self.opm0.
+            
+            Returns:
+                - pd.DataFrame: DataFrame containing first-order parameters with original and user-friendly names.
+            """
+            if opm is None:
+                opm = self.opm0
+            pm = opm['parax_model']
+            
+            # Capture printed output from first_order_data()
+            output = StringIO()
+            with redirect_stdout(output):
+                pm.first_order_data()
+            output_str = output.getvalue()
+            
+            # Parse the printed output into a dictionary
+            fod = {}
+            multi_word_keys = ['pp sep', 'na obj', 'n obj', 'na img', 'n img', 'optical invariant']
+            lines = output_str.strip().split('\n')
+            for line in lines:
+                try:
+                    # Split on first number to handle multi-word keys
+                    parts = line.strip().split(maxsplit=1)
+                    if len(parts) != 2:
+                        continue
+                    key, value = parts
+                    # Check if the key is part of a multi-word key
+                    for mw_key in multi_word_keys:
+                        if line.startswith(mw_key):
+                            key = mw_key
+                            value = line[len(mw_key):].strip()
+                            break
+                    # Convert value to float if possible
+                    try:
+                        fod[key] = float(value)
+                    except ValueError:
+                        fod[key] = value
+                except ValueError:
+                    continue  # Skip malformed lines
+            
+            # If no parameters were parsed, try fallback to parax_model attributes
+            if not fod:
+                fod = {}
+                try:
+                    fod['efl'] = pm.efl if hasattr(pm, 'efl') else float('nan')
+                    fod['f'] = pm.f if hasattr(pm, 'f') else float('nan')
+                    fod['f\''] = pm.f_prime if hasattr(pm, 'f_prime') else float('nan')
+                    fod['ffl'] = pm.ffl if hasattr(pm, 'ffl') else float('nan')
+                    fod['pp1'] = pm.pp1 if hasattr(pm, 'pp1') else float('nan')
+                    fod['bfl'] = pm.bfl if hasattr(pm, 'bfl') else float('nan')
+                    fod['ppk'] = pm.ppk if hasattr(pm, 'ppk') else float('nan')
+                    fod['pp sep'] = pm.pp_sep if hasattr(pm, 'pp_sep') else float('nan')
+                    fod['f/#'] = pm.f_number if hasattr(pm, 'f_number') else opm['optical_spec'].pupil.value
+                    fod['m'] = pm.magnification if hasattr(pm, 'magnification') else float('nan')
+                    fod['red'] = pm.reduction if hasattr(pm, 'reduction') else float('nan')
+                    fod['obj_dist'] = pm.obj_dist if hasattr(pm, 'obj_dist') else opm.seq_model.gaps[0].thi
+                    fod['obj_ang'] = pm.obj_angle if hasattr(pm, 'obj_angle') else opm['optical_spec'].field_of_view.flds[-1]
+                    fod['enp_dist'] = pm.enp_dist if hasattr(pm, 'enp_dist') else float('nan')
+                    fod['enp_radius'] = pm.enp_radius if hasattr(pm, 'enp_radius') else float('nan')
+                    fod['na obj'] = pm.na_obj if hasattr(pm, 'na_obj') else float('nan')
+                    fod['n obj'] = pm.n_obj if hasattr(pm, 'n_obj') else 1.0
+                    fod['img_dist'] = pm.img_dist if hasattr(pm, 'img_dist') else float('nan')
+                    fod['img_ht'] = pm.img_height if hasattr(pm, 'img_height') else float('nan')
+                    fod['exp_dist'] = pm.exp_dist if hasattr(pm, 'exp_dist') else float('nan')
+                    fod['exp_radius'] = pm.exp_radius if hasattr(pm, 'exp_radius') else float('nan')
+                    fod['na img'] = pm.na_img if hasattr(pm, 'na_img') else float('nan')
+                    fod['n img'] = pm.n_img if hasattr(pm, 'n_img') else 1.0
+                    fod['optical invariant'] = pm.opt_inv if hasattr(pm, 'opt_inv') else float('nan')
+                except Exception as e:
+                    raise RuntimeError(f"Failed to retrieve first-order parameters: {e}")
+
+            # Define user-friendly names for first-order parameters
+            param_names = {
+                'efl': 'Effective Focal Length (mm)',
+                'f': 'Focal Length (mm)',
+                'f\'': 'Back Focal Length (mm)',
+                'ffl': 'Front Focal Length (mm)',
+                'pp1': 'Front Principal Point (mm)',
+                'bfl': 'Back Focal Length to Image (mm)',
+                'ppk': 'Back Principal Point (mm)',
+                'pp sep': 'Principal Plane Separation (mm)',
+                'f/#': 'F-Number',
+                'm': 'Magnification',
+                'red': 'Reduction Ratio',
+                'obj_dist': 'Object Distance (mm)',
+                'obj_ang': 'Object Field Angle (degrees)',
+                'enp_dist': 'Entrance Pupil Distance (mm)',
+                'enp_radius': 'Entrance Pupil Radius (mm)',
+                'na obj': 'Object Numerical Aperture',
+                'n obj': 'Object Space Refractive Index',
+                'img_dist': 'Image Distance (mm)',
+                'img_ht': 'Image Height (mm)',
+                'exp_dist': 'Exit Pupil Distance (mm)',
+                'exp_radius': 'Exit Pupil Radius (mm)',
+                'na img': 'Image Numerical Aperture',
+                'n img': 'Image Space Refractive Index',
+                'optical invariant': 'Optical Invariant'
+            }
+            
+            # Create DataFrame with original and friendly names
+            df = pd.DataFrame.from_dict(fod, orient='index', columns=['Value'])
+            df['Original Name'] = df.index
+            df.index = [param_names.get(idx, idx) for idx in df.index]
+            df = df[['Original Name', 'Value']]
+            return df
 
     def load_zmx_lens(self, zmx_file: str, focus: float = None, dist_from_obj: float = None,
                       gap_between_lenses: float = None, dist_to_screen: float = None,
@@ -399,6 +512,7 @@ class Lens:
             opm.save_model(save_path)
         
         return opm
+
 
     def _chunk_rays(self, rays, chunk_size):
         """
