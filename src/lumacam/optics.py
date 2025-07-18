@@ -85,24 +85,27 @@ class Lens:
 
 
 
-    def microscope_nikor_80_200mm_canon_50mm(self, zoom: float = 80,
+    def microscope_nikor_80_200mm_canon_50mm(self, focus: float = 80,
                                             dist_from_obj: float = 461.535,
                                             gap_between_lenses: float = 20., 
                                             dist_to_screen: float = 20,
+                                            fnumber: float = 2.8,
                                             save: bool = False):
         """
         Microscope lens model
         With first lens is Nikkor 80-200mm f/2.8 and second lens is Canon 50mm f/1.8 flipped
         
         Input:
-        zoom: float
-            Zoom focal lens in mm for the microscope lens model (default is 80mm)
+        focus: float
+            Focus focal lens in mm for the microscope lens model (default is 80mm)
         dist_from_obj: float
             Distance from the object to the first lens in mm (default is 461.535mm)
         gap_between_lenses: float
             Gap between the two lenses in mm (default is 20mm)
         dist_to_screen: float
             Distance from the second lens to the screen in mm (default is 20mm)
+        fnumber: float
+            F-number of the optical system (default is 2.8)
         save: bool
             Save the optical model to a file
         Returns:
@@ -121,14 +124,14 @@ class Lens:
         opm.radius_mode = True
 
         sm.gaps[0].thi = dist_from_obj
-        osp.pupil.value = 20
+        osp.pupil = PupilSpec(osp, key=['image', 'f/#'], value=fnumber)
         opm.update_model()
 
         # Access .zmx files from the package's data directory
         package = 'lumacam.data'
         zmx_files = [
+            'JP1985-040604_Example01P_50mm_1.2f.zmx',
             'JP2000-019398_Example01_Tale67_80_200_AF-S_2.4f.zmx',
-            'JP1985-040604_Example01P_50mm_1.2f.zmx'
         ]
 
         # Read first lens
@@ -139,7 +142,16 @@ class Lens:
         with importlib.resources.as_file(importlib.resources.files(package).joinpath(zmx_files[1])) as zmx_path:
             opm.add_from_file(str(zmx_path), t=dist_to_screen)
 
-        opm.flip(39, 48)
+        opm.flip(1,15)
+
+        # set focus from 80 to 200mm
+        t1 = sm.gaps[24].thi
+        t2 = sm.gaps[31].thi
+
+        Δ = focus/4-20
+
+        sm.gaps[24].thi = t1 + Δ
+        sm.gaps[31].thi = t2 -Δ
         opm.update_model()
 
         if save:
