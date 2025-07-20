@@ -85,7 +85,8 @@ G4VPhysicalVolume* GeometryConstructor::createWorld() {
 
 G4LogicalVolume* GeometryConstructor::buildLShape(G4LogicalVolume* worldLog) {
     G4cout << "GeometryConstructor: Building L-shape volume..." << G4endl;
-    G4Box* arm1 = new G4Box("Arm1", 10*cm, 10*cm, 30*cm);
+    G4double minZSize = std::max(30*cm, Sim::SCINT_THICKNESS*2 + 5*cm); // Add some margin
+    G4Box* arm1 = new G4Box("Arm1", 10*cm, 10*cm, minZSize);
     G4Box* arm2 = new G4Box("Arm2", 15*cm, 10*cm, 10*cm);
     G4UnionSolid* lShapeSolid = new G4UnionSolid("LShapeSolid", arm1, arm2, nullptr, G4ThreeVector(25*cm, 0, 20*cm));
     G4Box* cutBox = new G4Box("CutBox", 50*cm, 50*cm, 100*cm);
