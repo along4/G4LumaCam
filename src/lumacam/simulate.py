@@ -48,7 +48,7 @@ class Config:
     min_theta: float = 0
     angle_unit: str = "deg"
     sample_material: str = "G4_Galactic"  # Material of the sample
-    scintillator: str = "PVT"  # Scintillator type: PVT, EJ-200, GS20
+    scintillator: str = "EJ200"  # Scintillator type: PVT, EJ-200, GS20
     sample_thickness: float = 0.02  # Sample thickness in cm (default 0.02 cm = 200 microns)
     scintillator_thickness: float = 20  # Scintillator thickness in cm (default is 20 cm)
     csv_batch_size: int = 0
@@ -78,7 +78,7 @@ class Config:
             progress_interval=100,
             csv_filename="sim_data.csv",
             sample_material="G4_Graphite",
-            scintillator="PVT",
+            scintillator="EJ200",
             sample_thickness=20,
             csv_batch_size=0,
         )
@@ -103,7 +103,7 @@ class Config:
             progress_interval=100,
             csv_filename="sim_data.csv",
             sample_material="G4_Graphite",
-            scintillator="PVT",
+            scintillator="EJ200",
             sample_thickness=20,
             csv_batch_size=0,
         )
@@ -126,7 +126,7 @@ class Config:
             progress_interval=1000,
             csv_filename="sim_data.csv",
             sample_material="G4_Galactic",
-            scintillator="PVT",
+            scintillator="EJ200",
             sample_thickness=20,
             csv_batch_size=1000,
         )
@@ -149,7 +149,7 @@ class Config:
             progress_interval=1000,
             csv_filename="sim_data.csv",
             sample_material="G4_Galactic",
-            scintillator="PVT",
+            scintillator="EJ200",
             sample_thickness=20,
             csv_batch_size=1000,
         )
@@ -174,7 +174,7 @@ class Config:
             progress_interval=100,
             csv_filename="sim_data.csv",
             sample_material="G4_Galactic",
-            scintillator="PVT",
+            scintillator="EJ200",
             sample_thickness=20,
             csv_batch_size=0,
         )
@@ -207,7 +207,7 @@ class Config:
             progress_interval=100,
             csv_filename="sim_data.csv",
             sample_material="G4_Galactic",
-            scintillator="PVT",
+            scintillator="EJ200",
             sample_thickness=20,
             csv_batch_size=0,
         )
