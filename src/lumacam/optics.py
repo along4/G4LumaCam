@@ -29,25 +29,29 @@ class VerbosityLevel(IntEnum):
 
 class Lens:
     """
-    Lens defining object with integrated data management
+    Lens defining object with integrated data management.
     """
     def __init__(self, archive: str = None, data: "pd.DataFrame" = None,
                  kind: str = "nikkor_58mm", focus: float = None, zmx_file: str = None,
                  focus_gaps: List[Tuple[int, float]] = None, dist_from_obj: float = 35.0,
                  gap_between_lenses: float = 15.0, dist_to_screen: float = 20.0, fnumber: float = 8.0):
         """
-        Lens constructor
-        Input:
-            archive: str, Optional, Name of the archive directory for saving results
-            data: pd.DataFrame, Optional, optical photon data table
-            kind: str, Optional, Lens kind, supported lenses are ['nikkor_58mm', 'microscope', 'zmx_file']
-            focus: float, Optional, Initial focus setting in mm (59.6-62.75 for nikkor_58mm, 80-200 for microscope, user-defined for zmx_file)
-            zmx_file: str, Optional, Path to a .zmx file for custom lens (used when kind='zmx_file')
-            focus_gaps: List[Tuple[int, float]], Optional, List of (gap_index, scaling_factor) for fine focus adjustment in zmx_file
-            dist_from_obj: float, Optional, Distance from the object to the first lens in mm
-            gap_between_lenses: float, Optional, Gap between lenses in mm (applicable for microscope)
-            dist_to_screen: float, Optional, Distance from the last lens to the screen in mm (applicable for microscope)
-            fnumber: float, Optional, F-number of the optical system
+        Initialize a Lens object with optical model and data management.
+
+        Args:
+            archive (str, optional): Directory path for saving results.
+            data (pd.DataFrame, optional): Optical photon data table.
+            kind (str, optional): Lens type ('nikkor_58mm', 'microscope', 'zmx_file'). Defaults to 'nikkor_58mm'.
+            focus (float, optional): Initial focus setting in mm (59.6-62.75 for nikkor_58mm, 80-200 for microscope).
+            zmx_file (str, optional): Path to .zmx file for custom lens (required when kind='zmx_file').
+            focus_gaps (List[Tuple[int, float]], optional): List of (gap_index, scaling_factor) for zmx_file focus adjustment.
+            dist_from_obj (float, optional): Distance from object to first lens in mm. Defaults to 35.0.
+            gap_between_lenses (float, optional): Gap between lenses in mm. Defaults to 15.0.
+            dist_to_screen (float, optional): Distance from last lens to screen in mm. Defaults to 20.0.
+            fnumber (float, optional): F-number of the optical system. Defaults to 8.0.
+
+        Raises:
+            ValueError: If invalid lens kind, missing zmx_file for 'zmx_file', or invalid focus range.
         """
         self.kind = kind
         self.focus = focus
@@ -114,148 +118,161 @@ class Lens:
             raise ValueError("Either archive or data must be provided")
 
         # Initialize optical models
-        self.opm0 = None  # Base optical model (initial setup)
-        self.opm = None   # Current optical model (updated by refocus)
+        self.opm0 = None  # Base optical model
+        self.opm = None   # Current optical model
         if self.kind == "nikkor_58mm":
-            self.opm0 = self.nikkor_58mm(save=False)
-            self.opm = deepcopy(self.opm0)  # Initialize opm as a copy of opm0
+            zmx_path = str(importlib.resources.files('lumacam.data').joinpath('WO2019-229849_Example01P.zmx'))
+            self.opm0 = self.load_zmx_lens(zmx_path, focus=focus, save=False)
+            self.opm = deepcopy(self.opm0)
             if focus is not None:
                 self.opm = self.refocus(zfine=focus, save=False)
         elif self.kind == "microscope":
-            self.opm = self.microscope_nikor_80_200mm_canon_50mm(focus=focus or 200, save=False)
+            self.opm0 = self.microscope_nikor_80_200mm_canon_50mm(focus=focus or 200, save=False)
+            self.opm = deepcopy(self.opm0)
+            if focus is not None:
+                self.opm = self.refocus(zfine=focus, save=False)
         elif self.kind == "zmx_file":
             self.opm0 = self.load_zmx_lens(zmx_file, focus=focus, save=False)
             self.opm = deepcopy(self.opm0)
+            if focus is not None:
+                self.opm = self.refocus(zfine=focus, save=False)
         else:
-            raise ValueError(f"Unknown lens kind: {kind}, supported lenses are ['nikkor_58mm', 'microscope', 'zmx_file']")
-            
-    def get_first_order_parameters(self, opm: "OpticalModel" = None) -> pd.DataFrame:
-            """
-            Calculate the first-order optical parameters of the system and return them in a pandas DataFrame.
-            
-            Input:
-                - opm: OpticalModel, Optional, Optical model to analyze. If None, uses self.opm0.
-            
-            Returns:
-                - pd.DataFrame: DataFrame containing first-order parameters with original and user-friendly names.
-            """
-            if opm is None:
-                opm = self.opm0
-            pm = opm['parax_model']
-            
-            # Capture printed output from first_order_data()
-            output = StringIO()
-            with redirect_stdout(output):
-                pm.first_order_data()
-            output_str = output.getvalue()
-            
-            # Parse the printed output into a dictionary
-            fod = {}
-            multi_word_keys = ['pp sep', 'na obj', 'n obj', 'na img', 'n img', 'optical invariant']
-            lines = output_str.strip().split('\n')
-            for line in lines:
-                try:
-                    # Split on first number to handle multi-word keys
-                    parts = line.strip().split(maxsplit=1)
-                    if len(parts) != 2:
-                        continue
-                    key, value = parts
-                    # Check if the key is part of a multi-word key
-                    for mw_key in multi_word_keys:
-                        if line.startswith(mw_key):
-                            key = mw_key
-                            value = line[len(mw_key):].strip()
-                            break
-                    # Convert value to float if possible
-                    try:
-                        fod[key] = float(value)
-                    except ValueError:
-                        fod[key] = value
-                except ValueError:
-                    continue  # Skip malformed lines
-            
-            # If no parameters were parsed, try fallback to parax_model attributes
-            if not fod:
-                fod = {}
-                try:
-                    fod['efl'] = pm.efl if hasattr(pm, 'efl') else float('nan')
-                    fod['f'] = pm.f if hasattr(pm, 'f') else float('nan')
-                    fod['f\''] = pm.f_prime if hasattr(pm, 'f_prime') else float('nan')
-                    fod['ffl'] = pm.ffl if hasattr(pm, 'ffl') else float('nan')
-                    fod['pp1'] = pm.pp1 if hasattr(pm, 'pp1') else float('nan')
-                    fod['bfl'] = pm.bfl if hasattr(pm, 'bfl') else float('nan')
-                    fod['ppk'] = pm.ppk if hasattr(pm, 'ppk') else float('nan')
-                    fod['pp sep'] = pm.pp_sep if hasattr(pm, 'pp_sep') else float('nan')
-                    fod['f/#'] = pm.f_number if hasattr(pm, 'f_number') else opm['optical_spec'].pupil.value
-                    fod['m'] = pm.magnification if hasattr(pm, 'magnification') else float('nan')
-                    fod['red'] = pm.reduction if hasattr(pm, 'reduction') else float('nan')
-                    fod['obj_dist'] = pm.obj_dist if hasattr(pm, 'obj_dist') else opm.seq_model.gaps[0].thi
-                    fod['obj_ang'] = pm.obj_angle if hasattr(pm, 'obj_angle') else opm['optical_spec'].field_of_view.flds[-1]
-                    fod['enp_dist'] = pm.enp_dist if hasattr(pm, 'enp_dist') else float('nan')
-                    fod['enp_radius'] = pm.enp_radius if hasattr(pm, 'enp_radius') else float('nan')
-                    fod['na obj'] = pm.na_obj if hasattr(pm, 'na_obj') else float('nan')
-                    fod['n obj'] = pm.n_obj if hasattr(pm, 'n_obj') else 1.0
-                    fod['img_dist'] = pm.img_dist if hasattr(pm, 'img_dist') else float('nan')
-                    fod['img_ht'] = pm.img_height if hasattr(pm, 'img_height') else float('nan')
-                    fod['exp_dist'] = pm.exp_dist if hasattr(pm, 'exp_dist') else float('nan')
-                    fod['exp_radius'] = pm.exp_radius if hasattr(pm, 'exp_radius') else float('nan')
-                    fod['na img'] = pm.na_img if hasattr(pm, 'na_img') else float('nan')
-                    fod['n img'] = pm.n_img if hasattr(pm, 'n_img') else 1.0
-                    fod['optical invariant'] = pm.opt_inv if hasattr(pm, 'opt_inv') else float('nan')
-                except Exception as e:
-                    raise RuntimeError(f"Failed to retrieve first-order parameters: {e}")
+            raise ValueError(f"Unknown lens kind: {kind}")
 
-            # Define user-friendly names for first-order parameters
-            param_names = {
-                'efl': 'Effective Focal Length (mm)',
-                'f': 'Focal Length (mm)',
-                'f\'': 'Back Focal Length (mm)',
-                'ffl': 'Front Focal Length (mm)',
-                'pp1': 'Front Principal Point (mm)',
-                'bfl': 'Back Focal Length to Image (mm)',
-                'ppk': 'Back Principal Point (mm)',
-                'pp sep': 'Principal Plane Separation (mm)',
-                'f/#': 'F-Number',
-                'm': 'Magnification',
-                'red': 'Reduction Ratio',
-                'obj_dist': 'Object Distance (mm)',
-                'obj_ang': 'Object Field Angle (degrees)',
-                'enp_dist': 'Entrance Pupil Distance (mm)',
-                'enp_radius': 'Entrance Pupil Radius (mm)',
-                'na obj': 'Object Numerical Aperture',
-                'n obj': 'Object Space Refractive Index',
-                'img_dist': 'Image Distance (mm)',
-                'img_ht': 'Image Height (mm)',
-                'exp_dist': 'Exit Pupil Distance (mm)',
-                'exp_radius': 'Exit Pupil Radius (mm)',
-                'na img': 'Image Numerical Aperture',
-                'n img': 'Image Space Refractive Index',
-                'optical invariant': 'Optical Invariant'
-            }
-            
-            # Create DataFrame with original and friendly names
-            df = pd.DataFrame.from_dict(fod, orient='index', columns=['Value'])
-            df['Original Name'] = df.index
-            df.index = [param_names.get(idx, idx) for idx in df.index]
-            df = df[['Original Name', 'Value']]
-            return df
+    def get_first_order_parameters(self, opm: "OpticalModel" = None) -> pd.DataFrame:
+        """
+        Calculate first-order optical parameters and return them as a DataFrame.
+
+        Args:
+            opm (OpticalModel, optional): Optical model to analyze. Defaults to self.opm0.
+
+        Returns:
+            pd.DataFrame: DataFrame with first-order parameters and user-friendly names.
+
+        Raises:
+            RuntimeError: If parameters cannot be retrieved.
+        """
+        if opm is None:
+            opm = self.opm0
+        pm = opm['parax_model']
+        
+        # Capture printed output from first_order_data()
+        output = StringIO()
+        with redirect_stdout(output):
+            pm.first_order_data()
+        output_str = output.getvalue()
+        
+        # Parse the printed output into a dictionary
+        fod = {}
+        multi_word_keys = ['pp sep', 'na obj', 'n obj', 'na img', 'n img', 'optical invariant']
+        lines = output_str.strip().split('\n')
+        for line in lines:
+            try:
+                parts = line.strip().split(maxsplit=1)
+                if len(parts) != 2:
+                    continue
+                key, value = parts
+                for mw_key in multi_word_keys:
+                    if line.startswith(mw_key):
+                        key = mw_key
+                        value = line[len(mw_key):].strip()
+                        break
+                try:
+                    fod[key] = float(value)
+                except ValueError:
+                    fod[key] = value
+            except ValueError:
+                continue
+        
+        # Fallback to parax_model attributes if parsing fails
+        if not fod:
+            fod = {}
+            try:
+                fod['efl'] = pm.efl if hasattr(pm, 'efl') else float('nan')
+                fod['f'] = pm.f if hasattr(pm, 'f') else float('nan')
+                fod['f\''] = pm.f_prime if hasattr(pm, 'f_prime') else float('nan')
+                fod['ffl'] = pm.ffl if hasattr(pm, 'ffl') else float('nan')
+                fod['pp1'] = pm.pp1 if hasattr(pm, 'pp1') else float('nan')
+                fod['bfl'] = pm.bfl if hasattr(pm, 'bfl') else float('nan')
+                fod['ppk'] = pm.ppk if hasattr(pm, 'ppk') else float('nan')
+                fod['pp sep'] = pm.pp_sep if hasattr(pm, 'pp_sep') else float('nan')
+                fod['f/#'] = pm.f_number if hasattr(pm, 'f_number') else opm['optical_spec'].pupil.value
+                fod['m'] = pm.magnification if hasattr(pm, 'magnification') else float('nan')
+                fod['red'] = pm.reduction if hasattr(pm, 'reduction') else float('nan')
+                fod['obj_dist'] = pm.obj_dist if hasattr(pm, 'obj_dist') else opm.seq_model.gaps[0].thi
+                fod['obj_ang'] = pm.obj_angle if hasattr(pm, 'obj_angle') else opm['optical_spec'].field_of_view.flds[-1]
+                fod['enp_dist'] = pm.enp_dist if hasattr(pm, 'enp_dist') else float('nan')
+                fod['enp_radius'] = pm.enp_radius if hasattr(pm, 'enp_radius') else float('nan')
+                fod['na obj'] = pm.na_obj if hasattr(pm, 'na_obj') else float('nan')
+                fod['n obj'] = pm.n_obj if hasattr(pm, 'n_obj') else 1.0
+                fod['img_dist'] = pm.img_dist if hasattr(pm, 'img_dist') else float('nan')
+                fod['img_ht'] = pm.img_height if hasattr(pm, 'img_height') else float('nan')
+                fod['exp_dist'] = pm.exp_dist if hasattr(pm, 'exp_dist') else float('nan')
+                fod['exp_radius'] = pm.exp_radius if hasattr(pm, 'exp_radius') else float('nan')
+                fod['na img'] = pm.na_img if hasattr(pm, 'na_img') else float('nan')
+                fod['n img'] = pm.n_img if hasattr(pm, 'n_img') else 1.0
+                fod['optical invariant'] = pm.opt_inv if hasattr(pm, 'opt_inv') else float('nan')
+            except Exception as e:
+                raise RuntimeError(f"Failed to retrieve first-order parameters: {e}")
+
+        # Define user-friendly names
+        param_names = {
+            'efl': 'Effective Focal Length (mm)',
+            'f': 'Focal Length (mm)',
+            'f\'': 'Back Focal Length (mm)',
+            'ffl': 'Front Focal Length (mm)',
+            'pp1': 'Front Principal Point (mm)',
+            'bfl': 'Back Focal Length to Image (mm)',
+            'ppk': 'Back Principal Point (mm)',
+            'pp sep': 'Principal Plane Separation (mm)',
+            'f/#': 'F-Number',
+            'm': 'Magnification',
+            'red': 'Reduction Ratio',
+            'obj_dist': 'Object Distance (mm)',
+            'obj_ang': 'Object Field Angle (degrees)',
+            'enp_dist': 'Entrance Pupil Distance (mm)',
+            'enp_radius': 'Entrance Pupil Radius (mm)',
+            'na obj': 'Object Numerical Aperture',
+            'n obj': 'Object Space Refractive Index',
+            'img_dist': 'Image Distance (mm)',
+            'img_ht': 'Image Height (mm)',
+            'exp_dist': 'Exit Pupil Distance (mm)',
+            'exp_radius': 'Exit Pupil Radius (mm)',
+            'na img': 'Image Numerical Aperture',
+            'n img': 'Image Space Refractive Index',
+            'optical invariant': 'Optical Invariant'
+        }
+        
+        df = pd.DataFrame.from_dict(fod, orient='index', columns=['Value'])
+        df['Original Name'] = df.index
+        df.index = [param_names.get(idx, idx) for idx in df.index]
+        df = df[['Original Name', 'Value']]
+        return df
 
     def load_zmx_lens(self, zmx_file: str, focus: float = None, dist_from_obj: float = None,
                       gap_between_lenses: float = None, dist_to_screen: float = None,
-                      fnumber: float = None, save: bool = False):
+                      fnumber: float = None, save: bool = False) -> OpticalModel:
         """
-        Load a lens from a .zmx file
-        Input:
-            zmx_file: str, Path to the .zmx file
-            focus: float, Optional, Initial focus setting in mm
-            dist_from_obj: float, Optional, Distance from the object to the first lens in mm
-            gap_between_lenses: float, Optional, Gap between lenses in mm
-            dist_to_screen: float, Optional, Distance from the last lens to the screen in mm
-            fnumber: float, Optional, F-number of the optical system
-            save: bool, Optional, Save the optical model to a file
+        Load a lens from a .zmx file.
+
+        Args:
+            zmx_file (str): Path to the .zmx file.
+            focus (float, optional): Initial focus setting in mm.
+            dist_from_obj (float, optional): Distance from object to first lens in mm.
+            gap_between_lenses (float, optional): Gap between lenses in mm.
+            dist_to_screen (float, optional): Distance from last lens to screen in mm.
+            fnumber (float, optional): F-number of the optical system.
+            save (bool, optional): Save the optical model to a file.
+
         Returns:
-            OpticalModel
+            OpticalModel: The loaded optical model.
+
+        Raises:
+            FileNotFoundError: If the .zmx file does not exist.
         """
+        if not Path(zmx_file).exists():
+            raise FileNotFoundError(f".zmx file not found: {zmx_file}")
+
         opm = OpticalModel()
         sm = opm.seq_model
         osp = opm.optical_spec
@@ -282,35 +299,47 @@ class Lens:
 
     def microscope_nikor_80_200mm_canon_50mm(self, focus: float = 200, dist_from_obj: float = 35.0,
                                              gap_between_lenses: float = 15.0, dist_to_screen: float = 20.0,
-                                             fnumber: float = 8.0, save: bool = False):
+                                             fnumber: float = 8.0, save: bool = False) -> OpticalModel:
         """
-        Microscope lens model
-        With first lens is Nikkor 80-200mm f/2.8 and second lens is Canon 50mm f/1.8 flipped
-        
-        Input:
-            focus: float, Focus focal lens in mm for the microscope lens model (default is 200mm)
-            dist_from_obj: float, Distance from the object to the first lens in mm (default is 35.0mm)
-            gap_between_lenses: float, Gap between the two lenses in mm (default is 15.0mm)
-            dist_to_screen: float, Distance from the second lens to the screen in mm (default is 20.0mm)
-            fnumber: float, F-number of the optical system (default is 8.0)
-            save: bool, Save the optical model to a file
-        Returns:
-            OpticalModel
-        """
-        opm = OpticalModel()
-        sm = opm['seq_model']
-        osp = opm['optical_spec']
-        pm = opm['parax_model']
-        em = opm['ele_model']
-        pt = opm['part_tree']
+        Create a microscope lens model with Nikkor 80-200mm f/2.8 and flipped Canon 50mm f/1.8 lenses.
 
-        sm.do_apertures = False
+        Args:
+            focus (float): Focus setting in mm (80-200). Defaults to 200.
+            dist_from_obj (float): Distance from object to first lens in mm. Defaults to 35.0.
+            gap_between_lenses (float): Gap between the two lenses in mm. Defaults to 15.0.
+            dist_to_screen (float): Distance from second lens to screen in mm. Defaults to 20.0.
+            fnumber (float): F-number of the optical system. Defaults to 8.0.
+            save (bool): Save the optical model to a file.
+
+        Returns:
+            OpticalModel: The configured microscope optical model.
+
+        Raises:
+            ValueError: If focus is out of valid range or parameters are invalid.
+            FileNotFoundError: If .zmx files are not found.
+        """
+        # Validate inputs
+        if not (80 <= focus <= 200):
+            raise ValueError(f"Focus for microscope must be between 80 and 200 mm, got {focus}")
+        if dist_from_obj <= 0:
+            raise ValueError(f"dist_from_obj must be positive, got {dist_from_obj}")
+        if gap_between_lenses < 0:
+            raise ValueError(f"gap_between_lenses cannot be negative, got {gap_between_lenses}")
+        if dist_to_screen < 0:
+            raise ValueError(f"dist_to_screen cannot be negative, got {dist_to_screen}")
+        if fnumber <= 0:
+            raise ValueError(f"fnumber must be positive, got {fnumber}")
+
+        opm = OpticalModel()
+        sm = opm.seq_model
+        osp = opm.optical_spec
         opm.system_spec.title = 'Microscope Lens Model'
         opm.system_spec.dimensions = 'MM'
         opm.radius_mode = True
 
         sm.gaps[0].thi = dist_from_obj
         osp.pupil = PupilSpec(osp, key=['image', 'f/#'], value=fnumber)
+        sm.do_apertures = False
         opm.update_model()
 
         # Access .zmx files from the package's data directory
@@ -320,204 +349,122 @@ class Lens:
             'JP2000-019398_Example01_Tale67_80_200_AF-S_2.4f.zmx',
         ]
 
-        # Read first lens
+        # Load first lens (Canon 50mm)
         with importlib.resources.as_file(importlib.resources.files(package).joinpath(zmx_files[0])) as zmx_path:
+            if not zmx_path.exists():
+                raise FileNotFoundError(f".zmx file not found: {zmx_path}")
             opm.add_from_file(str(zmx_path), t=gap_between_lenses)
 
-        # Read second lens
+        # Load second lens (Nikkor 80-200mm)
         with importlib.resources.as_file(importlib.resources.files(package).joinpath(zmx_files[1])) as zmx_path:
+            if not zmx_path.exists():
+                raise FileNotFoundError(f".zmx file not found: {zmx_path}")
             opm.add_from_file(str(zmx_path), t=dist_to_screen)
 
-        opm.flip(1,15)
+        # Flip the Canon 50mm lens
+        opm.flip(1, 15)
 
+        # Store base model
         self.opm0 = deepcopy(opm)
 
-        # Set focus from 80 to 200mm
-        t1 = sm.gaps[24].thi
-        t2 = sm.gaps[31].thi
-        Δ = focus / 4 - 20
-        sm.gaps[24].thi = t1 + Δ
-        sm.gaps[31].thi = t2 - Δ
-        opm.update_model()
+        # Apply focus adjustment using refocus
+        opm = self.refocus(opm=opm, zfine=focus, save=False)
 
         if save:
             output_path = self.archive / "Microscope_Lens.roa"
             opm.save_model(str(output_path))
         return opm
 
-    def nikkor_58mm(self, dist_from_obj: float = 461.535, fnumber: float = 0.98, save: bool = False):
+    def nikkor_58mm(self, dist_from_obj: float = 461.535, fnumber: float = 0.98, save: bool = False) -> OpticalModel:
         """
-        Nikkor 58mm f/0.95 lens
-        Input:
-            dist_from_obj: float, Distance from the object to the first lens in mm (default is 461.535mm)
-            fnumber: float, F-number of the optical system (default is 0.98)
-            save: bool, Save the optical model to a file
+        Create a Nikkor 58mm f/0.95 lens model from a .zmx file.
+
+        Args:
+            dist_from_obj (float): Distance from object to first lens in mm. Defaults to 461.535.
+            fnumber (float): F-number of the optical system. Defaults to 0.98.
+            save (bool): Save the optical model to a file.
+
         Returns:
-            OpticalModel
+            OpticalModel: The configured Nikkor 58mm optical model.
+
+        Raises:
+            FileNotFoundError: If the .zmx file is not found.
         """
-        opm = OpticalModel()
+        zmx_path = str(importlib.resources.files('lumacam.data').joinpath('WO2019-229849_Example01P.zmx'))
+        return self.load_zmx_lens(
+            zmx_file=zmx_path,
+            dist_from_obj=dist_from_obj,
+            fnumber=fnumber,
+            save=save
+        )
+
+    def refocus(self, opm: "OpticalModel" = None, zscan: float = 0, zfine: float = 0, fnumber: float = None, save: bool = False) -> OpticalModel:
+        """
+        Refocus the lens based on the lens type, starting from self.opm0.
+
+        Args:
+            opm (OpticalModel, optional): Optical model to refocus. Defaults to self.opm0.
+            zscan (float): Distance to move the lens assembly in mm (affects object distance). Defaults to 0.
+            zfine (float): Fine focus adjustment in mm. Defaults to 0.
+            fnumber (float, optional): New f-number for the lens.
+            save (bool): Save the optical model to a file.
+
+        Returns:
+            OpticalModel: The refocused optical model.
+
+        Raises:
+            ValueError: If lens kind is unsupported or focus parameters are invalid.
+        """
+        opm = deepcopy(self.opm0) if opm is None else deepcopy(opm)
         sm = opm.seq_model
         osp = opm.optical_spec
-        pm = opm.parax_model
-        osp.pupil = PupilSpec(osp, key=['image', 'f/#'], value=fnumber)
-        osp.field_of_view = FieldSpec(osp, key=['object', 'angle'], flds=[0., 19.98])
-        osp.spectral_region = WvlSpec([(486.1327, 0.5), (587.5618, 1.0), (656.2725, 0.5)], ref_wl=1)
-        opm.system_spec.title = 'WO2019-229849 Example 1 (Nikkor Z 58mm f/0.95 S)'
-        opm.system_spec.dimensions = 'MM'
-        opm.radius_mode = True
-        sm.gaps[0].thi = dist_from_obj
-        sm.add_surface([108.488, 7.65, 1.90265, 35.77])
-        sm.ifcs[sm.cur_surface].profile = EvenPolynomial(r=108.488, cc=0,
-                coefs=[0.0, -3.82177e-07, -6.06486e-11, -3.80172e-15, -1.32266e-18, 0, 0])
-        sm.ifcs[sm.cur_surface].max_aperture = 33.4
-        sm.add_surface([-848.55, 2.8, 1.55298, 55.07])
-        sm.ifcs[sm.cur_surface].max_aperture = 32.91
-        sm.add_surface([50.252, 18.12])
-        sm.ifcs[sm.cur_surface].max_aperture = 28.97
-        sm.add_surface([-60.72, 2.8, 1.61266, 44.46])
-        sm.ifcs[sm.cur_surface].max_aperture = 29.14
-        sm.add_surface([2497.5, 9.15, 1.59319, 67.9])
-        sm.ifcs[sm.cur_surface].max_aperture = 32.66
-        sm.add_surface([-77.239, 0.4])
-        sm.ifcs[sm.cur_surface].max_aperture = 32.66
-        sm.add_surface([113.763, 10.95, 1.8485, 43.79])
-        sm.ifcs[sm.cur_surface].max_aperture = 35.45
-        sm.add_surface([-178.06, 0.4])
-        sm.ifcs[sm.cur_surface].max_aperture = 35.45
-        sm.add_surface([70.659, 9.74, 1.59319, 67.9])
-        sm.ifcs[sm.cur_surface].max_aperture = 32.5
-        sm.add_surface([-1968.5, 0.2])
-        sm.ifcs[sm.cur_surface].max_aperture = 32.5
-        sm.add_surface([289.687, 8, 1.59319, 67.9])
-        sm.ifcs[sm.cur_surface].max_aperture = 30.53
-        sm.add_surface([-97.087, 2.8, 1.738, 32.33])
-        sm.ifcs[sm.cur_surface].max_aperture = 29.71
-        sm.add_surface([47.074, 8.7])
-        sm.ifcs[sm.cur_surface].max_aperture = 25.12
-        sm.add_surface([0, 5.29])
-        sm.set_stop()
-        sm.ifcs[sm.cur_surface].max_aperture = 23.959
-        sm.add_surface([-95.23, 2.2, 1.61266, 44.46])
-        sm.ifcs[sm.cur_surface].max_aperture = 24.96
-        sm.add_surface([41.204, 11.55, 1.49782, 82.57])
-        sm.ifcs[sm.cur_surface].max_aperture = 24.96
-        sm.add_surface([-273.092, 0.2])
-        sm.ifcs[sm.cur_surface].max_aperture = 24.96
-        sm.add_surface([76.173, 9.5, 1.883, 40.69])
-        sm.ifcs[sm.cur_surface].max_aperture = 25.56
-        sm.add_surface([-101.575, 0.2])
-        sm.ifcs[sm.cur_surface].max_aperture = 25.56
-        sm.add_surface([176.128, 7.45, 1.95375, 32.33])
-        sm.ifcs[sm.cur_surface].profile = EvenPolynomial(r=176.128, cc=0,
-                coefs=[0.0, -1.15028e-06, -4.51771e-10, 2.7267e-13, -7.66812e-17, 0, 0])
-        sm.ifcs[sm.cur_surface].max_aperture = 23.4
-        sm.add_surface([-67.221, 1.8, 1.738, 32.33])
-        sm.ifcs[sm.cur_surface].max_aperture = 22.68
-        sm.add_surface([55.51, 2.68])
-        sm.ifcs[sm.cur_surface].max_aperture = 19.92
-        sm.add_surface([71.413, 6.35, 1.883, 40.69])
-        sm.ifcs[sm.cur_surface].max_aperture = 19.73
-        sm.add_surface([-115.025, 1.81, 1.69895, 30.13])
-        sm.ifcs[sm.cur_surface].max_aperture = 19.73
-        sm.add_surface([46.943, 0.8])
-        sm.ifcs[sm.cur_surface].max_aperture = 19.73
-        sm.add_surface([55.281, 9.11, 1.883, 40.69])
-        sm.ifcs[sm.cur_surface].max_aperture = 19.47
-        sm.add_surface([-144.041, 3, 1.76554, 46.76])
-        sm.ifcs[sm.cur_surface].max_aperture = 19.14
-        sm.add_surface([52.858, 14.5])
-        sm.ifcs[sm.cur_surface].profile = EvenPolynomial(r=52.858, cc=0,
-                coefs=[0.0, 3.18645e-06, -1.14718e-08, 7.74567e-11, -2.24225e-13, 3.3479e-16, -1.7047e-19])
-        sm.ifcs[sm.cur_surface].max_aperture = 19.14
-        sm.add_surface([0, 1.6, 1.5168, 64.14])
-        sm.ifcs[sm.cur_surface].max_aperture = 22.15
-        sm.add_surface([0, 1])
-        sm.ifcs[sm.cur_surface].max_aperture = 22.15
+        
+        if self.kind == "nikkor_58mm":
+            if zfine != 0:
+                if not (59.6 <= zfine <= 62.75):
+                    raise ValueError(f"zfine for nikkor_58mm must be between 59.6 and 62.75 mm, got {zfine}")
+                Δ = zfine / 6.03 + 59.3
+                sm.gaps[-9].thi = Δ
+            sm.gaps[0].thi = self.dist_from_obj + zscan
+            
+        elif self.kind == "microscope":
+            if zfine != 0:
+                if not (80 <= zfine <= 200):
+                    raise ValueError(f"zfine for microscope must be between 80 and 200 mm, got {zfine}")
+                t1 = sm.gaps[24].thi
+                t2 = sm.gaps[31].thi
+                Δ = zfine / 4 - 20
+                sm.gaps[24].thi = t1 + Δ
+                sm.gaps[31].thi = t2 - Δ
+            sm.gaps[0].thi = self.dist_from_obj + zscan
+            
+        elif self.kind == "zmx_file":
+            if zfine != 0 and self.focus_gaps is not None:
+                for gap_index, scaling_factor in self.focus_gaps:
+                    if gap_index >= len(sm.gaps):
+                        raise ValueError(f"Invalid gap index {gap_index} for zmx_file lens")
+                    original_thi = sm.gaps[gap_index].thi
+                    sm.gaps[gap_index].thi = original_thi + zfine * scaling_factor
+            sm.gaps[0].thi = self.dist_from_obj + zscan
+            
+        else:
+            raise ValueError(f"Unsupported lens kind: {self.kind}")
+        
+        if fnumber is not None:
+            osp.pupil = PupilSpec(osp, key=['image', 'f/#'], value=fnumber)
+        
         sm.do_apertures = False
         opm.update_model()
         apply_paraxial_vignetting(opm)
+        
+        self.opm = opm
+        
         if save:
-            opm.save_model(self.archive / "Nikkor_58mm.roa")
+            fnumber_str = f"_f{fnumber:.2f}" if fnumber is not None else ""
+            save_path = self.archive / f"refocus_zscan_{zscan}_zfine_{zfine}{fnumber_str}.roa"
+            opm.save_model(save_path)
+        
         return opm
-
-    def refocus(self, opm: "OpticalModel" = None, zscan: float = 0, zfine: float = 0, fnumber: float = None, save: bool = False):
-            """
-            Refocus the lens based on the lens type (nikkor_58mm, microscope, or custom zmx file), starting from self.opm0.
-            
-            Input:
-                - opm: OpticalModel, Optional, Optical model to refocus. If None, uses self.opm0.
-                - zscan: float, Optional, Distance to move the lens assembly back/forth in mm (affects object distance).
-                - zfine: float, Optional, Fine focus adjustment in mm (affects internal lens gaps or focus dial).
-                - fnumber: float, Optional, New f-number for the lens (None = no change).
-                - save: bool, Optional, Save the optical model to a file.
-            
-            Returns:
-                - OpticalModel
-            """
-            from copy import deepcopy
-            # Always start from self.opm0 if no opm is provided
-            opm = deepcopy(self.opm0) if opm is None else deepcopy(opm)
-            sm = opm.seq_model
-            osp = opm.optical_spec
-            
-            if self.kind == "nikkor_58mm":
-                # Nikkor 58mm f/0.95 focusing
-                # zscan: Adjusts the distance from object to lens (gap[0].thi)
-                # zfine: Adjusts the internal gap using focus/6.03 + 59.3 (focus in 59.6-62.75 mm)
-                if zfine != 0:
-                    if not (59.6 <= zfine <= 62.75):
-                        raise ValueError(f"zfine for nikkor_58mm must be between 59.6 and 62.75 mm, got {zfine}")
-                    Δ = zfine / 6.03 + 59.3
-                    sm.gaps[-9].thi = Δ  # Adjust fine focus gap
-                sm.gaps[0].thi = self.dist_from_obj + zscan  # Adjust object distance
-            
-            elif self.kind == "microscope":
-                # Microscope setup focusing (Nikkor 80-200mm + Canon 50mm)
-                # zscan: Adjusts the distance from object to lens (gap[0].thi)
-                # zfine: Adjusts the focus dial (gaps[24].thi and gaps[31].thi) for 80-200mm range
-                if zfine != 0:
-                    if not (80 <= zfine <= 200):
-                        raise ValueError(f"zfine for microscope must be between 80 and 200 mm, got {zfine}")
-                    t1 = sm.gaps[24].thi  # Original thickness of gap 24
-                    t2 = sm.gaps[31].thi  # Original thickness of gap 31
-                    Δ = zfine / 4 - 20  # Map zfine to the focus adjustment range
-                    sm.gaps[24].thi = t1 + Δ
-                    sm.gaps[31].thi = t2 - Δ
-                sm.gaps[0].thi = self.dist_from_obj + zscan  # Adjust object distance
-            
-            elif self.kind == "zmx_file":
-                # Custom lens from zmx file
-                # zscan: Adjusts the distance from object to lens (gap[0].thi)
-                # zfine: Adjusts specified gaps in focus_gaps with scaling factors
-                if zfine != 0 and self.focus_gaps is not None:
-                    for gap_index, scaling_factor in self.focus_gaps:
-                        if gap_index >= len(sm.gaps):
-                            raise ValueError(f"Invalid gap index {gap_index} for zmx_file lens")
-                        original_thi = sm.gaps[gap_index].thi
-                        sm.gaps[gap_index].thi = original_thi + zfine * scaling_factor
-                sm.gaps[0].thi = self.dist_from_obj + zscan  # Adjust object distance
-            
-            else:
-                raise ValueError(f"Unsupported lens kind: {self.kind}")
-            
-            # Change the f-number if specified
-            if fnumber is not None:
-                osp.pupil = PupilSpec(osp, key=['image', 'f/#'], value=fnumber)
-            
-            # Update the model with the new settings
-            sm.do_apertures = False
-            opm.update_model()
-            apply_paraxial_vignetting(opm)
-            
-            # Update self.opm with the new optical model
-            self.opm = opm
-            
-            if save:
-                fnumber_str = f"_f{fnumber:.2f}" if fnumber is not None else ""
-                save_path = self.archive / f"refocus_zscan_{zscan}_zfine_{zfine}{fnumber_str}.roa"
-                opm.save_model(save_path)
-            
-            return opm
 
     def _chunk_rays(self, rays, chunk_size):
         """
