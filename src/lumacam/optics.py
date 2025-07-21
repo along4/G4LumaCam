@@ -56,20 +56,20 @@ class Lens:
 
         # Set default parameters based on lens kind
         if kind == "nikkor_58mm":
-            self.dist_from_obj = dist_from_obj if dist_from_obj != 35.0 else 461.535  # Default for nikkor_58mm
-            self.gap_between_lenses = 0.0  # Not applicable
-            self.dist_to_screen = 0.0  # Not applicable
-            self.fnumber = fnumber if fnumber != 8.0 else 0.98  # Default from nikkor_58mm
+            self.dist_from_obj = dist_from_obj if dist_from_obj != 35.0 else 461.535
+            self.gap_between_lenses = 0.0
+            self.dist_to_screen = 0.0
+            self.fnumber = fnumber if fnumber != 8.0 else 0.98
         elif kind == "microscope":
-            self.dist_from_obj = dist_from_obj  # Use provided or default 35.0
-            self.gap_between_lenses = gap_between_lenses  # Use provided or default 15.0
-            self.dist_to_screen = dist_to_screen  # Use provided or default 20.0
-            self.fnumber = fnumber  # Use provided or default 8.0
+            self.dist_from_obj = dist_from_obj
+            self.gap_between_lenses = gap_between_lenses
+            self.dist_to_screen = dist_to_screen
+            self.fnumber = fnumber
         elif kind == "zmx_file":
-            self.dist_from_obj = dist_from_obj  # Use provided or default 35.0
-            self.gap_between_lenses = gap_between_lenses  # Use provided or default 15.0
-            self.dist_to_screen = dist_to_screen  # Use provided or default 20.0
-            self.fnumber = fnumber  # Use provided or default 8.0
+            self.dist_from_obj = dist_from_obj
+            self.gap_between_lenses = gap_between_lenses
+            self.dist_to_screen = dist_to_screen
+            self.fnumber = fnumber
         else:
             raise ValueError(f"Unknown lens kind: {kind}, supported lenses are ['nikkor_58mm', 'microscope', 'zmx_file']")
 
@@ -87,14 +87,13 @@ class Lens:
             self.archive = Path(archive)
             self.archive.mkdir(parents=True, exist_ok=True)
 
-            # Load all sim_data_?.csv files from SimPhotons directory
             sim_photons_dir = self.archive / "SimPhotons"
             csv_files = sorted(sim_photons_dir.glob("sim_data_*.csv"))
 
             valid_dfs = []
             for file in tqdm(csv_files, desc="Loading simulation data"):
                 try:
-                    if file.stat().st_size > 100:  # Ignore empty files
+                    if file.stat().st_size > 100:
                         df = pd.read_csv(file)
                         if not df.empty:
                             valid_dfs.append(df)
@@ -114,19 +113,22 @@ class Lens:
         else:
             raise ValueError("Either archive or data must be provided")
 
-        # Initialize optical model
-        self.opm = None
+        # Initialize optical models
+        self.opm0 = None  # Base optical model (initial setup)
+        self.opm = None   # Current optical model (updated by refocus)
         if self.kind == "nikkor_58mm":
             self.opm0 = self.nikkor_58mm(save=False)
+            self.opm = deepcopy(self.opm0)  # Initialize opm as a copy of opm0
             if focus is not None:
-                self.opm0 = self.refocus(zfine=focus, save=False)
+                self.opm = self.refocus(zfine=focus, save=False)
         elif self.kind == "microscope":
-            self.opm0 = self.microscope_nikor_80_200mm_canon_50mm(focus=focus or 200, save=False)
+            self.opm = self.microscope_nikor_80_200mm_canon_50mm(focus=focus or 200, save=False)
         elif self.kind == "zmx_file":
             self.opm0 = self.load_zmx_lens(zmx_file, focus=focus, save=False)
+            self.opm = deepcopy(self.opm0)
         else:
             raise ValueError(f"Unknown lens kind: {kind}, supported lenses are ['nikkor_58mm', 'microscope', 'zmx_file']")
-
+            
     def get_first_order_parameters(self, opm: "OpticalModel" = None) -> pd.DataFrame:
             """
             Calculate the first-order optical parameters of the system and return them in a pandas DataFrame.
@@ -328,6 +330,8 @@ class Lens:
 
         opm.flip(1,15)
 
+        self.opm0 = deepcopy(opm)
+
         # Set focus from 80 to 200mm
         t1 = sm.gaps[24].thi
         t2 = sm.gaps[31].thi
@@ -437,82 +441,83 @@ class Lens:
         return opm
 
     def refocus(self, opm: "OpticalModel" = None, zscan: float = 0, zfine: float = 0, fnumber: float = None, save: bool = False):
-        """
-        Refocus the lens based on the lens type (nikkor_58mm, microscope, or custom zmx file).
-        
-        Input:
-            - opm: OpticalModel, Optional, Optical model to refocus. If None, uses self.opm0.
-            - zscan: float, Optional, Distance to move the lens assembly back/forth in mm (affects object distance).
-            - zfine: float, Optional, Fine focus adjustment in mm (affects internal lens gaps or focus dial).
-            - fnumber: float, Optional, New f-number for the lens (None = no change).
-            - save: bool, Optional, Save the optical model to a file.
-        
-        Returns:
-            - OpticalModel
-        """
-        from copy import deepcopy
-        if opm is None:
-            opm = self.opm0
-        opm = deepcopy(opm)
-        sm = opm.seq_model
-        osp = opm.optical_spec
-        
-        if self.kind == "nikkor_58mm":
-            # Nikkor 58mm f/0.95 focusing
-            # zscan: Adjusts the distance from object to lens (gap[0].thi)
-            # zfine: Adjusts the internal gap using focus/6.03 + 59.3 (focus in 59.6-62.75 mm)
-            if zfine != 0:
-                if not (59.6 <= zfine <= 62.75):
-                    raise ValueError(f"zfine for nikkor_58mm must be between 59.6 and 62.75 mm, got {zfine}")
-                Δ = zfine / 6.03 + 59.3
-                sm.gaps[-9].thi = Δ  # Adjust fine focus gap
-            sm.gaps[0].thi = self.dist_from_obj + zscan  # Adjust object distance
-        
-        elif self.kind == "microscope":
-            # Microscope setup focusing (Nikkor 80-200mm + Canon 50mm)
-            # zscan: Adjusts the distance from object to lens (gap[0].thi)
-            # zfine: Adjusts the focus dial (gaps[24].thi and gaps[31].thi) for 80-200mm range
-            if zfine != 0:
-                if not (80 <= zfine <= 200):
-                    raise ValueError(f"zfine for microscope must be between 80 and 200 mm, got {zfine}")
-                t1 = sm.gaps[24].thi  # Original thickness of gap 24
-                t2 = sm.gaps[31].thi  # Original thickness of gap 31
-                Δ = zfine / 4 - 20  # Map zfine to the focus adjustment range
-                sm.gaps[24].thi = t1 + Δ
-                sm.gaps[31].thi = t2 - Δ
-            sm.gaps[0].thi = self.dist_from_obj + zscan  # Adjust object distance
-        
-        elif self.kind == "zmx_file":
-            # Custom lens from zmx file
-            # zscan: Adjusts the distance from object to lens (gap[0].thi)
-            # zfine: Adjusts specified gaps in focus_gaps with scaling factors
-            if zfine != 0 and self.focus_gaps is not None:
-                for gap_index, scaling_factor in self.focus_gaps:
-                    if gap_index >= len(sm.gaps):
-                        raise ValueError(f"Invalid gap index {gap_index} for zmx_file lens")
-                    original_thi = sm.gaps[gap_index].thi
-                    sm.gaps[gap_index].thi = original_thi + zfine * scaling_factor
-            sm.gaps[0].thi = self.dist_from_obj + zscan  # Adjust object distance
-        
-        else:
-            raise ValueError(f"Unsupported lens kind: {self.kind}")
-        
-        # Change the f-number if specified
-        if fnumber is not None:
-            osp.pupil = PupilSpec(osp, key=['image', 'f/#'], value=fnumber)
-        
-        # Update the model with the new settings
-        sm.do_apertures = False
-        opm.update_model()
-        apply_paraxial_vignetting(opm)
-        
-        if save:
-            fnumber_str = f"_f{fnumber:.2f}" if fnumber is not None else ""
-            save_path = self.archive / f"refocus_zscan_{zscan}_zfine_{zfine}{fnumber_str}.roa"
-            opm.save_model(save_path)
-        
-        return opm
-
+            """
+            Refocus the lens based on the lens type (nikkor_58mm, microscope, or custom zmx file), starting from self.opm0.
+            
+            Input:
+                - opm: OpticalModel, Optional, Optical model to refocus. If None, uses self.opm0.
+                - zscan: float, Optional, Distance to move the lens assembly back/forth in mm (affects object distance).
+                - zfine: float, Optional, Fine focus adjustment in mm (affects internal lens gaps or focus dial).
+                - fnumber: float, Optional, New f-number for the lens (None = no change).
+                - save: bool, Optional, Save the optical model to a file.
+            
+            Returns:
+                - OpticalModel
+            """
+            from copy import deepcopy
+            # Always start from self.opm0 if no opm is provided
+            opm = deepcopy(self.opm0) if opm is None else deepcopy(opm)
+            sm = opm.seq_model
+            osp = opm.optical_spec
+            
+            if self.kind == "nikkor_58mm":
+                # Nikkor 58mm f/0.95 focusing
+                # zscan: Adjusts the distance from object to lens (gap[0].thi)
+                # zfine: Adjusts the internal gap using focus/6.03 + 59.3 (focus in 59.6-62.75 mm)
+                if zfine != 0:
+                    if not (59.6 <= zfine <= 62.75):
+                        raise ValueError(f"zfine for nikkor_58mm must be between 59.6 and 62.75 mm, got {zfine}")
+                    Δ = zfine / 6.03 + 59.3
+                    sm.gaps[-9].thi = Δ  # Adjust fine focus gap
+                sm.gaps[0].thi = self.dist_from_obj + zscan  # Adjust object distance
+            
+            elif self.kind == "microscope":
+                # Microscope setup focusing (Nikkor 80-200mm + Canon 50mm)
+                # zscan: Adjusts the distance from object to lens (gap[0].thi)
+                # zfine: Adjusts the focus dial (gaps[24].thi and gaps[31].thi) for 80-200mm range
+                if zfine != 0:
+                    if not (80 <= zfine <= 200):
+                        raise ValueError(f"zfine for microscope must be between 80 and 200 mm, got {zfine}")
+                    t1 = sm.gaps[24].thi  # Original thickness of gap 24
+                    t2 = sm.gaps[31].thi  # Original thickness of gap 31
+                    Δ = zfine / 4 - 20  # Map zfine to the focus adjustment range
+                    sm.gaps[24].thi = t1 + Δ
+                    sm.gaps[31].thi = t2 - Δ
+                sm.gaps[0].thi = self.dist_from_obj + zscan  # Adjust object distance
+            
+            elif self.kind == "zmx_file":
+                # Custom lens from zmx file
+                # zscan: Adjusts the distance from object to lens (gap[0].thi)
+                # zfine: Adjusts specified gaps in focus_gaps with scaling factors
+                if zfine != 0 and self.focus_gaps is not None:
+                    for gap_index, scaling_factor in self.focus_gaps:
+                        if gap_index >= len(sm.gaps):
+                            raise ValueError(f"Invalid gap index {gap_index} for zmx_file lens")
+                        original_thi = sm.gaps[gap_index].thi
+                        sm.gaps[gap_index].thi = original_thi + zfine * scaling_factor
+                sm.gaps[0].thi = self.dist_from_obj + zscan  # Adjust object distance
+            
+            else:
+                raise ValueError(f"Unsupported lens kind: {self.kind}")
+            
+            # Change the f-number if specified
+            if fnumber is not None:
+                osp.pupil = PupilSpec(osp, key=['image', 'f/#'], value=fnumber)
+            
+            # Update the model with the new settings
+            sm.do_apertures = False
+            opm.update_model()
+            apply_paraxial_vignetting(opm)
+            
+            # Update self.opm with the new optical model
+            self.opm = opm
+            
+            if save:
+                fnumber_str = f"_f{fnumber:.2f}" if fnumber is not None else ""
+                save_path = self.archive / f"refocus_zscan_{zscan}_zfine_{zfine}{fnumber_str}.roa"
+                opm.save_model(save_path)
+            
+            return opm
 
     def _chunk_rays(self, rays, chunk_size):
         """
@@ -534,8 +539,8 @@ class Lens:
 
 
     def trace_rays(self, opm=None, join=False, print_stats=False, n_processes=None,
-                chunk_size=1000, progress_bar=True, timeout=3600, return_df=False,
-                verbosity=VerbosityLevel.BASIC):
+                   chunk_size=1000, progress_bar=True, timeout=3600, return_df=False,
+                   verbosity=VerbosityLevel.BASIC):
         """
         Trace rays from simulation data files and save processed results.
 
@@ -585,14 +590,14 @@ class Lens:
 
         # Find all non-empty sim_data_*.csv files
         csv_files = sorted(sim_photons_dir.glob("sim_data_*.csv"))
-        valid_files = [f for f in csv_files if f.stat().st_size > 100]  # Adjust threshold as needed
+        valid_files = [f for f in csv_files if f.stat().st_size > 100]
 
         if not valid_files:
             if verbosity >= VerbosityLevel.BASIC:
                 print("No valid simulation data files found in 'SimPhotons' directory.")
             return None
 
-        all_results = []  # Store results for combining if return_df=True
+        all_results = []
 
         # Progress bar for file processing
         file_iter = tqdm(valid_files, desc="Processing files", disable=not progress_bar or verbosity == VerbosityLevel.QUIET)
@@ -608,27 +613,25 @@ class Lens:
                     print(f"Skipping empty file: {csv_file.name}")
                 continue
 
-            # Verify data integrity - each row should have a unique position in the file
+            # Verify data integrity
             df['_row_index'] = np.arange(len(df))
 
-            # Set up optical model
-            opm = deepcopy(opm) if opm else deepcopy(self.opm0)
+            # Get wavelengths for the optical model
             wvl = df["wavelength"].value_counts().to_frame().reset_index()
             wvl["count"] = 1
-            opm.optical_spec.spectral_region = WvlSpec(wvl.values, ref_wl=1)
+            wvl_values = wvl.values
 
             # Convert DataFrame to ray format
             rays = [
                 (np.array([row.x, row.y, row.z], dtype=np.float64),
-                np.array([row.dx, row.dy, row.dz], dtype=np.float64),
-                np.array([row.wavelength], dtype=np.float64))
+                 np.array([row.dx, row.dy, row.dz], dtype=np.float64),
+                 np.array([row.wavelength], dtype=np.float64))
                 for row in df.itertuples()
             ]
 
-            # Split rays into chunks while tracking original row indices
+            # Split rays into chunks
             chunks = []
             index_chunks = []
-            
             for i in range(0, len(rays), chunk_size):
                 end = min(i + chunk_size, len(rays))
                 chunks.append(rays[i:end])
@@ -637,13 +640,21 @@ class Lens:
             rays = None  # Clear memory
 
             # Process chunks in parallel
-            process_chunk = partial(self._process_ray_chunk, opt_model=opm)
+            process_chunk = partial(
+                self._process_ray_chunk,
+                lens_kind=self.kind,
+                zmx_file=self.zmx_file,
+                focus_gaps=self.focus_gaps,
+                dist_from_obj=self.dist_from_obj,
+                gap_between_lenses=self.gap_between_lenses,
+                dist_to_screen=self.dist_to_screen,
+                fnumber=self.fnumber,
+                wvl_values=wvl_values,
+                opm=opm
+            )
             try:
                 with Pool(processes=n_processes) as pool:
-                    # Process chunks and collect results with their indices
                     results_with_indices = []
-                    
-                    # Use tqdm for progress bar
                     for chunk_idx, (chunk_result, indices) in enumerate(
                         tqdm(
                             zip(pool.imap(process_chunk, chunks), index_chunks),
@@ -652,19 +663,14 @@ class Lens:
                             disable=not progress_bar or verbosity == VerbosityLevel.QUIET
                         )
                     ):
-                        # Check if we have correct number of results
                         if chunk_result is None:
-                            # Handle failed chunk
                             chunk_result = [None] * len(indices)
                         elif len(chunk_result) != len(indices):
                             if verbosity >= VerbosityLevel.DETAILED:
                                 print(f"Warning: Chunk {chunk_idx} returned {len(chunk_result)} results but expected {len(indices)}")
-                            # Ensure we have the right number of results
                             if len(chunk_result) < len(indices):
-                                # Pad with None if we have fewer results
                                 chunk_result = chunk_result + [None] * (len(indices) - len(chunk_result))
                             else:
-                                # Truncate if we have more results
                                 chunk_result = chunk_result[:len(indices)]
                         
                         results_with_indices.extend(zip(chunk_result, indices))
@@ -682,24 +688,17 @@ class Lens:
             
             # Create result DataFrame
             processed_results = []
-            
-            # Sanity check
             if len(results_with_indices) != len(df):
                 if verbosity >= VerbosityLevel.BASIC:
                     print(f"Warning: Mismatch in result count. Expected {len(df)}, got {len(results_with_indices)}")
-                # Ensure we have the right number of results
                 if len(results_with_indices) < len(df):
-                    # Add None results for missing indices
                     missing_indices = set(range(len(df))) - set(idx for _, idx in results_with_indices)
                     for idx in missing_indices:
                         results_with_indices.append((None, idx))
-                    # Re-sort
                     results_with_indices.sort(key=lambda x: x[1])
                 else:
-                    # Truncate to expected length
                     results_with_indices = results_with_indices[:len(df)]
             
-            # Process results
             for entry, row_idx in results_with_indices:
                 if entry is None:
                     processed_results.append({
@@ -722,31 +721,21 @@ class Lens:
                             "x2": np.nan, "y2": np.nan, "z2": np.nan
                         })
 
-            # Create a DataFrame from processed results
             result_df = pd.DataFrame(processed_results)
-            
-            # Ensure results are in original order
             result_df = result_df.sort_values(by="_row_index").reset_index(drop=True)
 
-            # Join with original data
             if join:
-                # Add all columns from original DataFrame
                 result = pd.merge(df, result_df.drop(columns=["_row_index"]), 
-                                left_on="_row_index", right_index=True, how="left")
+                                 left_on="_row_index", right_index=True, how="left")
             else:
-                # Just keep necessary columns
                 result = result_df.drop(columns=["_row_index"])
-                # Add ID columns back from original data for easier matching
                 id_cols = ["id", "neutron_id"]
                 for col in id_cols:
                     if col in df.columns:
                         result[col] = df[col].values
-                
-                # Add toa if it exists in the original data
                 if "toa" in df.columns:
                     result["toa2"] = df["toa"].values
 
-            # Drop the row index column if present
             if "_row_index" in result.columns:
                 result = result.drop(columns=["_row_index"])
 
@@ -755,9 +744,8 @@ class Lens:
                 traced = result.dropna(subset=["x2"]).shape[0]
                 percentage = (traced / total) * 100
                 print(f"File: {csv_file.name} - Original events: {total}, "
-                    f"Traced events: {traced}, Percentage: {percentage:.1f}%")
+                      f"Traced events: {traced}, Percentage: {percentage:.1f}%")
 
-            # Save results
             output_file = traced_photons_dir / f"traced_{csv_file.name}"
             result.to_csv(output_file, index=False)
             if verbosity >= VerbosityLevel.DETAILED:
@@ -766,7 +754,6 @@ class Lens:
             if return_df:
                 all_results.append(result)
 
-        # Return combined results if requested
         if return_df and all_results:
             combined_df = pd.concat(all_results, ignore_index=True)
             if verbosity >= VerbosityLevel.DETAILED:
@@ -775,9 +762,46 @@ class Lens:
 
         return None
 
-    def _process_ray_chunk(self, chunk, opt_model):
-        """Process a chunk of rays at once"""
+    def _process_ray_chunk(self, chunk, lens_kind, zmx_file, focus_gaps, dist_from_obj,
+                           gap_between_lenses, dist_to_screen, fnumber, wvl_values, opm=None):
+        """Process a chunk of rays at once by reconstructing the optical model."""
         try:
+            # Reconstruct the optical model in the worker process
+            if opm is not None:
+                opt_model = deepcopy(opm)
+            else:
+                if lens_kind == "nikkor_58mm":
+                    opt_model = self.nikkor_58mm(
+                        dist_from_obj=dist_from_obj,
+                        fnumber=fnumber,
+                        save=False
+                    )
+                elif lens_kind == "microscope":
+                    opt_model = self.microscope_nikor_80_200mm_canon_50mm(
+                        focus=self.focus or 200,
+                        dist_from_obj=dist_from_obj,
+                        gap_between_lenses=gap_between_lenses,
+                        dist_to_screen=dist_to_screen,
+                        fnumber=fnumber,
+                        save=False
+                    )
+                elif lens_kind == "zmx_file":
+                    opt_model = self.load_zmx_lens(
+                        zmx_file=zmx_file,
+                        focus=self.focus,
+                        dist_from_obj=dist_from_obj,
+                        gap_between_lenses=gap_between_lenses,
+                        dist_to_screen=dist_to_screen,
+                        fnumber=fnumber,
+                        save=False
+                    )
+                else:
+                    raise ValueError(f"Unsupported lens kind: {lens_kind}")
+
+            # Set the spectral region
+            opt_model.optical_spec.spectral_region = WvlSpec(wvl_values, ref_wl=1)
+
+            # Trace the rays
             return analyses.trace_list_of_rays(
                 opt_model,
                 chunk,
@@ -788,7 +812,6 @@ class Lens:
             # Log the error and return empty results
             # print(f"Error processing chunk: {str(e)}")
             return [None] * len(chunk)
-
 
     def zscan(self, zfocus_range: Union[np.ndarray, list, float] = 0.,
             zfine_range: Union[np.ndarray, list, float] = 0.,
