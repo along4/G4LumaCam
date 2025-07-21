@@ -42,16 +42,16 @@ class Lens:
             archive (str, optional): Directory path for saving results.
             data (pd.DataFrame, optional): Optical photon data table.
             kind (str, optional): Lens type ('nikkor_58mm', 'microscope', 'zmx_file'). Defaults to 'nikkor_58mm'.
-            focus (float, optional): Initial focus setting in mm (59.6-62.75 for nikkor_58mm, 80-200 for microscope).
+            focus (float, optional): Initial focus adjustment in mm relative to default settings.
             zmx_file (str, optional): Path to .zmx file for custom lens (required when kind='zmx_file').
-            focus_gaps (List[Tuple[int, float]], optional): List of (gap_index, scaling_factor) for zmx_file focus adjustment.
+            focus_gaps (List[Tuple[int, float]], optional): List of (gap_index, scaling_factor) for focus adjustment.
             dist_from_obj (float, optional): Distance from object to first lens in mm. Defaults to 35.0.
             gap_between_lenses (float, optional): Gap between lenses in mm. Defaults to 15.0.
             dist_to_screen (float, optional): Distance from last lens to screen in mm. Defaults to 20.0.
             fnumber (float, optional): F-number of the optical system. Defaults to 8.0.
 
         Raises:
-            ValueError: If invalid lens kind, missing zmx_file for 'zmx_file', or invalid focus range.
+            ValueError: If invalid lens kind, missing zmx_file for 'zmx_file', or invalid parameters.
         """
         self.kind = kind
         self.focus = focus
@@ -60,20 +60,23 @@ class Lens:
 
         # Set default parameters based on lens kind
         if kind == "nikkor_58mm":
-            self.dist_from_obj = dist_from_obj if dist_from_obj != 35.0 else 461.535
+            self.dist_from_obj = dist_from_obj if dist_from_obj != 35.0 else 461.535  # Match imported model
             self.gap_between_lenses = 0.0
             self.dist_to_screen = 0.0
             self.fnumber = fnumber if fnumber != 8.0 else 0.98
+            self.default_focus_gaps = [(22, 2.68)]  # Default thickness for gap 22
         elif kind == "microscope":
             self.dist_from_obj = dist_from_obj
             self.gap_between_lenses = gap_between_lenses
             self.dist_to_screen = dist_to_screen
             self.fnumber = fnumber
+            self.default_focus_gaps = [(24, None), (31, None)]  # Will be set after loading
         elif kind == "zmx_file":
             self.dist_from_obj = dist_from_obj
             self.gap_between_lenses = gap_between_lenses
             self.dist_to_screen = dist_to_screen
             self.fnumber = fnumber
+            self.default_focus_gaps = focus_gaps or []
         else:
             raise ValueError(f"Unknown lens kind: {kind}, supported lenses are ['nikkor_58mm', 'microscope', 'zmx_file']")
 
@@ -82,10 +85,6 @@ class Lens:
             raise ValueError("zmx_file must be provided when kind='zmx_file'")
         if kind == "zmx_file" and focus_gaps is None:
             print("Warning: focus_gaps not provided for zmx_file; zfine will have no effect unless specified")
-        if kind == "nikkor_58mm" and focus is not None and not (59.6 <= focus <= 62.75):
-            raise ValueError(f"Focus for nikkor_58mm must be between 59.6 and 62.75 mm, got {focus}")
-        if kind == "microscope" and focus is not None and not (80 <= focus <= 200):
-            raise ValueError(f"Focus for microscope must be between 80 and 200 mm, got {focus}")
 
         if archive is not None:
             self.archive = Path(archive)
@@ -118,16 +117,15 @@ class Lens:
             raise ValueError("Either archive or data must be provided")
 
         # Initialize optical models
-        self.opm0 = None  # Base optical model
-        self.opm = None   # Current optical model
+        self.opm0 = None
+        self.opm = None
         if self.kind == "nikkor_58mm":
-            zmx_path = str(importlib.resources.files('lumacam.data').joinpath('WO2019-229849_Example01P.zmx'))
-            self.opm0 = self.load_zmx_lens(zmx_path, focus=focus, save=False)
+            self.opm0 = self.nikkor_58mm(dist_from_obj=self.dist_from_obj, fnumber=self.fnumber, save=False)
             self.opm = deepcopy(self.opm0)
             if focus is not None:
                 self.opm = self.refocus(zfine=focus, save=False)
         elif self.kind == "microscope":
-            self.opm0 = self.microscope_nikor_80_200mm_canon_50mm(focus=focus or 200, save=False)
+            self.opm0 = self.microscope_nikor_80_200mm_canon_50mm(focus=focus or 0.0, save=False)
             self.opm = deepcopy(self.opm0)
             if focus is not None:
                 self.opm = self.refocus(zfine=focus, save=False)
@@ -137,7 +135,7 @@ class Lens:
             if focus is not None:
                 self.opm = self.refocus(zfine=focus, save=False)
         else:
-            raise ValueError(f"Unknown lens kind: {kind}")
+            raise ValueError(f"Unknown lens kind: {self.kind}")
 
     def get_first_order_parameters(self, opm: "OpticalModel" = None) -> pd.DataFrame:
         """
@@ -156,13 +154,11 @@ class Lens:
             opm = self.opm0
         pm = opm['parax_model']
         
-        # Capture printed output from first_order_data()
         output = StringIO()
         with redirect_stdout(output):
             pm.first_order_data()
         output_str = output.getvalue()
         
-        # Parse the printed output into a dictionary
         fod = {}
         multi_word_keys = ['pp sep', 'na obj', 'n obj', 'na img', 'n img', 'optical invariant']
         lines = output_str.strip().split('\n')
@@ -184,7 +180,6 @@ class Lens:
             except ValueError:
                 continue
         
-        # Fallback to parax_model attributes if parsing fails
         if not fod:
             fod = {}
             try:
@@ -215,7 +210,6 @@ class Lens:
             except Exception as e:
                 raise RuntimeError(f"Failed to retrieve first-order parameters: {e}")
 
-        # Define user-friendly names
         param_names = {
             'efl': 'Effective Focal Length (mm)',
             'f': 'Focal Length (mm)',
@@ -239,7 +233,7 @@ class Lens:
             'exp_dist': 'Exit Pupil Distance (mm)',
             'exp_radius': 'Exit Pupil Radius (mm)',
             'na img': 'Image Numerical Aperture',
-            'n img': 'Image Space Refractive Index',
+            'n img': 'Image Space Refrictive Index',
             'optical invariant': 'Optical Invariant'
         }
         
@@ -257,7 +251,7 @@ class Lens:
 
         Args:
             zmx_file (str): Path to the .zmx file.
-            focus (float, optional): Initial focus setting in mm.
+            focus (float, optional): Initial focus adjustment in mm relative to default settings.
             dist_from_obj (float, optional): Distance from object to first lens in mm.
             gap_between_lenses (float, optional): Gap between lenses in mm.
             dist_to_screen (float, optional): Distance from last lens to screen in mm.
@@ -297,14 +291,14 @@ class Lens:
             opm.save_model(str(output_path))
         return opm
 
-    def microscope_nikor_80_200mm_canon_50mm(self, focus: float = 200, dist_from_obj: float = 35.0,
+    def microscope_nikor_80_200mm_canon_50mm(self, focus: float = 0.0, dist_from_obj: float = 35.0,
                                              gap_between_lenses: float = 15.0, dist_to_screen: float = 20.0,
                                              fnumber: float = 8.0, save: bool = False) -> OpticalModel:
         """
         Create a microscope lens model with Nikkor 80-200mm f/2.8 and flipped Canon 50mm f/1.8 lenses.
 
         Args:
-            focus (float): Focus setting in mm (80-200). Defaults to 200.
+            focus (float): Focus adjustment in mm relative to default settings (gap 24 increases, gap 31 decreases). Defaults to 0.0.
             dist_from_obj (float): Distance from object to first lens in mm. Defaults to 35.0.
             gap_between_lenses (float): Gap between the two lenses in mm. Defaults to 15.0.
             dist_to_screen (float): Distance from second lens to screen in mm. Defaults to 20.0.
@@ -315,12 +309,9 @@ class Lens:
             OpticalModel: The configured microscope optical model.
 
         Raises:
-            ValueError: If focus is out of valid range or parameters are invalid.
+            ValueError: If parameters are invalid.
             FileNotFoundError: If .zmx files are not found.
         """
-        # Validate inputs
-        if not (80 <= focus <= 200):
-            raise ValueError(f"Focus for microscope must be between 80 and 200 mm, got {focus}")
         if dist_from_obj <= 0:
             raise ValueError(f"dist_from_obj must be positive, got {dist_from_obj}")
         if gap_between_lenses < 0:
@@ -342,32 +333,27 @@ class Lens:
         sm.do_apertures = False
         opm.update_model()
 
-        # Access .zmx files from the package's data directory
         package = 'lumacam.data'
         zmx_files = [
             'JP1985-040604_Example01P_50mm_1.2f.zmx',
             'JP2000-019398_Example01_Tale67_80_200_AF-S_2.4f.zmx',
         ]
 
-        # Load first lens (Canon 50mm)
         with importlib.resources.as_file(importlib.resources.files(package).joinpath(zmx_files[0])) as zmx_path:
             if not zmx_path.exists():
                 raise FileNotFoundError(f".zmx file not found: {zmx_path}")
             opm.add_from_file(str(zmx_path), t=gap_between_lenses)
 
-        # Load second lens (Nikkor 80-200mm)
         with importlib.resources.as_file(importlib.resources.files(package).joinpath(zmx_files[1])) as zmx_path:
             if not zmx_path.exists():
                 raise FileNotFoundError(f".zmx file not found: {zmx_path}")
             opm.add_from_file(str(zmx_path), t=dist_to_screen)
 
-        # Flip the Canon 50mm lens
         opm.flip(1, 15)
-
-        # Store base model
+        
+        # Store default gap thicknesses for microscope
+        self.default_focus_gaps = [(24, sm.gaps[24].thi), (31, sm.gaps[31].thi)]
         self.opm0 = deepcopy(opm)
-
-        # Apply focus adjustment using refocus
         opm = self.refocus(opm=opm, zfine=focus, save=False)
 
         if save:
@@ -377,7 +363,7 @@ class Lens:
 
     def nikkor_58mm(self, dist_from_obj: float = 461.535, fnumber: float = 0.98, save: bool = False) -> OpticalModel:
         """
-        Create a Nikkor 58mm f/0.95 lens model from a .zmx file.
+        Create a Nikkor 58mm f/0.95 lens model from a .zmx file, correcting specific thicknesses to match the original model.
 
         Args:
             dist_from_obj (float): Distance from object to first lens in mm. Defaults to 461.535.
@@ -389,23 +375,72 @@ class Lens:
 
         Raises:
             FileNotFoundError: If the .zmx file is not found.
+            ValueError: If the model has insufficient surfaces for correction.
         """
         zmx_path = str(importlib.resources.files('lumacam.data').joinpath('WO2019-229849_Example01P.zmx'))
-        return self.load_zmx_lens(
-            zmx_file=zmx_path,
-            dist_from_obj=dist_from_obj,
-            fnumber=fnumber,
-            save=save
-        )
+        if not Path(zmx_path).exists():
+            raise FileNotFoundError(f".zmx file not found: {zmx_path}")
+
+        opm = OpticalModel()
+        sm = opm.seq_model
+        osp = opm.optical_spec
+        opm.system_spec.title = 'WO2019-229849 Example 1 (Nikkor Z 58mm f/0.95 S)'
+        opm.system_spec.dimensions = 'MM'
+        opm.radius_mode = True
+
+        # Load the .zmx file
+        sm.gaps[0].thi = dist_from_obj
+        osp.pupil = PupilSpec(osp, key=['image', 'f/#'], value=fnumber)
+        osp.field_of_view = FieldSpec(osp, key=['object', 'angle'], flds=[0., 19.98])
+        osp.spectral_region = WvlSpec([(486.1327, 0.5), (587.5618, 1.0), (656.2725, 0.5)], ref_wl=1)
+        sm.do_apertures = False
+        opm.add_from_file(zmx_path)
+        opm.update_model()
+
+        # Debug: Print number of gaps
+        # print(f"Loaded {len(sm.gaps)} gaps from .zmx file")
+
+        # Correct specific thicknesses
+        if len(sm.gaps) <= 30:
+            raise ValueError(f"Insufficient gaps in .zmx file: {len(sm.gaps)} found, expected at least 31")
+
+        # Correct surface 22 thickness (from 21.2900 mm to 2.68000 mm)
+        if abs(sm.gaps[22].thi - 2.68) > 1e-6:
+            # print(f"Correcting surface 22 thickness from {sm.gaps[22].thi:.6f} to 2.68000 mm")
+            sm.gaps[22].thi = 2.68
+
+        # Correct surface 30 thickness (from 0.00000 mm to 1.00000 mm)
+        if abs(sm.gaps[30].thi - 1.0) > 1e-6:
+            # print(f"Correcting surface 30 thickness from {sm.gaps[30].thi:.6f} to 1.00000 mm")
+            sm.gaps[30].thi = 1.0
+
+        # Ensure stop is at surface 14
+        sm.set_stop(surface=14)
+
+        # Apply paraxial vignetting and update model
+        opm.update_model()
+        apply_paraxial_vignetting(opm)
+
+        # Verify corrections
+        if abs(sm.gaps[22].thi - 2.68) > 1e-6:
+            print(f"Warning: Surface 22 thickness {sm.gaps[22].thi:.6f} does not match expected 2.68000 mm")
+        if abs(sm.gaps[30].thi - 1.0) > 1e-6:
+            print(f"Warning: Surface 30 thickness {sm.gaps[30].thi:.6f} does not match expected 1.00000 mm")
+
+        if save:
+            output_path = self.archive / "Nikkor_58mm.roa"
+            opm.save_model(str(output_path))
+
+        return opm
 
     def refocus(self, opm: "OpticalModel" = None, zscan: float = 0, zfine: float = 0, fnumber: float = None, save: bool = False) -> OpticalModel:
         """
-        Refocus the lens based on the lens type, starting from self.opm0.
+        Refocus the lens by adjusting gaps relative to default settings.
 
         Args:
             opm (OpticalModel, optional): Optical model to refocus. Defaults to self.opm0.
-            zscan (float): Distance to move the lens assembly in mm (affects object distance). Defaults to 0.
-            zfine (float): Fine focus adjustment in mm. Defaults to 0.
+            zscan (float): Distance to move the lens assembly in mm relative to default object distance. Defaults to 0.
+            zfine (float): Focus adjustment in mm relative to default gap thicknesses (for microscope, gap 24 increases, gap 31 decreases). Defaults to 0.
             fnumber (float, optional): New f-number for the lens.
             save (bool): Save the optical model to a file.
 
@@ -413,39 +448,62 @@ class Lens:
             OpticalModel: The refocused optical model.
 
         Raises:
-            ValueError: If lens kind is unsupported or focus parameters are invalid.
+            ValueError: If lens kind is unsupported or gap indices are invalid.
         """
         opm = deepcopy(self.opm0) if opm is None else deepcopy(opm)
         sm = opm.seq_model
         osp = opm.optical_spec
         
         if self.kind == "nikkor_58mm":
+            if not self.default_focus_gaps:
+                raise ValueError("Default focus gaps not set for nikkor_58mm")
+            gap_index, default_thi = self.default_focus_gaps[0]
+            if gap_index >= len(sm.gaps):
+                raise ValueError(f"Invalid gap index {gap_index} for nikkor_58mm lens")
             if zfine != 0:
-                if not (59.6 <= zfine <= 62.75):
-                    raise ValueError(f"zfine for nikkor_58mm must be between 59.6 and 62.75 mm, got {zfine}")
-                Δ = zfine / 6.03 + 59.3
-                sm.gaps[-9].thi = Δ
+                new_thi = default_thi + zfine
+                # print(f"Adjusting nikkor_58mm focus: gap {gap_index} from {sm.gaps[gap_index].thi:.6f} to {new_thi:.6f} mm (zfine={zfine})")
+                sm.gaps[gap_index].thi = new_thi
             sm.gaps[0].thi = self.dist_from_obj + zscan
+            # print(f"Adjusting nikkor_58mm object distance: from {sm.gaps[0].thi - zscan:.6f} to {sm.gaps[0].thi:.6f} mm (zscan={zscan})")
             
         elif self.kind == "microscope":
+            if len(self.default_focus_gaps) != 2:
+                raise ValueError("Default focus gaps not set correctly for microscope")
             if zfine != 0:
-                if not (80 <= zfine <= 200):
-                    raise ValueError(f"zfine for microscope must be between 80 and 200 mm, got {zfine}")
-                t1 = sm.gaps[24].thi
-                t2 = sm.gaps[31].thi
-                Δ = zfine / 4 - 20
-                sm.gaps[24].thi = t1 + Δ
-                sm.gaps[31].thi = t2 - Δ
+                # Gap 24: Increase by zfine
+                gap_index_24, default_thi_24 = self.default_focus_gaps[0]
+                if gap_index_24 >= len(sm.gaps):
+                    raise ValueError(f"Invalid gap index {gap_index_24} for microscope lens")
+                if default_thi_24 is None:
+                    raise ValueError(f"Default thickness not set for gap {gap_index_24}")
+                new_thi_24 = default_thi_24 + zfine
+                # print(f"Adjusting microscope focus: gap {gap_index_24} from {sm.gaps[gap_index_24].thi:.6f} to {new_thi_24:.6f} mm (zfine=+{zfine})")
+                sm.gaps[gap_index_24].thi = new_thi_24
+
+                # Gap 31: Decrease by zfine
+                gap_index_31, default_thi_31 = self.default_focus_gaps[1]
+                if gap_index_31 >= len(sm.gaps):
+                    raise ValueError(f"Invalid gap index {gap_index_31} for microscope lens")
+                if default_thi_31 is None:
+                    raise ValueError(f"Default thickness not set for gap {gap_index_31}")
+                new_thi_31 = default_thi_31 - zfine
+                # print(f"Adjusting microscope focus: gap {gap_index_31} from {sm.gaps[gap_index_31].thi:.6f} to {new_thi_31:.6f} mm (zfine=-{zfine})")
+                sm.gaps[gap_index_31].thi = new_thi_31
             sm.gaps[0].thi = self.dist_from_obj + zscan
+            # print(f"Adjusting microscope object distance: from {sm.gaps[0].thi - zscan:.6f} to {sm.gaps[0].thi:.6f} mm (zscan={zscan})")
             
         elif self.kind == "zmx_file":
             if zfine != 0 and self.focus_gaps is not None:
                 for gap_index, scaling_factor in self.focus_gaps:
                     if gap_index >= len(sm.gaps):
                         raise ValueError(f"Invalid gap index {gap_index} for zmx_file lens")
-                    original_thi = sm.gaps[gap_index].thi
-                    sm.gaps[gap_index].thi = original_thi + zfine * scaling_factor
+                    default_thi = sm.gaps[gap_index].thi
+                    new_thi = default_thi + zfine * scaling_factor
+                    # print(f"Adjusting zmx_file focus: gap {gap_index} from {sm.gaps[gap_index].thi:.6f} to {new_thi:.6f} mm (zfine={zfine}, scale={scaling_factor})")
+                    sm.gaps[gap_index].thi = new_thi
             sm.gaps[0].thi = self.dist_from_obj + zscan
+            # print(f"Adjusting zmx_file object distance: from {sm.gaps[0].thi - zscan:.6f} to {sm.gaps[0].thi:.6f} mm (zscan={zscan})")
             
         else:
             raise ValueError(f"Unsupported lens kind: {self.kind}")
@@ -465,6 +523,8 @@ class Lens:
             opm.save_model(save_path)
         
         return opm
+
+
 
     def _chunk_rays(self, rays, chunk_size):
         """
@@ -725,7 +785,7 @@ class Lens:
                     )
                 elif lens_kind == "microscope":
                     opt_model = self.microscope_nikor_80_200mm_canon_50mm(
-                        focus=self.focus or 200,
+                        focus=self.focus,
                         dist_from_obj=dist_from_obj,
                         gap_between_lenses=gap_between_lenses,
                         dist_to_screen=dist_to_screen,
