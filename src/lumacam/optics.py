@@ -1268,13 +1268,33 @@ class Lens:
         return results
 
 
-    def plot(self, opm: "OpticalModel"=None, **kwargs):
+    def plot(self, opm: "OpticalModel" = None, **kwargs) -> None:
         """
-        Plot the lens layout
+        Plot the lens layout using an InteractiveLayout figure.
 
-        Input:
-            - opm: OpticalModel, Optional, Optical model to plot
-            - **kwargs: Additional keyword arguments to pass to the plot function
+        Args:
+            opm (OpticalModel, optional): Optical model to plot. Defaults to self.opm0.
+            **kwargs: Additional keyword arguments for the figure.
+                - dpi (int, optional): Figure resolution. Defaults to 120.
+                - figsize (tuple, optional): Figure size as (width, height). Defaults to (8, 2).
+                - frameon (bool, optional): Whether to draw the figure frame. Defaults to False.
+                - Other keyword arguments are passed to the InteractiveLayout plot function.
+
+        Returns:
+            None
         """
-        opm = opm if opm else self.opm0
-        layout_plt = plt.figure(FigureClass=InteractiveLayout, opt_model=opm).plot(**kwargs)
+        opm = opm if opm is not None else self.opm0
+        if opm is None:
+            raise ValueError("No optical model available to plot (self.opm0 is None).")
+
+        figsize = kwargs.pop("figsize", (8, 2))
+        dpi = kwargs.pop("dpi", 120)
+        frameon = kwargs.pop("frameon", False)
+
+        plt.figure(
+            FigureClass=InteractiveLayout,
+            opt_model=opm,
+            frameon=frameon,
+            dpi=dpi,
+            figsize=figsize
+        ).plot(**kwargs)
