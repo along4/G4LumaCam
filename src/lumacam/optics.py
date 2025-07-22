@@ -1,7 +1,8 @@
-from rayoptics.environment import OpticalModel, PupilSpec, FieldSpec, WvlSpec, EvenPolynomial, InteractiveLayout
+from rayoptics.environment import OpticalModel, PupilSpec, FieldSpec, WvlSpec, InteractiveLayout
+from rayoptics.environment import RayFanFigure, SpotDiagramFigure, Fit
 from rayoptics.gui import roafile
 from rayoptics.elem.elements import Element
-from rayoptics.raytr.trace import apply_paraxial_vignetting
+from rayoptics.raytr.trace import apply_paraxial_vignetting, trace_base
 import matplotlib.pyplot as plt
 from typing import Union, List, Tuple
 from pathlib import Path
@@ -33,7 +34,7 @@ class Lens:
     """
     def __init__(self, archive: str = None, data: "pd.DataFrame" = None,
                  kind: str = "nikkor_58mm", focus: float = None, zmx_file: str = None,
-                 focus_gaps: List[Tuple[int, float]] = None, dist_from_obj: float = 35.0,
+                 focus_gaps: List[Tuple[int, float]] = None, dist_from_obj: float = None,
                  gap_between_lenses: float = 15.0, dist_to_screen: float = 20.0, fnumber: float = 8.0):
         """
         Initialize a Lens object with optical model and data management.
@@ -60,13 +61,13 @@ class Lens:
 
         # Set default parameters based on lens kind
         if kind == "nikkor_58mm":
-            self.dist_from_obj = dist_from_obj if dist_from_obj != 35.0 else 461.535  # Match imported model
+            self.dist_from_obj = dist_from_obj if dist_from_obj else 461.535  # Match imported model
             self.gap_between_lenses = 0.0
             self.dist_to_screen = 0.0
             self.fnumber = fnumber if fnumber != 8.0 else 0.98
             self.default_focus_gaps = [(22, 2.68)]  # Default thickness for gap 22
         elif kind == "microscope":
-            self.dist_from_obj = dist_from_obj
+            self.dist_from_obj = dist_from_obj if dist_from_obj else 41.0  # Default distance for microscope
             self.gap_between_lenses = gap_between_lenses
             self.dist_to_screen = dist_to_screen
             self.fnumber = fnumber
@@ -291,7 +292,7 @@ class Lens:
             opm.save_model(str(output_path))
         return opm
 
-    def microscope_nikor_80_200mm_canon_50mm(self, focus: float = 0.0, dist_from_obj: float = 35.0,
+    def microscope_nikor_80_200mm_canon_50mm(self, focus: float = 0.0, dist_from_obj: float = 41.0,
                                              gap_between_lenses: float = 15.0, dist_to_screen: float = 20.0,
                                              fnumber: float = 8.0, save: bool = False) -> OpticalModel:
         """
@@ -329,7 +330,10 @@ class Lens:
         opm.radius_mode = True
 
         sm.gaps[0].thi = dist_from_obj
-        osp.pupil = PupilSpec(osp, key=['image', 'f/#'], value=fnumber)
+        osp.pupil = PupilSpec(osp, key=['object', 'f/#'], value=fnumber)
+
+        osp.field_of_view = FieldSpec(osp, key=['object', 'height'], flds=[0., 1])  # Set field of view
+        osp.spectral_region = WvlSpec([(486.1327, 0.5), (587.5618, 1.0), (656.2725, 0.5)], ref_wl=1)
         sm.do_apertures = False
         opm.update_model()
 
@@ -351,10 +355,13 @@ class Lens:
 
         opm.flip(1, 15)
         
+        opm.rebuild_from_seq()
+
         # Store default gap thicknesses for microscope
         self.default_focus_gaps = [(24, sm.gaps[24].thi), (31, sm.gaps[31].thi)]
-        self.opm0 = deepcopy(opm)
         opm = self.refocus(opm=opm, zfine=focus, save=False)
+        self.opm0 = deepcopy(opm)
+        
 
         if save:
             output_path = self.archive / "Microscope_Lens.roa"
@@ -390,8 +397,8 @@ class Lens:
 
         # Load the .zmx file
         sm.gaps[0].thi = dist_from_obj
-        osp.pupil = PupilSpec(osp, key=['image', 'f/#'], value=fnumber)
-        osp.field_of_view = FieldSpec(osp, key=['object', 'angle'], flds=[0., 19.98])
+        osp.pupil = PupilSpec(osp, key=['object', 'f/#'], value=fnumber)
+        osp.field_of_view = FieldSpec(osp, key=['object', 'height'], flds=[0., 60])
         osp.spectral_region = WvlSpec([(486.1327, 0.5), (587.5618, 1.0), (656.2725, 0.5)], ref_wl=1)
         sm.do_apertures = False
         opm.add_from_file(zmx_path)
@@ -415,7 +422,7 @@ class Lens:
             sm.gaps[30].thi = 1.0
 
         # Ensure stop is at surface 14
-        sm.set_stop(surface=14)
+        # sm.set_stop(surface=14)
 
         # Apply paraxial vignetting and update model
         opm.update_model()
@@ -513,7 +520,7 @@ class Lens:
         
         sm.do_apertures = False
         opm.update_model()
-        apply_paraxial_vignetting(opm)
+        # apply_paraxial_vignetting(opm)
         
         self.opm = opm
         
@@ -1328,33 +1335,86 @@ class Lens:
         return results
 
 
-    def plot(self, opm: "OpticalModel" = None, **kwargs) -> None:
+    def plot(self, opm: "OpticalModel" = None, kind: str = "layout",
+                                scale: float = None, 
+                                is_dark: bool = False, **kwargs) -> None:
         """
-        Plot the lens layout using an InteractiveLayout figure.
+        Plot the lens layout or aberration diagrams.
 
         Args:
             opm (OpticalModel, optional): Optical model to plot. Defaults to self.opm0.
+            kind (str): Type of plot ('layout', 'ray', 'opd', 'spot'). Defaults to 'layout'.
+            scale (float):  Scale factor for the plot. If None, uses Fit.User_Scale or Fit.All_Same.
+            is_dark (bool): Use dark theme for plots. Defaults to False.
             **kwargs: Additional keyword arguments for the figure.
                 - dpi (int, optional): Figure resolution. Defaults to 120.
-                - figsize (tuple, optional): Figure size as (width, height). Defaults to (8, 2).
-                - frameon (bool, optional): Whether to draw the figure frame. Defaults to False.
-                - Other keyword arguments are passed to the InteractiveLayout plot function.
+                - figsize (tuple, optional): Figure size as (width, height). Defaults to (8, 2) for layout, (8, 4) for others.
+                - frameon (bool, optional): Whether to draw the frame (for layout only). Defaults to False.
+                - Other keyword arguments are passed to the plot function.
 
         Returns:
             None
+
+        Raises:
+            ValueError: If opm is None or kind is unsupported.
         """
         opm = opm if opm is not None else self.opm0
         if opm is None:
             raise ValueError("No optical model available to plot (self.opm0 is None).")
 
-        figsize = kwargs.pop("figsize", (8, 2))
+        # Set default figsize based on plot kind
+        figsize = kwargs.pop("figsize", (8, 2) if kind == "layout" else (8, 4))
         dpi = kwargs.pop("dpi", 120)
         frameon = kwargs.pop("frameon", False)
+        # scale = kwargs.pop("scale", 10)
+        scale_type = Fit.User_Scale if scale else Fit.All_Same
 
-        plt.figure(
-            FigureClass=InteractiveLayout,
-            opt_model=opm,
-            frameon=frameon,
-            dpi=dpi,
-            figsize=figsize
-        ).plot(**kwargs)
+        # Ensure model is updated and vignetting is applied
+        # opm.seq_model.do_apertures = False
+        # opm.update_model()
+        # apply_paraxial_vignetting(opm)
+
+        if kind == "layout":
+            plt.figure(
+                FigureClass=InteractiveLayout,
+                opt_model=opm,
+                frameon=frameon,
+                dpi=dpi,
+                figsize=figsize,
+                do_draw_rays=True,
+                do_paraxial_layout=False
+            ).plot(**kwargs)
+        elif kind == "ray":
+            plt.figure(
+                FigureClass=RayFanFigure,
+                opt_model=opm,
+                data_type="Ray",
+                scale_type=scale_type,
+                is_dark=is_dark,
+                dpi=dpi,
+                figsize=figsize
+            ).plot(**kwargs)
+        elif kind == "opd":
+            plt.figure(
+                FigureClass=RayFanFigure,
+                opt_model=opm,
+                data_type="OPD",
+                scale_type=scale_type,
+                is_dark=is_dark,
+                dpi=dpi,
+                figsize=figsize
+            ).plot(**kwargs)
+        elif kind == "spot":
+            # Remove manual ray tracing - let SpotDiagramFigure handle it
+            plt.figure(
+                FigureClass=SpotDiagramFigure,
+                opt_model=opm,
+                scale_type=scale_type,
+                user_scale_value=scale,
+                is_dark=is_dark,
+                frameon=frameon,
+                dpi=dpi,
+                figsize=figsize
+            ).plot(**kwargs)
+        else:
+            raise ValueError(f"Unsupported plot kind: {kind}, supported kinds are ['layout', 'ray', 'opd', 'spot']")
