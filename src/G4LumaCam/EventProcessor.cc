@@ -151,7 +151,7 @@ G4bool EventProcessor::ProcessHits(G4Step* step, G4TouchableHistory*) {
             rec.neutronId = neutronCount;
             rec.x = prePos.x() / mm;
             rec.y = prePos.y() / mm;
-            rec.z = prePos.z() / mm;
+            rec.z = 0.; 
             rec.dx = preDir.x();
             rec.dy = preDir.y();
             rec.dz = preDir.z();

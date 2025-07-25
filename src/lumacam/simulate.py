@@ -49,8 +49,8 @@ class Config:
     angle_unit: str = "deg"
     sample_material: str = "G4_Galactic"  # Material of the sample
     scintillator: str = "EJ200"  # Scintillator type: PVT, EJ-200, GS20
-    sample_thickness: float = 0.02  # Sample thickness in cm (default 0.02 cm = 200 microns)
-    scintillator_thickness: float = 20  # Scintillator thickness in cm (default is 20 cm)
+    sample_thickness: float = 0.2  # Sample thickness in cm (default 0.2 cm = 200 microns)
+    scintillator_thickness: float = 20  # Scintillator thickness in mm (default is 20 mm)
     csv_batch_size: int = 0
     # Ion parameters for radioactive decay
     ion_z: Optional[int] = None  # Atomic number
@@ -225,15 +225,15 @@ class Config:
             energy_unit="eV",
             position_z=-1059,
             position_unit="cm",
-            halfx=60,
-            halfy=60,
+            halfx=60, # mm
+            halfy=60, # mm
             shape_unit="mm",
             num_events=100000,
             progress_interval=100,
             csv_filename="sim_data.csv",
             sample_material="G4_TUNGSTEN",
             scintillator="GS20",
-            sample_thickness=0.005,  # 50 microns = 0.005 cm
+            sample_thickness=0.05,  # 50 microns = 0.05 mm
             scintillator_thickness=1,  # 1 mm thick scintillator
             csv_batch_size=0,
         )
@@ -286,8 +286,8 @@ class Config:
 /run/printProgress {self.progress_interval}
 /lumacam/sampleMaterial {self.sample_material}
 /lumacam/scintMaterial {self.scintillator}
-/lumacam/SampleThickness {self.sample_thickness} cm
-/lumacam/ScintThickness {self.scintillator_thickness} cm
+/lumacam/SampleThickness {self.sample_thickness*0.1*0.5}
+/lumacam/ScintThickness {self.scintillator_thickness*0.1*0.5}
 /lumacam/batchSize {self.csv_batch_size}
 /run/beamOn {self.num_events}
 """
