@@ -21,12 +21,62 @@ import importlib.resources
 from enum import IntEnum
 from io import StringIO
 from contextlib import redirect_stdout
+import tempfile
+import os
+
 
 class VerbosityLevel(IntEnum):
     """Verbosity levels for simulation output."""
     QUIET = 0    # Show nothing except progress bar
     BASIC = 1    # Show progress bar and basic info
     DETAILED = 2 # Show everything
+
+# Standalone function for multiprocessing (must be at module level, outside the class)
+def _process_ray_chunk_standalone(chunk, opm_file_path, wvl_values):
+    """
+    Process a chunk of rays using an optical model loaded from file.
+    
+    This standalone function is designed to be pickle-safe for multiprocessing 
+    by loading the optical model from a file path rather than passing the object directly.
+    
+    Parameters:
+    -----------
+    chunk : list
+        List of ray tuples: (position, direction, wavelength)
+    opm_file_path : str
+        Path to the optical model file (.roa)
+    wvl_values : numpy.ndarray
+        Wavelength specification array for the optical model
+        
+    Returns:
+    --------
+    list or None
+        List of traced ray results, or None if processing fails
+    """
+    try:
+        from rayoptics.environment import open_model
+        from rayoptics.optical.opticalspec import WvlSpec
+        import analyses  # Adjust import path as needed for your setup
+        
+        # Load the optical model from file in worker process
+        opt_model = open_model(opm_file_path)
+        
+        # Set the spectral region  
+        opt_model.optical_spec.spectral_region = WvlSpec(wvl_values, ref_wl=1)
+
+        # Trace the rays
+        result = analyses.trace_list_of_rays(
+            opt_model,
+            chunk,
+            output_filter="last",
+            rayerr_filter="summary"
+        )
+        
+        return result
+        
+    except Exception as e:
+        # Return None list for failed chunks - will be handled upstream
+        return [None] * len(chunk)
 
 class Lens:
     """
@@ -355,11 +405,12 @@ class Lens:
 
         opm.flip(1, 15)
         
-        opm.rebuild_from_seq()
+        # opm.rebuild_from_seq()
 
         # Store default gap thicknesses for microscope
         self.default_focus_gaps = [(24, sm.gaps[24].thi), (31, sm.gaps[31].thi)]
         opm = self.refocus(opm=opm, zfine=focus, save=False)
+        opm.update_model()
         self.opm0 = deepcopy(opm)
         
 
@@ -520,7 +571,7 @@ class Lens:
         
         sm.do_apertures = False
         opm.update_model()
-        # apply_paraxial_vignetting(opm)
+        apply_paraxial_vignetting(opm)
         
         self.opm = opm
         
@@ -531,8 +582,6 @@ class Lens:
         
         return opm
 
-
-
     def _chunk_rays(self, rays, chunk_size):
         """
         Split rays into chunks for parallel processing while preserving ray identifiers.
@@ -540,7 +589,7 @@ class Lens:
         Parameters:
         -----------
         rays : list
-            List of ray tuples: (id, position, direction, wavelength)
+            List of ray tuples: (position, direction, wavelength)
         chunk_size : int
             Number of rays per chunk
             
@@ -552,52 +601,119 @@ class Lens:
         return [rays[i:i+chunk_size] for i in range(0, len(rays), chunk_size)]
 
 
-    def trace_rays(self, opm=None, join=False, print_stats=False, n_processes=None,
-                   chunk_size=1000, progress_bar=True, timeout=3600, return_df=False,
-                   verbosity=VerbosityLevel.BASIC):
+    def trace_rays(self, opm=None, opm_file=None, zscan=0, zfine=0, fnumber=None,
+                join=False, print_stats=False, n_processes=None, chunk_size=1000, 
+                progress_bar=True, timeout=3600, return_df=False, 
+                verbosity=VerbosityLevel.BASIC):
         """
         Trace rays from simulation data files and save processed results.
 
-        This method:
-        1. Locates all non-empty 'sim_data_*.csv' files in 'SimPhotons' directory under self.archive
-        2. Processes ray data in parallel chunks using the specified optical model
-        3. Saves traced results to 'TracedPhotons' directory
-        4. Optionally returns combined results as a DataFrame
+        This method processes ray data from CSV files in the 'SimPhotons' directory using either
+        a provided optical model, a saved optical model file, or by creating a refocused version
+        of the default optical model. Results are saved to the 'TracedPhotons' directory.
+
+        Processing Pipeline:
+        1. Locates all non-empty 'sim_data_*.csv' files in 'SimPhotons' directory
+        2. Converts ray data to appropriate format for optical tracing
+        3. Processes rays in parallel chunks using multiprocessing
+        4. Saves traced results to 'TracedPhotons' directory
+        5. Optionally returns combined results as a DataFrame
 
         Parameters:
         -----------
         opm : OpticalModel, optional
-            Custom optical model to use instead of self.opm0
+            Custom optical model to use. If provided, will be saved to a temporary file
+            for multiprocessing compatibility. Cannot be used with opm_file.
+        opm_file : str or Path, optional  
+            Path to a saved optical model file (.roa). If provided, this model will be
+            loaded in each worker process. Cannot be used with opm.
+        zscan : float, default 0
+            Distance to move the lens assembly in mm relative to default object distance.
+            Only used if neither opm nor opm_file is provided.
+        zfine : float, default 0
+            Focus adjustment in mm relative to default gap thicknesses. Only used if 
+            neither opm nor opm_file is provided.
+        fnumber : float, optional
+            New f-number for the lens. Applied to refocused model if neither opm nor
+            opm_file is provided.
         join : bool, default False
-            If True, concatenates original data with traced results
+            If True, concatenates original simulation data with traced results.
+            If False, returns only traced positions and identifiers.
         print_stats : bool, default False
-            If True, prints tracing statistics
+            If True, prints detailed tracing statistics for each processed file
         n_processes : int, optional
-            Number of processes for parallel execution (None uses CPU count)
+            Number of processes for parallel execution. If None, uses CPU count.
+            Set to 1 to disable multiprocessing for debugging.
         chunk_size : int, default 1000
-            Number of rays per processing chunk
+            Number of rays per processing chunk. Larger chunks use more memory but
+            may be more efficient. Smaller chunks provide better progress tracking.
         progress_bar : bool, default True
-            If True, displays a progress bar during processing
+            If True, displays progress bars during file and chunk processing
         timeout : int, default 3600
-            Maximum time in seconds for processing each file
+            Maximum time in seconds for processing each file (currently unused)
         return_df : bool, default False
-            If True, returns a combined DataFrame of all processed files
+            If True, returns a combined DataFrame of all processed files.
+            If False, returns None (files are still saved to disk).
         verbosity : VerbosityLevel, default VerbosityLevel.BASIC
-            Controls the level of output detail:
-            - QUIET: Only progress bar
-            - BASIC: Progress bar + basic info
-            - DETAILED: All available information
+            Controls output detail level:
+            - QUIET: Only essential error messages
+            - BASIC: Progress bars + basic file info + statistics
+            - DETAILED: All available information including warnings
 
         Returns:
         --------
         pd.DataFrame or None
-            Combined DataFrame of all processed results if return_df=True, otherwise None
+            Combined DataFrame of all processed results if return_df=True, 
+            otherwise None. Each row represents a traced ray with columns:
+            - x2, y2, z2: Final ray position coordinates
+            - id, neutron_id: Ray identifiers (if present in original data)
+            - toa2: Time of arrival (if 'toa' present in original data)
+            - Original columns (if join=True)
 
         Raises:
         -------
+        ValueError
+            If both opm and opm_file are provided, or if optical model creation fails
+        FileNotFoundError
+            If opm_file is specified but file does not exist
         Exception
             If parallel processing or file operations fail
+
+        Examples:
+        ---------
+        # Basic usage with default optical model
+        >>> results = lens.trace_rays(print_stats=True)
+        
+        # Use custom refocusing parameters  
+        >>> results = lens.trace_rays(zscan=-2.8, zfine=20, fnumber=2.8)
+        
+        # Use existing saved optical model
+        >>> results = lens.trace_rays(opm_file="path/to/model.roa", return_df=True)
+        
+        # Use custom optical model object
+        >>> custom_opm = lens.refocus(zscan=-5, zfine=10)
+        >>> results = lens.trace_rays(opm=custom_opm, join=True)
+        
+        # Single-threaded processing for debugging
+        >>> results = lens.trace_rays(n_processes=1, verbosity=VerbosityLevel.DETAILED)
+
+        Notes:
+        ------
+        - Processing large numbers of rays benefits significantly from multiprocessing
+        - Memory usage scales with chunk_size × n_processes  
+        - Files with fewer than 100 bytes are automatically skipped
+        - Temporary files are automatically cleaned up after processing
+        - Ray tracing failures result in NaN values in output coordinates
         """
+        
+        # Validate input parameters
+        if opm is not None and opm_file is not None:
+            raise ValueError("Cannot specify both 'opm' and 'opm_file' parameters. Choose one.")
+        
+        if opm_file is not None and not Path(opm_file).exists():
+            raise FileNotFoundError(f"Optical model file not found: {opm_file}")
+        
+        # Set up directories
         sim_photons_dir = self.archive / "SimPhotons"
         traced_photons_dir = self.archive / "TracedPhotons"
         traced_photons_dir.mkdir(parents=True, exist_ok=True)
@@ -609,223 +725,373 @@ class Lens:
         if not valid_files:
             if verbosity >= VerbosityLevel.BASIC:
                 print("No valid simulation data files found in 'SimPhotons' directory.")
+                print(f"Searched in: {sim_photons_dir}")
+                print("Expected files matching pattern: sim_data_*.csv")
             return None
 
-        all_results = []
+        if verbosity >= VerbosityLevel.BASIC:
+            print(f"Found {len(valid_files)} valid simulation files to process")
 
-        # Progress bar for file processing
-        file_iter = tqdm(valid_files, desc="Processing files", disable=not progress_bar or verbosity == VerbosityLevel.QUIET)
+        # Handle optical model setup
+        temp_opm_file = None
+        opm_file_path = None
         
-        for csv_file in file_iter:
-            if verbosity >= VerbosityLevel.DETAILED:
-                print(f"Processing file: {csv_file.name}")
-
-            # Load data
-            df = pd.read_csv(csv_file)
-            if df.empty:
+        try:
+            if opm is not None:
+                # Save provided OPM to temporary file for multiprocessing
+                temp_dir = self.archive / "temp_opm"
+                temp_dir.mkdir(exist_ok=True)
+                temp_opm_file = temp_dir / "temp_opm_for_tracing.roa"
+                opm.save_model(str(temp_opm_file))
+                opm_file_path = str(temp_opm_file)
                 if verbosity >= VerbosityLevel.DETAILED:
-                    print(f"Skipping empty file: {csv_file.name}")
-                continue
+                    print(f"Saved temporary OPM to: {temp_opm_file}")
+                    
+            elif opm_file is not None:
+                # Use provided file path
+                opm_file_path = str(opm_file)
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"Using OPM file: {opm_file_path}")
+                    
+            else:
+                # Create refocused OPM and save to temporary file
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"Creating refocused OPM with zscan={zscan}, zfine={zfine}, fnumber={fnumber}")
+                
+                refocused_opm = self.refocus(zscan=zscan, zfine=zfine, fnumber=fnumber, save=False)
+                
+                temp_dir = self.archive / "temp_opm" 
+                temp_dir.mkdir(exist_ok=True)
+                filename = f"temp_refocus_zscan_{zscan}_zfine_{zfine}"
+                if fnumber is not None:
+                    filename += f"_f{fnumber:.2f}"
+                filename += ".roa"
+                temp_opm_file = temp_dir / filename
+                refocused_opm.save_model(str(temp_opm_file))
+                opm_file_path = str(temp_opm_file)
+                
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"Saved refocused OPM to: {temp_opm_file}")
 
-            # Verify data integrity
-            df['_row_index'] = np.arange(len(df))
+            all_results = []
 
-            # Get wavelengths for the optical model
-            wvl = df["wavelength"].value_counts().to_frame().reset_index()
-            wvl["count"] = 1
-            wvl_values = wvl.values
-
-            # Convert DataFrame to ray format
-            rays = [
-                (np.array([row.x, row.y, row.z], dtype=np.float64),
-                 np.array([row.dx, row.dy, row.dz], dtype=np.float64),
-                 np.array([row.wavelength], dtype=np.float64))
-                for row in df.itertuples()
-            ]
-
-            # Split rays into chunks
-            chunks = []
-            index_chunks = []
-            for i in range(0, len(rays), chunk_size):
-                end = min(i + chunk_size, len(rays))
-                chunks.append(rays[i:end])
-                index_chunks.append(df['_row_index'].iloc[i:end].tolist())
+            # Progress bar for file processing
+            file_desc = f"Processing {len(valid_files)} files"
+            file_iter = tqdm(valid_files, desc=file_desc, 
+                            disable=not progress_bar or verbosity == VerbosityLevel.QUIET)
             
-            rays = None  # Clear memory
+            for csv_file in file_iter:
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"\nProcessing file: {csv_file.name}")
 
-            # Process chunks in parallel
-            process_chunk = partial(
-                self._process_ray_chunk,
-                lens_kind=self.kind,
-                zmx_file=self.zmx_file,
-                focus_gaps=self.focus_gaps,
-                dist_from_obj=self.dist_from_obj,
-                gap_between_lenses=self.gap_between_lenses,
-                dist_to_screen=self.dist_to_screen,
-                fnumber=self.fnumber,
-                wvl_values=wvl_values,
-                opm=opm
-            )
-            try:
-                with Pool(processes=n_processes) as pool:
-                    results_with_indices = []
-                    for chunk_idx, (chunk_result, indices) in enumerate(
-                        tqdm(
-                            zip(pool.imap(process_chunk, chunks), index_chunks),
-                            total=len(chunks),
-                            desc=f"Tracing rays ({csv_file.name})",
-                            disable=not progress_bar or verbosity == VerbosityLevel.QUIET
-                        )
-                    ):
-                        if chunk_result is None:
-                            chunk_result = [None] * len(indices)
-                        elif len(chunk_result) != len(indices):
-                            if verbosity >= VerbosityLevel.DETAILED:
-                                print(f"Warning: Chunk {chunk_idx} returned {len(chunk_result)} results but expected {len(indices)}")
-                            if len(chunk_result) < len(indices):
-                                chunk_result = chunk_result + [None] * (len(indices) - len(chunk_result))
-                            else:
-                                chunk_result = chunk_result[:len(indices)]
+                # Load and validate data
+                try:
+                    df = pd.read_csv(csv_file)
+                except Exception as e:
+                    if verbosity >= VerbosityLevel.BASIC:
+                        print(f"Error reading {csv_file.name}: {str(e)}")
+                    continue
+                    
+                if df.empty:
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"Skipping empty file: {csv_file.name}")
+                    continue
+
+                # Add row index for result alignment
+                df['_row_index'] = np.arange(len(df))
+
+                # Validate required columns
+                required_cols = ['x', 'y', 'z', 'dx', 'dy', 'dz', 'wavelength']
+                missing_cols = [col for col in required_cols if col not in df.columns]
+                if missing_cols:
+                    if verbosity >= VerbosityLevel.BASIC:
+                        print(f"Skipping {csv_file.name}: missing columns {missing_cols}")
+                    continue
+
+                # Get wavelengths for the optical model
+                wvl = df["wavelength"].value_counts().to_frame().reset_index()
+                wvl["count"] = 1
+                wvl_values = wvl.values
+
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"  Rays to process: {len(df)}")
+                    print(f"  Unique wavelengths: {len(wvl_values)}")
+                    print(f"  Chunk size: {chunk_size}")
+                    print(f"  Processes: {n_processes or 'auto'}")
+
+                # Convert DataFrame to ray format
+                rays = [
+                    (np.array([row.x, row.y, row.z], dtype=np.float64),
+                    np.array([row.dx, row.dy, row.dz], dtype=np.float64),
+                    np.array([row.wavelength], dtype=np.float64))
+                    for row in df.itertuples()
+                ]
+
+                # Split rays into chunks
+                chunks = []
+                index_chunks = []
+                for i in range(0, len(rays), chunk_size):
+                    end = min(i + chunk_size, len(rays))
+                    chunks.append(rays[i:end])
+                    index_chunks.append(df['_row_index'].iloc[i:end].tolist())
+                
+                rays = None  # Clear memory
+
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"  Created {len(chunks)} chunks for processing")
+
+                # Process chunks in parallel
+                process_chunk = partial(
+                    _process_ray_chunk_standalone,  # Use standalone function
+                    opm_file_path=opm_file_path,
+                    wvl_values=wvl_values
+                )
+                
+                try:
+                    if n_processes == 1:
+                        # Sequential processing for debugging
+                        if verbosity >= VerbosityLevel.DETAILED:
+                            print("  Using sequential processing")
+                        results_with_indices = []
+                        chunk_iter = tqdm(enumerate(zip(chunks, index_chunks)), 
+                                        total=len(chunks),
+                                        desc=f"Tracing rays ({csv_file.name})",
+                                        disable=not progress_bar or verbosity == VerbosityLevel.QUIET)
                         
-                        results_with_indices.extend(zip(chunk_result, indices))
-                    
-                    pool.close()
-                    pool.join()
-                    
-            except Exception as e:
-                if verbosity >= VerbosityLevel.BASIC:
-                    print(f"Error in parallel processing for {csv_file.name}: {str(e)}")
-                raise
+                        for chunk_idx, (chunk, indices) in chunk_iter:
+                            chunk_result = _process_ray_chunk_standalone(chunk, opm_file_path, wvl_values)
+                            results_with_indices.extend(self._align_chunk_results(
+                                chunk_result, indices, chunk_idx, verbosity))
+                    else:
+                        # Parallel processing
+                        if verbosity >= VerbosityLevel.DETAILED:
+                            print(f"  Using parallel processing with {n_processes or 'auto'} processes")
+                        
+                        with Pool(processes=n_processes) as pool:
+                            results_with_indices = []
+                            chunk_iter = tqdm(
+                                enumerate(zip(pool.imap(process_chunk, chunks), index_chunks)),
+                                total=len(chunks),
+                                desc=f"Tracing rays ({csv_file.name})",
+                                disable=not progress_bar or verbosity == VerbosityLevel.QUIET
+                            )
+                            
+                            for chunk_idx, (chunk_result, indices) in chunk_iter:
+                                results_with_indices.extend(self._align_chunk_results(
+                                    chunk_result, indices, chunk_idx, verbosity))
+                            
+                            pool.close()
+                            pool.join()
+                            
+                except Exception as e:
+                    if verbosity >= VerbosityLevel.BASIC:
+                        print(f"Error in processing {csv_file.name}: {str(e)}")
+                        print("Consider using n_processes=1 for debugging")
+                    raise
 
-            # Sort results by original row index
-            results_with_indices.sort(key=lambda x: x[1])
-            
-            # Create result DataFrame
-            processed_results = []
-            if len(results_with_indices) != len(df):
+                # Create result DataFrame from processed chunks
+                result_df = self._create_result_dataframe(results_with_indices, df, join, verbosity)
+
+                # Print statistics if requested
+                if print_stats and verbosity >= VerbosityLevel.BASIC:
+                    self._print_tracing_stats(csv_file.name, df, result_df)
+
+                # Save results to file
+                output_file = traced_photons_dir / f"traced_{csv_file.name}"
+                result_df.to_csv(output_file, index=False)
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"  Saved results to: {output_file}")
+
+                if return_df:
+                    all_results.append(result_df)
+
+            # Return combined results if requested
+            if return_df and all_results:
+                combined_df = pd.concat(all_results, ignore_index=True)
                 if verbosity >= VerbosityLevel.BASIC:
-                    print(f"Warning: Mismatch in result count. Expected {len(df)}, got {len(results_with_indices)}")
-                if len(results_with_indices) < len(df):
-                    missing_indices = set(range(len(df))) - set(idx for _, idx in results_with_indices)
-                    for idx in missing_indices:
-                        results_with_indices.append((None, idx))
-                    results_with_indices.sort(key=lambda x: x[1])
-                else:
-                    results_with_indices = results_with_indices[:len(df)]
+                    print(f"\nReturning combined DataFrame with {len(combined_df)} rows")
+                return combined_df
+
+            if verbosity >= VerbosityLevel.BASIC:
+                print(f"\nProcessing complete. Results saved to: {traced_photons_dir}")
             
-            for entry, row_idx in results_with_indices:
-                if entry is None:
+            return None
+
+        finally:
+            # Clean up temporary files
+            if temp_opm_file and temp_opm_file.exists():
+                try:
+                    temp_opm_file.unlink()
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"Cleaned up temporary file: {temp_opm_file}")
+                except Exception as e:
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"Warning: Could not clean up {temp_opm_file}: {e}")
+
+
+
+
+
+    def _align_chunk_results(self, chunk_result, indices, chunk_idx, verbosity):
+        """
+        Align chunk processing results with original row indices.
+        
+        Parameters:
+        -----------
+        chunk_result : list or None
+            Results from processing a chunk of rays
+        indices : list
+            Original row indices for this chunk
+        chunk_idx : int
+            Index of the current chunk (for error reporting)
+        verbosity : VerbosityLevel
+            Current verbosity level
+            
+        Returns:
+        --------
+        list
+            List of (result, index) tuples properly aligned
+        """
+        if chunk_result is None:
+            chunk_result = [None] * len(indices)
+        elif len(chunk_result) != len(indices):
+            if verbosity >= VerbosityLevel.DETAILED:
+                print(f"    Warning: Chunk {chunk_idx} returned {len(chunk_result)} "
+                    f"results but expected {len(indices)}")
+            if len(chunk_result) < len(indices):
+                # Pad with None for missing results
+                chunk_result = chunk_result + [None] * (len(indices) - len(chunk_result))
+            else:
+                # Truncate excess results
+                chunk_result = chunk_result[:len(indices)]
+        
+        return list(zip(chunk_result, indices))
+
+
+    def _create_result_dataframe(self, results_with_indices, original_df, join, verbosity):
+        """
+        Create a DataFrame from traced ray results.
+        
+        Parameters:
+        -----------
+        results_with_indices : list
+            List of (result, original_index) tuples
+        original_df : pd.DataFrame
+            Original simulation data
+        join : bool
+            Whether to join with original data
+        verbosity : VerbosityLevel
+            Current verbosity level
+            
+        Returns:
+        --------
+        pd.DataFrame
+            DataFrame with traced ray results
+        """
+        # Sort results by original row index to maintain order
+        results_with_indices.sort(key=lambda x: x[1])
+        
+        # Handle length mismatches
+        if len(results_with_indices) != len(original_df):
+            if verbosity >= VerbosityLevel.BASIC:
+                print(f"    Warning: Result count mismatch. Expected {len(original_df)}, "
+                    f"got {len(results_with_indices)}")
+            
+            if len(results_with_indices) < len(original_df):
+                # Add missing results as None
+                missing_indices = set(range(len(original_df))) - set(idx for _, idx in results_with_indices)
+                for idx in sorted(missing_indices):
+                    results_with_indices.append((None, idx))
+                results_with_indices.sort(key=lambda x: x[1])
+            else:
+                # Truncate excess results
+                results_with_indices = results_with_indices[:len(original_df)]
+        
+        # Convert results to DataFrame rows
+        processed_results = []
+        for entry, row_idx in results_with_indices:
+            if entry is None:
+                # Ray tracing failed
+                processed_results.append({
+                    "_row_index": row_idx,
+                    "x2": np.nan, "y2": np.nan, "z2": np.nan
+                })
+            else:
+                try:
+                    # Extract ray position from trace result
+                    ray, path_length, wvl = entry
+                    position = ray[0]  # Final position
+                    processed_results.append({
+                        "_row_index": row_idx,
+                        "x2": position[0], "y2": position[1], "z2": position[2]
+                    })
+                except Exception as e:
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"    Error extracting result: {str(e)}")
                     processed_results.append({
                         "_row_index": row_idx,
                         "x2": np.nan, "y2": np.nan, "z2": np.nan
                     })
-                else:
-                    try:
-                        ray, path_length, wvl = entry
-                        position = ray[0]
-                        processed_results.append({
-                            "_row_index": row_idx,
-                            "x2": position[0], "y2": position[1], "z2": position[2]
-                        })
-                    except Exception as e:
-                        if verbosity >= VerbosityLevel.DETAILED:
-                            print(f"Error processing result entry: {str(e)}")
-                        processed_results.append({
-                            "_row_index": row_idx,
-                            "x2": np.nan, "y2": np.nan, "z2": np.nan
-                        })
 
-            result_df = pd.DataFrame(processed_results)
-            result_df = result_df.sort_values(by="_row_index").reset_index(drop=True)
+        # Create result DataFrame
+        result_df = pd.DataFrame(processed_results)
+        result_df = result_df.sort_values(by="_row_index").reset_index(drop=True)
 
-            if join:
-                result = pd.merge(df, result_df.drop(columns=["_row_index"]), 
-                                 left_on="_row_index", right_index=True, how="left")
-            else:
-                result = result_df.drop(columns=["_row_index"])
-                id_cols = ["id", "neutron_id"]
-                for col in id_cols:
-                    if col in df.columns:
-                        result[col] = df[col].values
-                if "toa" in df.columns:
-                    result["toa2"] = df["toa"].values
+        if join:
+            # Merge with original data
+            result = pd.merge(original_df, result_df.drop(columns=["_row_index"]), 
+                            left_on="_row_index", right_index=True, how="left")
+        else:
+            # Include only essential columns
+            result = result_df.drop(columns=["_row_index"])
+            
+            # Add identifier columns if present
+            id_cols = ["id", "neutron_id"]
+            for col in id_cols:
+                if col in original_df.columns:
+                    result[col] = original_df[col].values
+                    
+            # Add time-of-arrival if present  
+            if "toa" in original_df.columns:
+                result["toa2"] = original_df["toa"].values
 
-            if "_row_index" in result.columns:
-                result = result.drop(columns=["_row_index"])
+        # Clean up any remaining internal columns
+        if "_row_index" in result.columns:
+            result = result.drop(columns=["_row_index"])
 
-            if print_stats and verbosity >= VerbosityLevel.BASIC:
-                total = len(df)
-                traced = result.dropna(subset=["x2"]).shape[0]
-                percentage = (traced / total) * 100
-                print(f"File: {csv_file.name} - Original events: {total}, "
-                      f"Traced events: {traced}, Percentage: {percentage:.1f}%")
+        return result
 
-            output_file = traced_photons_dir / f"traced_{csv_file.name}"
-            result.to_csv(output_file, index=False)
-            if verbosity >= VerbosityLevel.DETAILED:
-                print(f"Saved traced results to {output_file}")
 
-            if return_df:
-                all_results.append(result)
+    def _print_tracing_stats(self, filename, original_df, result_df):
+        """
+        Print statistics about ray tracing results.
+        
+        Parameters:
+        -----------
+        filename : str
+            Name of the processed file
+        original_df : pd.DataFrame  
+            Original simulation data
+        result_df : pd.DataFrame
+            Traced results data
+        """
+        total = len(original_df)
+        traced = result_df.dropna(subset=["x2"]).shape[0]
+        failed = total - traced
+        percentage = (traced / total) * 100 if total > 0 else 0
+        
+        print(f"  File: {filename}")
+        print(f"    Original rays: {total:,}")
+        print(f"    Successfully traced: {traced:,} ({percentage:.1f}%)")
+        print(f"    Failed traces: {failed:,} ({100-percentage:.1f}%)")
+        
+        if traced > 0:
+            # Basic position statistics
+            x_range = result_df['x2'].max() - result_df['x2'].min()
+            y_range = result_df['y2'].max() - result_df['y2'].min()
+            z_range = result_df['z2'].max() - result_df['z2'].min()
+            print(f"    Position ranges - X: {x_range:.3f}mm, Y: {y_range:.3f}mm, Z: {z_range:.3f}mm")
 
-        if return_df and all_results:
-            combined_df = pd.concat(all_results, ignore_index=True)
-            if verbosity >= VerbosityLevel.DETAILED:
-                print(f"Returning combined DataFrame with {len(combined_df)} rows")
-            return combined_df
-
-        return None
-
-    def _process_ray_chunk(self, chunk, lens_kind, zmx_file, focus_gaps, dist_from_obj,
-                           gap_between_lenses, dist_to_screen, fnumber, wvl_values, opm=None):
-        """Process a chunk of rays at once by reconstructing the optical model."""
-        try:
-            # Reconstruct the optical model in the worker process
-            if opm is not None:
-                opt_model = deepcopy(opm)
-            else:
-                if lens_kind == "nikkor_58mm":
-                    opt_model = self.nikkor_58mm(
-                        dist_from_obj=dist_from_obj,
-                        fnumber=fnumber,
-                        save=False
-                    )
-                elif lens_kind == "microscope":
-                    opt_model = self.microscope_nikor_80_200mm_canon_50mm(
-                        focus=self.focus,
-                        dist_from_obj=dist_from_obj,
-                        gap_between_lenses=gap_between_lenses,
-                        dist_to_screen=dist_to_screen,
-                        fnumber=fnumber,
-                        save=False
-                    )
-                elif lens_kind == "zmx_file":
-                    opt_model = self.load_zmx_lens(
-                        zmx_file=zmx_file,
-                        focus=self.focus,
-                        dist_from_obj=dist_from_obj,
-                        gap_between_lenses=gap_between_lenses,
-                        dist_to_screen=dist_to_screen,
-                        fnumber=fnumber,
-                        save=False
-                    )
-                else:
-                    raise ValueError(f"Unsupported lens kind: {lens_kind}")
-
-            # Set the spectral region
-            opt_model.optical_spec.spectral_region = WvlSpec(wvl_values, ref_wl=1)
-
-            # Trace the rays
-            return analyses.trace_list_of_rays(
-                opt_model,
-                chunk,
-                output_filter="last",
-                rayerr_filter="summary"
-            )
-        except Exception as e:
-            # Log the error and return empty results
-            # print(f"Error processing chunk: {str(e)}")
-            return [None] * len(chunk)
 
     def zscan(self, zfocus_range: Union[np.ndarray, list, float] = 0.,
             zfine_range: Union[np.ndarray, list, float] = 0.,
