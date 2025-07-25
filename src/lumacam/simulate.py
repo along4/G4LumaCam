@@ -322,8 +322,9 @@ class Config:
             f"  Shape: {self.shape} ({self.halfx}x{self.halfy} {self.shape_unit})\n"
             f"  Angle: {self.angle_type} (max theta: {self.max_theta} {self.angle_unit})\n"
             f"  Sample Material: {self.sample_material}\n"
-            f"  Scintillator: {self.scintillator}\n"
             f"  Sample Thickness: {self.sample_thickness} cm\n"
+            f"  Scintillator: {self.scintillator}\n"
+            f"  Scintillator Thickness: {self.scintillator_thickness} cm\n"
             f"  Events: {self.num_events}\n"
             f"  Output: {self.csv_filename}"
         )
