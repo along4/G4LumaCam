@@ -733,7 +733,7 @@ class Lens:
         try:
             if opm is not None:
                 # Save provided OPM to temporary file for multiprocessing
-                temp_dir = self.archive / "temp_opm"
+                temp_dir = self.archive / "TempOpm"
                 temp_dir.mkdir(exist_ok=True)
                 temp_opm_file = temp_dir / "temp_opm_for_tracing.roa"
                 opm.save_model(str(temp_opm_file))
@@ -754,7 +754,7 @@ class Lens:
                 
                 refocused_opm = self.refocus(zscan=zscan, zfine=zfine, fnumber=fnumber, save=False)
                 
-                temp_dir = self.archive / "temp_opm" 
+                temp_dir = self.archive / "TempOpm" 
                 temp_dir.mkdir(exist_ok=True)
                 filename = f"temp_refocus_zscan_{zscan}_zfine_{zfine}"
                 if fnumber is not None:
@@ -879,6 +879,7 @@ class Lens:
 
                 # Create result DataFrame from processed chunks
                 result_df = self._create_result_dataframe(results_with_indices, df, join, verbosity)
+                result_df["toa2"] = df["toa"] if "toa" in df.columns else np.nan
 
                 # Print statistics if requested
                 if print_stats and verbosity >= VerbosityLevel.BASIC:
@@ -906,15 +907,16 @@ class Lens:
             return None
 
         finally:
-            # Clean up temporary files
-            if temp_opm_file and temp_opm_file.exists():
-                try:
-                    temp_opm_file.unlink()
-                    if verbosity >= VerbosityLevel.DETAILED:
-                        print(f"Cleaned up temporary file: {temp_opm_file}")
-                except Exception as e:
-                    if verbosity >= VerbosityLevel.DETAILED:
-                        print(f"Warning: Could not clean up {temp_opm_file}: {e}")
+            pass
+            # # Clean up temporary files
+            # if temp_opm_file and temp_opm_file.exists():
+            #     try:
+            #         temp_opm_file.unlink()
+            #         if verbosity >= VerbosityLevel.DETAILED:
+            #             print(f"Cleaned up temporary file: {temp_opm_file}")
+            #     except Exception as e:
+            #         if verbosity >= VerbosityLevel.DETAILED:
+            #             print(f"Warning: Could not clean up {temp_opm_file}: {e}")
 
 
     def _align_chunk_results(self, chunk_result, indices, chunk_idx, verbosity):

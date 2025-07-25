@@ -493,14 +493,42 @@ class Simulate:
             
             for csv_file in csv_files:
                 if csv_file.exists():
-                    df = pd.read_csv(csv_file)
-                    # Check if file has actual data (more than just headers)
-                    if df.shape[0] == 0:  # No data rows
+                    file_size = csv_file.stat().st_size
+                    if verbosity >= VerbosityLevel.BASIC:
+                        print(f"Processing CSV file: {csv_file} (size: {file_size} bytes)")
+                    
+                    # Check if file is completely empty (0 bytes)
+                    if file_size == 0:
                         csv_file.unlink()
                         if verbosity >= VerbosityLevel.BASIC:
-                            print(f"Removed header-only CSV file: {csv_file}")
-                    else:
-                        dfs.append(df)
+                            print(f"Removed empty CSV file: {csv_file}")
+                        continue
+                    
+                    try:
+                        df = pd.read_csv(csv_file)
+                        if verbosity >= VerbosityLevel.BASIC:
+                            print(f"CSV file {csv_file}: {df.shape[0]} rows, {df.shape[1]} columns")
+                        
+                        # Check if file has actual data (more than just headers)
+                        if df.shape[0] == 0:  # No data rows
+                            csv_file.unlink()
+                            if verbosity >= VerbosityLevel.BASIC:
+                                print(f"Removed header-only CSV file: {csv_file}")
+                        else:
+                            dfs.append(df)
+                            if verbosity >= VerbosityLevel.BASIC:
+                                print(f"Added {df.shape[0]} rows from {csv_file}")
+                    except (pd.errors.EmptyDataError, pd.errors.ParserError) as e:
+                        # Handle completely empty files or malformed CSV files
+                        print(f"Removing malformed/empty CSV file {csv_file}: {e}")
+                        csv_file.unlink()
+                    except Exception as e:
+                        # Handle any other CSV reading errors
+                        print(f"Error reading CSV file {csv_file}: {e}")
+                        csv_file.unlink()
+                else:
+                    if verbosity >= VerbosityLevel.BASIC:
+                        print(f"CSV file does not exist: {csv_file}")
             
             if dfs:
                 combined_df = pd.concat(dfs, ignore_index=True)

@@ -649,6 +649,7 @@ class Analysis:
                                     suffix: str = "",
                                     time_norm_ns: float = 1.0,
                                     spatial_norm_px: float = 1.0,
+                                    fov: float = 120.0,
                                     focus_factor: float = 1.2) -> pd.DataFrame:
         """
         Processes data event by event, grouping optical photons by neutron_id.
@@ -675,6 +676,7 @@ class Analysis:
             suffix: Optional suffix for output folder and files
             time_norm_ns: Normalization factor for time differences (ns) in matching
             spatial_norm_px: Normalization factor for spatial differences (px) in matching
+            fov: Field of view in mm
             focus_factor: Factor that relates the hit position on the sensor to the actual hit position on the scintillator screen
         
         Returns:
@@ -899,7 +901,7 @@ class Analysis:
             if verbosity >= 1:
                 print("Merging processed results with simulation and traced data...")
             
-            def merge_sim_and_recon_data(sim_data, traced_data, recon_data, focus_factor: float = 1.2):
+            def merge_sim_and_recon_data(sim_data, traced_data, recon_data, fov:float = 120, focus_factor: float = 1.2):
                 """
                 Merge simulation, traced photon, and reconstruction dataframes based on neutron_id
                 and row-by-row correspondence between sim_data and traced_data.
@@ -911,6 +913,7 @@ class Analysis:
                     sim_data: DataFrame with simulation data
                     traced_data: DataFrame with traced photon data (row-aligned with sim_data)
                     recon_data: DataFrame with reconstructed event data
+                    fov (float, optional): Field of View in mm, used to scale photon positions
                     focus_factor (float, optional): determines the ratio of position recorded on the sensor to the actual hit position on the scintillator screen 
                 
                 Returns:
@@ -1036,7 +1039,7 @@ class Analysis:
                                         merged_df.loc[sim_idx, 'time_diff_ns'] = time_diffs[idx]
                                         merged_df.loc[sim_idx, 'spatial_diff_px'] = spatial_diffs[idx]
                 
-                merged_df = self.calculate_reconstruction_stats(merged_df, focus_factor=focus_factor)
+                merged_df = self.calculate_reconstruction_stats(merged_df, fov=fov, focus_factor=focus_factor)
                 
                 # Ensure column order
                 sim_cols = [col for col in sim_df.columns if col not in ['x2', 'y2', 'z2', 'toa2', 'photon_px', 'photon_py']]
@@ -1060,7 +1063,7 @@ class Analysis:
                     if verbosity >= 1:
                         print("Warning: No traced photon CSV files found in TracedPhotons folder.")
             
-            merged_df = merge_sim_and_recon_data(self.sim_data, traced_data, combined_results, focus_factor=focus_factor)
+            merged_df = merge_sim_and_recon_data(self.sim_data, traced_data, combined_results, fov=fov, focus_factor=focus_factor)
             
             # Save merged results in suffixed folder
             merged_csv = suffix_dir / "merged_all_batches_results.csv"
@@ -1073,313 +1076,27 @@ class Analysis:
         
         return combined_results
         
-    def calculate_reconstruction_stats(self,df: pd.DataFrame, focus_factor:float = 1.2):
+    def calculate_reconstruction_stats(self,df: pd.DataFrame, fov:float=120, focus_factor:float = 1.2):
         """
         Calculates stats on reconstructed events, Adds columms to the analysis dataframe.
 
         Input:
             - df (pd.DataFrame): merged_df that contains all the reconstructed event-by-event columns
+            - fov (float): Field of view in mm, used to scale pixel coordinates
             - focus_factor (float): A fcator that translates the position recorded on the sensor to the original position on the scintillator
 
         Returns:
             - df (pd.DataFrame): table with new stats columns
         """
                 # Compute additional columns
-        df["x3"] = (128 - df["x [px]"]) / 256 * 120*focus_factor
-        df["y3"] = (128 - df["y [px]"]) / 256 * 120*focus_factor
+        df["x3"] = (128 - df["x [px]"]) / 256 * fov *focus_factor
+        df["y3"] = (128 - df["y [px]"]) / 256 * fov *focus_factor
         df["delta_x"] = df["x3"] - df["nx"]
         df["delta_y"] = df["y3"] - df["ny"]
         df["delta_r"] = np.sqrt(df["delta_x"]**2 + df["delta_y"]**2)
 
         return df
 
-    def calculate_event_ellipsoid_shape(self, 
-                                        results_df: pd.DataFrame=None,
-                                        verbosity: VerbosityLevel = VerbosityLevel.QUIET) -> pd.DataFrame:
-        """
-        Calculates the ellipsoid shape parameters (major and minor axes) for each reconstructed event
-        by identifying the original photon data points that correspond to each event.
-        Also calculates parent track length and its X,Y projections, and includes the parent name.
-        
-        Args:
-            results_df: DataFrame containing the reconstructed events (from process_data_event_by_event)
-            verbosity: Level of output verbosity
-        
-        Returns:
-            DataFrame with added ellipsoid shape parameters, track length metrics, and parent info for each event
-        """
-        from sklearn.decomposition import PCA
-
-        if results_df is None or results_df.empty:
-            # Check if the reconstructed events exist in the standard location
-            reconstructed_events_path = self.archive / "all_batches_results.csv"
-            if not reconstructed_events_path.exists():
-                if verbosity >= VerbosityLevel.BASIC:
-                    print(f"No reconstructed events found at {reconstructed_events_path}")
-                return pd.DataFrame()
-            results_df = pd.read_csv(reconstructed_events_path)
-        
-        results_df.columns = [col.lstrip() for col in results_df.columns]
-        
-        if verbosity >= VerbosityLevel.BASIC:
-            print("Calculating ellipsoid shape parameters and track lengths for reconstructed events...")
-        
-        try:
-            # Combine data with neutron_id for reference
-            combined_data = self.data.copy()
-            
-            # Check data length match
-            if len(self.data) != len(self.sim_data):
-                if verbosity >= VerbosityLevel.BASIC:
-                    print(f"Warning: Data length mismatch: self.data has {len(self.data)} rows, self.sim_data has {len(self.sim_data)} rows")
-                # Try to handle this by using only matching indices
-                combined_data = self.data.iloc[:min(len(self.data), len(self.sim_data))].copy()
-                sim_data_subset = self.sim_data.iloc[:min(len(self.data), len(self.sim_data))]
-                combined_data['neutron_id'] = sim_data_subset['neutron_id']
-            else:
-                combined_data['neutron_id'] = self.sim_data['neutron_id']
-            
-            # Create a copy of results with added shape parameters
-            enhanced_results = results_df.copy()
-            enhanced_results['major_axis_px'] = np.nan
-            enhanced_results['minor_axis_px'] = np.nan
-            enhanced_results['orientation_deg'] = np.nan
-            enhanced_results['original_photon_ids'] = None  # Will store lists of original photon indices
-            
-            # Add new columns for track length calculations
-            enhanced_results['track_length_3d'] = np.nan
-            enhanced_results['track_length_xy'] = np.nan
-            enhanced_results['track_length_x'] = np.nan
-            enhanced_results['track_length_y'] = np.nan
-            enhanced_results['track_length_z'] = np.nan
-            enhanced_results['parent_name'] = None  # Will store the parent particle name
-            enhanced_results['parent_energy'] = np.nan  # Will store the parent particle energy if available
-            
-            # Group the original data by neutron_id for faster lookup
-            neutron_groups = {}
-            for neutron_id, group in combined_data.groupby('neutron_id'):
-                neutron_groups[neutron_id] = group
-            
-            # Create a dictionary to store parent information by neutron_id for efficient lookup
-            parent_info = {}
-            try:
-                # Group by neutron_id and select first row (parent info should be consistent within a neutron_id)
-                for neutron_id, group in self.sim_data.groupby('neutron_id'):
-                    first_row = group.iloc[0]
-                    parent_info[neutron_id] = {
-                        'parent_name': first_row.get('parentName', None),
-                        'parent_energy': first_row.get('parentEnergy', None)
-                    }
-            except Exception as e:
-                if verbosity >= VerbosityLevel.BASIC:
-                    print(f"Warning: Error building parent info dictionary: {str(e)}")
-            
-            # Process each reconstructed event
-            for idx, event in tqdm(enhanced_results.iterrows(), total=len(enhanced_results), desc="Processing reconstructed events"):
-                try:
-                    neutron_id = event['neutron_id']
-                    event_time = event['t [s]']
-                    n_photons = event['nPhotons [1]']
-                    
-                    # Add parent information from our dictionary
-                    if neutron_id in parent_info:
-                        enhanced_results.at[idx, 'parent_name'] = parent_info[neutron_id]['parent_name']
-                        enhanced_results.at[idx, 'parent_energy'] = parent_info[neutron_id]['parent_energy']
-                    
-                    # Skip if the event has only one photon (can't form an ellipse)
-                    if n_photons <= 1:
-                        continue
-                    
-                    # Get all photons for this neutron_id
-                    if neutron_id not in neutron_groups:
-                        if verbosity >= VerbosityLevel.BASIC:
-                            print(f"Neutron ID {neutron_id} not found in original data")
-                        continue
-                        
-                    neutron_data = neutron_groups[neutron_id]
-                    
-                    # Calculate track length from sim_data
-                    try:
-                        # Find the corresponding sim data for this neutron_id
-                        sim_neutron_data = self.sim_data[self.sim_data['neutron_id'] == neutron_id]
-                        
-                        if len(sim_neutron_data) > 0:
-                            # We only need one row since track info should be consistent for all photons of same neutron
-                            first_row = sim_neutron_data.iloc[0]
-                            
-                            # Check if necessary columns exist
-                            if all(col in first_row for col in ['nx', 'ny', 'nz', 'px', 'py', 'pz']):
-                                # Calculate the 3D track length
-                                nx, ny, nz = first_row['nx'], first_row['ny'], first_row['nz']
-                                px, py, pz = first_row['px'], first_row['py'], first_row['pz']
-                                
-                                # 3D track length
-                                track_length_3d = np.sqrt((nx - px)**2 + (ny - py)**2 + (nz - pz)**2)
-                                
-                                # XY projection length
-                                track_length_xy = np.sqrt((nx - px)**2 + (ny - py)**2)
-                                
-                                # Individual axis projections
-                                track_length_x = abs(nx - px)
-                                track_length_y = abs(ny - py)
-                                track_length_z = abs(nz - pz)
-                                
-                                # Store track length results
-                                enhanced_results.at[idx, 'track_length_3d'] = track_length_3d
-                                enhanced_results.at[idx, 'track_length_xy'] = track_length_xy
-                                enhanced_results.at[idx, 'track_length_x'] = track_length_x
-                                enhanced_results.at[idx, 'track_length_y'] = track_length_y
-                                enhanced_results.at[idx, 'track_length_z'] = track_length_z
-                                
-                                if verbosity >= VerbosityLevel.DETAILED:
-                                    print(f"Track length for event {idx} (neutron_id {neutron_id}): 3D={track_length_3d:.3f}, XY={track_length_xy:.3f}")
-                    except Exception as e:
-                        if verbosity >= VerbosityLevel.BASIC:
-                            print(f"Error calculating track length for event {idx}: {str(e)}")
-                    
-                    # Convert TOA to seconds to match the event time format
-                    neutron_data = neutron_data.copy()
-                    
-                    try:
-                        neutron_data['toa_s'] = neutron_data['toa2'] * 1e-9
-                    except KeyError:
-                        # Handle case where 'toa2' column might be missing or named differently
-                        if 'toa' in neutron_data.columns:
-                            neutron_data['toa_s'] = neutron_data['toa'] * 1e-9
-                        else:
-                            if verbosity >= VerbosityLevel.BASIC:
-                                print(f"Could not find time-of-arrival column for neutron ID {neutron_id}")
-                            continue
-                    
-                    # Calculate the time window for this event (with a small buffer)
-                    time_buffer = 1e-9  # 1 nanosecond buffer
-                    
-                    # First try: match by time proximity to the event time
-                    time_diff = np.abs(neutron_data['toa_s'] - event_time)
-                    
-                    # Safely get the N smallest values, handling case where n_photons > available datapoints
-                    n_indices = min(int(n_photons), len(time_diff))
-                    if n_indices < 2:  # Need at least 2 points for an ellipse
-                        continue
-                        
-                    closest_indices = time_diff.nsmallest(n_indices).index
-                    
-                    # Get the closest photons
-                    photons_subset = neutron_data.loc[closest_indices]
-                    
-                    # Convert the photon positions to pixel coordinates
-                    try:
-                        photons_subset["px"] = (photons_subset["x2"] + 10) / 10 * 128
-                        photons_subset["py"] = (photons_subset["y2"] + 10) / 10 * 128
-                    except KeyError:
-                        # Try alternative column names
-                        if 'x' in photons_subset.columns and 'y' in photons_subset.columns:
-                            photons_subset["px"] = (photons_subset["x"] + 10) / 10 * 128
-                            photons_subset["py"] = (photons_subset["y"] + 10) / 10 * 128
-                        else:
-                            if verbosity >= VerbosityLevel.BASIC:
-                                print(f"Could not find position columns for neutron ID {neutron_id}")
-                            continue
-                    
-                    # Create a matrix of positions for PCA
-                    if len(photons_subset) >= 2:
-                        positions = photons_subset[['px', 'py']].values
-                        
-                        # Use PCA to find the principal axes
-                        pca = PCA(n_components=2)
-                        try:
-                            pca.fit(positions)
-                            
-                            # The eigenvalues of the covariance matrix give us the variance along each principal axis
-                            eigenvalues = pca.explained_variance_
-                            
-                            # Safety check for valid eigenvalues
-                            if np.any(eigenvalues <= 0):
-                                if verbosity >= VerbosityLevel.DETAILED:
-                                    print(f"Invalid eigenvalues for event {idx}: {eigenvalues}")
-                                continue
-                            
-                            # Calculate the major and minor axes (2 standard deviations = 95% confidence interval)
-                            major_axis = 2.0 * np.sqrt(eigenvalues[0])
-                            minor_axis = 2.0 * np.sqrt(eigenvalues[1])
-                            
-                            # Get the orientation (angle of the first principal component)
-                            v = pca.components_[0]
-                            angle_rad = np.arctan2(v[1], v[0])
-                            angle_deg = np.degrees(angle_rad) % 180  # Convert to degrees, range 0-180
-                            
-                            # Store the results
-                            enhanced_results.at[idx, 'major_axis_px'] = major_axis
-                            enhanced_results.at[idx, 'minor_axis_px'] = minor_axis
-                            enhanced_results.at[idx, 'orientation_deg'] = angle_deg
-                            enhanced_results.at[idx, 'original_photon_ids'] = list(closest_indices)
-                            
-                            if verbosity >= VerbosityLevel.DETAILED:
-                                print(f"Event {idx} (neutron_id {neutron_id}): major={major_axis:.2f}px, minor={minor_axis:.2f}px, angle={angle_deg:.2f}°")
-                        
-                        except Exception as e:
-                            if verbosity >= VerbosityLevel.BASIC:
-                                print(f"PCA error for event {idx}: {str(e)}")
-                            continue
-                
-                except Exception as e:
-                    if verbosity >= VerbosityLevel.BASIC:
-                        print(f"Error processing event {idx}: {str(e)}")
-                    continue
-            
-            # Safely calculate derived metrics
-            try:
-                # Calculate ellipticity (ratio of major to minor axis)
-                enhanced_results['ellipticity'] = enhanced_results['major_axis_px'] / enhanced_results['minor_axis_px']
-                
-                # Calculate area of the ellipse
-                enhanced_results['area_px2'] = np.pi * enhanced_results['major_axis_px'] * enhanced_results['minor_axis_px']
-            except Exception as e:
-                if verbosity >= VerbosityLevel.BASIC:
-                    print(f"Error calculating derived metrics: {str(e)}")
-            
-            # Alternative approach: Join parent info to enhanced_results as a batch operation
-            try:
-                # Create a small dataframe with just neutron_id, parent_name and parent_energy
-                parent_df = pd.DataFrame([
-                    {'neutron_id': nid, 'parent_name': info['parent_name'], 'parent_energy': info['parent_energy']}
-                    for nid, info in parent_info.items()
-                ])
-                
-                # Merge with enhanced_results
-                if not parent_df.empty:
-                    # Use left join to keep all rows from enhanced_results
-                    enhanced_results = pd.merge(
-                        enhanced_results,
-                        parent_df,
-                        on='neutron_id',
-                        how='left',
-                        suffixes=('', '_new')
-                    )
-                    
-                    # If we already added parent_name and parent_energy directly, we need to reconcile
-                    if 'parent_name_new' in enhanced_results.columns:
-                        # Fill any missing values from the direct assignment with the joined values
-                        enhanced_results['parent_name'] = enhanced_results['parent_name'].fillna(enhanced_results['parent_name_new'])
-                        enhanced_results['parent_energy'] = enhanced_results['parent_energy'].fillna(enhanced_results['parent_energy_new'])
-                        
-                        # Drop the duplicate columns
-                        enhanced_results = enhanced_results.drop(columns=['parent_name_new', 'parent_energy_new'], errors='ignore')
-                
-                if verbosity >= VerbosityLevel.BASIC:
-                    parent_count = enhanced_results['parent_name'].notna().sum()
-                    print(f"Added parent information for {parent_count} out of {len(enhanced_results)} events")
-            except Exception as e:
-                if verbosity >= VerbosityLevel.BASIC:
-                    print(f"Error joining parent information: {str(e)}")
-        
-        except Exception as e:
-            if verbosity >= VerbosityLevel.BASIC:
-                print(f"Fatal error in calculate_event_ellipsoid_shape: {str(e)}")
-            # Return the original DataFrame if we encountered a serious error
-            return results_df
-        
-        return enhanced_results
 
     def export_events(self, 
                     archive: Path=None,
