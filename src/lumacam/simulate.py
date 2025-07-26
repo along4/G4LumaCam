@@ -489,7 +489,17 @@ class Simulate:
                 batch_pattern = f"{base_name}_*.{extension}"
                 csv_files = sorted(Path().glob(batch_pattern))
             else:
-                csv_files = [Path(f"{base_name}.{extension}")]
+                # Check for both single file and batch files
+                single_file = Path(f"{base_name}.{extension}")
+                batch_pattern = f"{base_name}_*.{extension}"
+                batch_files = sorted(Path().glob(batch_pattern))
+                
+                if batch_files:
+                    csv_files = batch_files
+                elif single_file.exists():
+                    csv_files = [single_file]
+                else:
+                    csv_files = []
             
             for csv_file in csv_files:
                 if csv_file.exists():
