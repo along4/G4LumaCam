@@ -47,6 +47,12 @@ class Config:
     max_theta: float = 0
     min_theta: float = 0
     angle_unit: str = "deg"
+    
+    # Time spread parameters
+    tmin: float = 0.0  # Minimum time in ns
+    tmax: float = 0.0  # Maximum time in ns
+    time_unit: str = "ns"
+    
     sample_material: str = "G4_Galactic"  # Material of the sample
     scintillator: str = "EJ200"  # Scintillator type: PVT, EJ-200, GS20
     sample_thickness: float = 0.2  # Sample thickness in cm (default 0.2 cm = 200 microns)
@@ -238,6 +244,30 @@ class Config:
             csv_batch_size=0,
         )
 
+    @classmethod
+    def pulsed_neutron_source(cls, pulse_width: float = 1000.0) -> 'Config':
+        """Example configuration for a pulsed neutron source with time spread."""
+        return cls(
+            particle="neutron",
+            energy=10.0,
+            energy_unit="MeV",
+            position_z=-1059,
+            position_unit="cm",
+            halfx=60,
+            halfy=60,
+            shape_unit="mm",
+            tmin=0.0,
+            tmax=pulse_width,
+            time_unit="ns",
+            num_events=100000,
+            progress_interval=100,
+            csv_filename="sim_data.csv",
+            sample_material="G4_Graphite",
+            scintillator="EJ200",
+            sample_thickness=20,
+            csv_batch_size=0,
+        )
+
     def write(self, output_file: str) -> str:
         """
         Write configuration to a Geant4 macro file.
@@ -272,6 +302,19 @@ class Config:
 """
                 for energy, intensity in self.energy_histogram:
                     macro_content += f"/gps/hist/point {energy} {intensity}\n"
+        
+        # Add time spread configuration
+        if self.tmax > self.tmin:
+            # Use histogram approach for uniform time distribution
+            macro_content += f"""
+/gps/hist/type time
+/gps/hist/point {self.tmin} 1.0
+/gps/hist/point {self.tmax} 1.0
+/gps/hist/inter Lin
+"""
+        elif self.tmin != 0.0 or self.tmax != 0.0:
+            # If tmin == tmax but not zero, set a specific time
+            macro_content += f"/gps/time {self.tmin} {self.time_unit}\n"
         
         macro_content += f"""
 /gps/position {self.position_x} {self.position_y} {self.position_z} {self.position_unit}
@@ -313,10 +356,18 @@ class Config:
                 for energy, intensity in self.energy_histogram:
                     energy_info += f"  {energy} {self.energy_unit} (intensity: {intensity:.3f})\n"
             source_info = f"Particle: {self.particle}\n  {energy_info}"
+        
+        # Add time spread info
+        time_info = ""
+        if self.tmax > self.tmin:
+            time_info = f"  Time spread: {self.tmin} to {self.tmax} {self.time_unit}\n"
+        elif self.tmin != 0.0 or self.tmax != 0.0:
+            time_info = f"  Time: {self.tmin} {self.time_unit}\n"
             
         return (
             f"Configuration:\n"
             f"  {source_info}"
+            f"{time_info}"
             f"  Position: ({self.position_x}, {self.position_y}, {self.position_z}) {self.position_unit}\n"
             f"  Direction: ({self.direction_x}, {self.direction_y}, {self.direction_z})\n"
             f"  Shape: {self.shape} ({self.halfx}x{self.halfy} {self.shape_unit})\n"
@@ -332,7 +383,7 @@ class Config:
     def __repr__(self) -> str:
         """Return a string representation of the configuration."""
         return str(self)
-
+        
 class Simulate:
     """Class to simulate the lumacam executable."""
     def __init__(self, archive: str = "archive/test"):
