@@ -15,11 +15,11 @@ MaterialBuilder::MaterialBuilder() : currentScintType(ScintType::EJ200) {
     G4Element* N = new G4Element("N", "N", 7., 14.01 * g/mole);
     G4Element* O = new G4Element("O", "O", 8., 16.00 * g/mole);
     G4Element* Si = new G4Element("Si", "Si", 14., 28.09 * g/mole);
-    G4Element* Li = new G4Element("Li", "Li", 3., 6.941 * g/mole); // For GS20
+    G4Element* Li = new G4Element("Li", "Li", 3., 6.941 * g/mole);
     
     // Vacuum
     vacuum = new G4Material("Vacuum", 1., 1.01 * g/mole, CLHEP::universe_mean_density,
-        kStateGas, 2.73 * kelvin, 3.e-18 * pascal);
+                            kStateGas, 2.73 * kelvin, 3.e-18 * pascal);
     G4cout << "MaterialBuilder: Vacuum material created" << G4endl;
     
     // Air
@@ -73,6 +73,10 @@ MaterialBuilder::MaterialBuilder() : currentScintType(ScintType::EJ200) {
     buildGS20();
     G4cout << "MaterialBuilder: ScintillatorGS20 material created" << G4endl;
     
+    // Scintillator (LYSO)
+    buildLYSO();
+    G4cout << "MaterialBuilder: ScintillatorLYSO material created" << G4endl;
+    
     // Set default scintillator
     scintMaterial = scintMaterialPVT;
     G4cout << "MaterialBuilder: Default scintillator set to ScintillatorPVT" << G4endl;
@@ -107,35 +111,29 @@ MaterialBuilder::MaterialBuilder() : currentScintType(ScintType::EJ200) {
 void MaterialBuilder::buildGS20() {
     G4NistManager* nist = G4NistManager::Instance();
     
-    // Define GS20 material
     G4String mat_name = "ScintillatorGS20";
     scintMaterialGS20 = new G4Material(mat_name, 2.5 * g/cm3, 5);
     
-    // Create enriched Lithium (95% 6Li, 5% 7Li)
     G4Element* enriched_li = new G4Element("Enriched_Lithium", "en_Li", 2);
     G4Isotope* li6 = new G4Isotope("6Li", 3, 6, 6.015 * g/mole);
     G4Isotope* li7 = new G4Isotope("7Li", 3, 7, 7.016 * g/mole);
     enriched_li->AddIsotope(li6, 95 * perCent);
     enriched_li->AddIsotope(li7, 5 * perCent);
     
-    // Lithium oxide with enriched lithium
     G4Material* enriched_li2o = new G4Material("Enriched_LITHIUM_OXIDE", 2.01 * g/cm3, 2);
     enriched_li2o->AddElement(enriched_li, 2);
     enriched_li2o->AddElement(nist->FindOrBuildElement("O"), 1);
     
-    // Cerium oxide
     G4Material* ce2o3 = new G4Material("CERIUM_III_OXIDE", 6.2 * g/cm3, 2);
     ce2o3->AddElement(nist->FindOrBuildElement("Ce"), 2);
     ce2o3->AddElement(nist->FindOrBuildElement("O"), 3);
     
-    // GS20 composition
     scintMaterialGS20->AddMaterial(nist->FindOrBuildMaterial("G4_SILICON_DIOXIDE"), 57 * perCent);
     scintMaterialGS20->AddMaterial(nist->FindOrBuildMaterial("G4_ALUMINUM_OXIDE"), 18 * perCent);
     scintMaterialGS20->AddMaterial(nist->FindOrBuildMaterial("G4_MAGNESIUM_OXIDE"), 4 * perCent);
     scintMaterialGS20->AddMaterial(enriched_li2o, 17 * perCent);
     scintMaterialGS20->AddMaterial(ce2o3, 4 * perCent);
     
-    // Optical properties
     G4MaterialPropertiesTable* pt20 = new G4MaterialPropertiesTable();
     pt20->AddConstProperty("SCINTILLATIONYIELD", 1255.23 / MeV);
     pt20->AddConstProperty("RESOLUTIONSCALE", 1.);
@@ -204,6 +202,63 @@ void MaterialBuilder::buildGS20() {
     G4cout << "MaterialBuilder: GS20 optical properties set" << G4endl;
 }
 
+void MaterialBuilder::buildLYSO() {
+    G4NistManager* nist = G4NistManager::Instance();
+
+    // Define LYSO material
+    G4String mat_name = "ScintillatorLYSO";
+    scintMaterialLYSO = new G4Material(mat_name, 7.1 * g/cm3, 4);
+    scintMaterialLYSO->AddElement(nist->FindOrBuildElement("Lu"), 71.45 * perCent);
+    scintMaterialLYSO->AddElement(nist->FindOrBuildElement("Y"), 4.03 * perCent);
+    scintMaterialLYSO->AddElement(nist->FindOrBuildElement("Si"), 6.37 * perCent);
+    scintMaterialLYSO->AddElement(nist->FindOrBuildElement("O"), 18.15 * perCent);
+
+    // Optical properties
+    G4MaterialPropertiesTable* pt = new G4MaterialPropertiesTable();
+    pt->AddConstProperty("SCINTILLATIONYIELD", 32000. / MeV);
+    pt->AddConstProperty("RESOLUTIONSCALE", 1.0);
+    pt->AddConstProperty("FASTTIMECONSTANT", 41. * ns);
+    pt->AddConstProperty("SCINTILLATIONRISETIME", 0.09 * ns);
+    pt->AddConstProperty("YIELDRATIO", 1.0);
+
+    const int nLYSO = 77;
+    G4double lysoEnergy[nLYSO] = {
+        3.542*eV, 3.503*eV, 3.464*eV, 3.426*eV, 3.390*eV, 3.353*eV, 3.318*eV, 3.283*eV, 3.249*eV, 3.216*eV,
+        3.183*eV, 3.151*eV, 3.120*eV, 3.089*eV, 3.059*eV, 3.030*eV, 3.001*eV, 2.972*eV, 2.945*eV, 2.917*eV,
+        2.890*eV, 2.864*eV, 2.838*eV, 2.813*eV, 2.788*eV, 2.763*eV, 2.739*eV, 2.716*eV, 2.692*eV, 2.669*eV,
+        2.647*eV, 2.625*eV, 2.603*eV, 2.582*eV, 2.561*eV, 2.540*eV, 2.519*eV, 2.499*eV, 2.480*eV, 2.460*eV,
+        2.441*eV, 2.422*eV, 2.404*eV, 2.386*eV, 2.368*eV, 2.350*eV, 2.332*eV, 2.315*eV, 2.298*eV, 2.282*eV,
+        2.265*eV, 2.249*eV, 2.233*eV, 2.217*eV, 2.202*eV, 2.186*eV, 2.171*eV, 2.156*eV, 2.141*eV, 2.127*eV,
+        2.113*eV, 2.099*eV, 2.085*eV, 2.071*eV, 2.057*eV, 2.044*eV, 2.031*eV, 2.018*eV, 1.992*eV, 1.980*eV,
+        1.967*eV, 1.955*eV, 1.943*eV, 1.931*eV, 1.919*eV, 1.907*eV, 1.907*eV
+    };
+    G4double lysoScint[nLYSO] = {
+        0.000, 0.000, 0.000, 0.003, 0.006, 0.010, 0.025, 0.054, 0.089, 0.146,
+        0.238, 0.295, 0.378, 0.492, 0.575, 0.679, 0.743, 0.819, 0.873, 0.921,
+        0.959, 0.987, 0.997, 1.000, 0.994, 0.984, 0.968, 0.949, 0.921, 0.889,
+        0.854, 0.819, 0.787, 0.749, 0.708, 0.676, 0.632, 0.590, 0.559, 0.530,
+        0.505, 0.473, 0.444, 0.410, 0.378, 0.349, 0.321, 0.295, 0.270, 0.251,
+        0.232, 0.213, 0.190, 0.168, 0.152, 0.140, 0.124, 0.111, 0.098, 0.089,
+        0.076, 0.067, 0.063, 0.057, 0.048, 0.041, 0.032, 0.029, 0.025, 0.019,
+        0.016, 0.013, 0.013, 0.010, 0.006, 0.006, 0.006
+    };
+    G4double lysoRIndex[nLYSO];
+    for (int i = 0; i < nLYSO; i++) {
+        lysoRIndex[i] = 1.81;
+    }
+    G4double lysoAbs[nLYSO];
+    for (int i = 0; i < nLYSO; i++) {
+        lysoAbs[i] = 41.3 * cm;
+    }
+    pt->AddProperty("FASTCOMPONENT", lysoEnergy, lysoScint, nLYSO);
+    pt->AddProperty("RINDEX", lysoEnergy, lysoRIndex, nLYSO);
+    pt->AddProperty("ABSLENGTH", lysoEnergy, lysoAbs, nLYSO);
+    
+    scintMaterialLYSO->SetMaterialPropertiesTable(pt);
+    scintMaterialLYSO->GetIonisation()->SetBirksConstant(0.023 * mm/MeV);
+    G4cout << "MaterialBuilder: LYSO optical properties set" << G4endl;
+}
+
 void MaterialBuilder::setScintillatorType(ScintType type) {
     currentScintType = type;
     if (type == ScintType::EJ200) {
@@ -220,6 +275,13 @@ void MaterialBuilder::setScintillatorType(ScintType type) {
         } else {
             G4cerr << "ERROR: scintMaterialGS20 is nullptr!" << G4endl;
         }
+    } else if (type == ScintType::LYSO) {
+        if (scintMaterialLYSO) {
+            scintMaterial = scintMaterialLYSO;
+            G4cout << "MaterialBuilder: Scintillator set to LYSO (ScintillatorLYSO)" << G4endl;
+        } else {
+            G4cerr << "ERROR: scintMaterialLYSO is nullptr!" << G4endl;
+        }
     }
 }
 
@@ -229,14 +291,16 @@ void MaterialBuilder::setScintillatorType(const G4String& typeName) {
         setScintillatorType(ScintType::EJ200);
     } else if (typeName == "GS20") {
         setScintillatorType(ScintType::GS20);
+    } else if (typeName == "LYSO") {
+        setScintillatorType(ScintType::LYSO);
     } else {
-        G4cerr << "Unknown scintillator type: " << typeName << ". Available types: EJ200, GS20" << G4endl;
+        G4cerr << "Unknown scintillator type: " << typeName << ". Available types: EJ200, GS20, LYSO" << G4endl;
     }
 }
 
 void MaterialBuilder::setupMaterialProperties(G4Material* mat, const G4double* energies,
-    const G4double* rindex, const G4double* abslength,
-    int nEntries, const G4double* scintillation) {
+                                             const G4double* rindex, const G4double* abslength,
+                                             int nEntries, const G4double* scintillation) {
     if (!mat) {
         G4cerr << "ERROR: Material is nullptr in setupMaterialProperties!" << G4endl;
         return;
@@ -268,6 +332,13 @@ void MaterialBuilder::setupMaterialProperties(G4Material* mat, const G4double* e
             mpt->AddConstProperty("SLOWTIMECONSTANT", 98. * ns);
             mpt->AddConstProperty("YIELDRATIO", 1.);
             G4cout << "MaterialBuilder: ScintillatorGS20 properties set" << G4endl;
+        } else if (mat == scintMaterialLYSO) {
+            mpt->AddConstProperty("SCINTILLATIONYIELD", 32000. / MeV);
+            mpt->AddConstProperty("RESOLUTIONSCALE", 1.0);
+            mpt->AddConstProperty("FASTTIMECONSTANT", 41. * ns);
+            mpt->AddConstProperty("SCINTILLATIONRISETIME", 0.09 * ns);
+            mpt->AddConstProperty("YIELDRATIO", 1.0);
+            G4cout << "MaterialBuilder: ScintillatorLYSO properties set" << G4endl;
         }
     }
     

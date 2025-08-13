@@ -11,12 +11,13 @@ public:
     MaterialBuilder();
     ~MaterialBuilder() {}
 
-    enum class ScintType { EJ200, GS20 };
+    enum class ScintType { EJ200, GS20, LYSO };
 
     G4Material* getVacuum() const { return vacuum; }
     G4Material* getAir() const { return air; }
     G4Material* getPVT() const { return scintMaterialPVT; }
     G4Material* getGS20() const { return scintMaterialGS20; }
+    G4Material* getLYSO() const { return scintMaterialLYSO; }
     G4Material* getGraphite() const { return sampleMaterial; }
     G4Material* getQuartz() const { return windowMaterial; }
     G4Material* getBlackMat() const { return absorberMaterial; }
@@ -30,11 +31,13 @@ private:
                                 const G4double* rindex, const G4double* abslength,
                                 int nEntries, const G4double* scintillation = nullptr);
     void buildGS20();
+    void buildLYSO();
 
     G4Material* vacuum;
     G4Material* air;
     G4Material* scintMaterialPVT;
     G4Material* scintMaterialGS20;
+    G4Material* scintMaterialLYSO;
     G4Material* scintMaterial; // Points to the selected scintillator
     G4Material* sampleMaterial;
     G4Material* windowMaterial;
