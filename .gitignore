@@ -19,3 +19,4 @@ notebooks/tutorial_archive/*
 notebooks/microscope_setup.ipynb
 notebooks/microscope_data
 notebooks/*.log
+notebooks/gamma_with_LYSO.ipynb
