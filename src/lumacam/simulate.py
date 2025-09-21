@@ -302,20 +302,16 @@ class Config:
 """
                 for energy, intensity in self.energy_histogram:
                     macro_content += f"/gps/hist/point {energy} {intensity}\n"
-        
         # Add time spread configuration
         if self.tmax > self.tmin:
-            # Use histogram approach for uniform time distribution
+            # Use GPS built-in flat distribution for uniform time spread
             macro_content += f"""
-/gps/hist/type time
-/gps/hist/point {self.tmin} 1.0
-/gps/hist/point {self.tmax} 1.0
-/gps/hist/inter Lin
+/gps/time/type flat
+/gps/time/flat {self.tmin} {self.tmax} {self.time_unit}
 """
         elif self.tmin != 0.0 or self.tmax != 0.0:
             # If tmin == tmax but not zero, set a specific time
             macro_content += f"/gps/time {self.tmin} {self.time_unit}\n"
-        
         macro_content += f"""
 /gps/position {self.position_x} {self.position_y} {self.position_z} {self.position_unit}
 /gps/direction {self.direction_x} {self.direction_y} {self.direction_z}
