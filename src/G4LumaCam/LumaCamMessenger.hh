@@ -26,6 +26,8 @@ private:
     G4int batchSize;
     G4GenericMessenger* messenger;
     MaterialBuilder* matBuilder;
+
+    
 };
 
 #endif

@@ -302,16 +302,15 @@ class Config:
 """
                 for energy, intensity in self.energy_histogram:
                     macro_content += f"/gps/hist/point {energy} {intensity}\n"
+
         # Add time spread configuration
         if self.tmax > self.tmin:
-            # Use GPS built-in flat distribution for uniform time spread
+            # Use histogram approach for uniform time distribution
             macro_content += f"""
-/gps/time/type flat
-/gps/time/flat {self.tmin} {self.tmax} {self.time_unit}
+/lumacam/tmin {self.tmin} {self.time_unit}
+/lumacam/tmax {self.tmax} {self.time_unit}
 """
-        elif self.tmin != 0.0 or self.tmax != 0.0:
-            # If tmin == tmax but not zero, set a specific time
-            macro_content += f"/gps/time {self.tmin} {self.time_unit}\n"
+
         macro_content += f"""
 /gps/position {self.position_x} {self.position_y} {self.position_z} {self.position_unit}
 /gps/direction {self.direction_x} {self.direction_y} {self.direction_z}
@@ -369,9 +368,12 @@ class Config:
             f"  Shape: {self.shape} ({self.halfx}x{self.halfy} {self.shape_unit})\n"
             f"  Angle: {self.angle_type} (max theta: {self.max_theta} {self.angle_unit})\n"
             f"  Sample Material: {self.sample_material}\n"
-            f"  Sample Thickness: {self.sample_thickness} cm\n"
+            f"  Sample Thickness: {self.sample_thickness} mm\n"
             f"  Scintillator: {self.scintillator}\n"
-            f"  Scintillator Thickness: {self.scintillator_thickness} cm\n"
+            f"  Scintillator Thickness: {self.scintillator_thickness} mm\n"
+            f"  CSV Batch Size: {self.csv_batch_size}\n"
+            f"  Time Spread: {self.tmin} to {self.tmax} {self.time_unit}\n"
+            f"  Progress Interval: {self.progress_interval}\n"
             f"  Events: {self.num_events}\n"
             f"  Output: {self.csv_filename}"
         )

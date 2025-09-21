@@ -13,7 +13,11 @@ namespace Sim {
     G4double SCINT_THICKNESS = 1.0 * cm; // half thickness
     G4double SAMPLE_THICKNESS = 3.75 * cm; // half thickness
     G4double SCINT_SIZE = 6.0 * cm; // half size
-    G4double COATING_THICKNESS = 0.01 * cm; // half thickness
+    G4double COATING_THICKNESS = 0.01 * cm; // half 
+    
+    // New time window defaults
+    G4double TMIN = 0.0 * ns;
+    G4double TMAX = 0.0 * ns;
 
     // Function implementations
     void SetScintThickness(G4double thickness) {

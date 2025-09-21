@@ -1,14 +1,21 @@
 #include "LumaCamMessenger.hh"
 #include "SimConfig.hh"
+
 #include "G4RunManager.hh"
 #include "G4VUserDetectorConstruction.hh"
+#include "G4NistManager.hh"
+#include "G4Material.hh"
+#include "G4SystemOfUnits.hh"
 
 LumaCamMessenger::LumaCamMessenger(G4String* filename, G4LogicalVolume* sampleLogVolume, 
                                    G4LogicalVolume* scintLogVolume, G4int batch)
- : csvFilename(filename), sampleLog(sampleLogVolume), scintLog(scintLogVolume), batchSize(batch), matBuilder(new MaterialBuilder()) {
+ : csvFilename(filename), sampleLog(sampleLogVolume), scintLog(scintLogVolume),
+   batchSize(batch), matBuilder(new MaterialBuilder()) {
+    
     messenger = new G4GenericMessenger(this, "/lumacam/", "lumacam control commands");
 
-    G4cout << "LumaCamMessenger: Initializing with csvFilename=" << (csvFilename ? *csvFilename : "null")
+    G4cout << "LumaCamMessenger: Initializing with csvFilename=" 
+           << (csvFilename ? *csvFilename : "null")
            << ", sampleLog=" << (sampleLog ? sampleLog->GetName() : "null")
            << ", scintLog=" << (scintLog ? scintLog->GetName() : "null")
            << ", batchSize=" << batchSize << G4endl;
@@ -30,7 +37,7 @@ LumaCamMessenger::LumaCamMessenger(G4String* filename, G4LogicalVolume* sampleLo
     }
 
     messenger->DeclareMethod("scintMaterial", &LumaCamMessenger::SetScintillatorMaterial)
-        .SetGuidance("Set the scintillator material (EJ200 or GS20)")
+        .SetGuidance("Set the scintillator material (EJ200, GS20 or LYSO)")
         .SetParameterName("material", false)
         .SetDefaultValue("EJ200");
 
@@ -53,6 +60,19 @@ LumaCamMessenger::LumaCamMessenger(G4String* filename, G4LogicalVolume* sampleLo
         .SetGuidance("Set the number of events per CSV file (0 for single file)")
         .SetParameterName("size", false)
         .SetDefaultValue("10000");
+
+    // ----------------------------
+    // NEW: Time spread configuration
+    // ----------------------------
+    messenger->DeclarePropertyWithUnit("tmin", "ns", Sim::TMIN)
+        .SetGuidance("Set minimum emission time (ns)")
+        .SetParameterName("tmin", false)
+        .SetDefaultValue("0.0");
+
+    messenger->DeclarePropertyWithUnit("tmax", "ns", Sim::TMAX)
+        .SetGuidance("Set maximum emission time (ns). If > tmin, uniform distribution is applied.")
+        .SetParameterName("tmax", false)
+        .SetDefaultValue("0.0");
 }
 
 LumaCamMessenger::~LumaCamMessenger() {
@@ -105,7 +125,7 @@ void LumaCamMessenger::SetScintillatorMaterial(const G4String& materialName) {
                << scintLog->GetMaterial()->GetName() << G4endl;
     } else {
         G4cerr << "Scintillator material " << materialName << " not found!" << G4endl;
-        G4cout << "Available scintillator materials: EJ200, GS20" << G4endl;
+        G4cout << "Available scintillator materials: EJ200, GS20, LYSO" << G4endl;
     }
 }
 

@@ -8,6 +8,7 @@ class ParticleGenerator : public G4VUserPrimaryGeneratorAction {
 public:
     ParticleGenerator();
     ~ParticleGenerator() override;
+
     void GeneratePrimaries(G4Event* anEvent) override;
     G4double getParticleEnergy() const { return lastEnergy; }
 
