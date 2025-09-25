@@ -441,7 +441,8 @@ class Analysis:
 
     def _run_export_events(self, verbosity: VerbosityLevel = VerbosityLevel.QUIET):
         """
-        Exports .empirevent files from EventFiles subfolder to CSV files in ExportedEvents subfolder.
+        Exports .empirevent files from EventFiles subfolder to CSV files in ExportedEvents subfolder,
+        with modified headers and type conversions.
         
         Args:
             verbosity: VerbosityLevel - Controls the level of output during processing.
@@ -483,16 +484,28 @@ class Analysis:
                     subprocess.run(cmd, shell=True)
                 else:
                     subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                
+                # Modify headers and convert types
+                try:
+                    df = pd.read_csv(event_result_csv)
+                    df.columns = ["x", "y", "t", "n", "PSD", "tof"]
+                    df["tof"] = df["tof"].astype(float)
+                    df["PSD"] = df["PSD"].astype(float)
+                    df.to_csv(event_result_csv, index=False)
                     
-                if verbosity >= VerbosityLevel.BASIC:
-                    print(f"✔ Exported {empirevent_file.name} → {event_result_csv.name}")
+                    if verbosity >= VerbosityLevel.BASIC:
+                        print(f"✔ Exported and modified {empirevent_file.name} → {event_result_csv.name}")
+                        
+                except Exception as e:
+                    if verbosity >= VerbosityLevel.BASIC:
+                        print(f"⚠️ Error modifying headers for {event_result_csv.name}: {e}")
                     
             except Exception as e:
                 if verbosity >= VerbosityLevel.BASIC:
                     print(f"❌ Error exporting {empirevent_file.name}: {e}")
         
         if verbosity >= VerbosityLevel.BASIC:
-            print("✅ Finished exporting all event files!")
+            print("✅ Finished exporting and modifying all event files!")
 
     def _run_event_binning(self, archive: str = None, 
                                 config: EventBinningConfig = None,
@@ -606,6 +619,9 @@ class Analysis:
         
         # Run photon2event
         self._run_photon2event(config=p2e_config, verbosity=verbosity)
+
+        # Run export events
+        self._run_export_events(verbosity=verbosity)
         
         # Setup event binning config
         binning_config = self.EventBinningConfig().time_binning()
