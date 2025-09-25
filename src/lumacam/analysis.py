@@ -525,29 +525,17 @@ class Analysis:
         if verbosity >= VerbosityLevel.BASIC:
             print("✅ Finished exporting and modifying all event files!")
 
-    def _run_export_photons(self, clean:bool = True, verbosity: VerbosityLevel = VerbosityLevel.QUIET):
+    def _run_export_photons(self, verbosity: VerbosityLevel = VerbosityLevel.QUIET):
         """
         Exports .empirphot files from PhotonFiles subfolder to CSV files in ImportedPhotons subfolder.
         
         Args:
-            clean: bool - Whether to delete existing CSV files in ImportedPhotons before exporting.
             verbosity: VerbosityLevel - Controls the level of output during processing.
         """
         # Ensure PhotonFiles directory exists
         photon_files_dir = self.archive / "PhotonFiles"
         if not photon_files_dir.exists():
             raise FileNotFoundError(f"{photon_files_dir} does not exist.")
-
-        if clean:
-            existing_csv_files = list((self.archive / "ImportedPhotons").glob("imported_*.csv"))
-            for f in existing_csv_files:
-                try:
-                    f.unlink()
-                    if verbosity >= VerbosityLevel.DETAILED:
-                        print(f"Deleted existing file: {f.name}")
-                except Exception as e:
-                    if verbosity >= VerbosityLevel.BASIC:
-                        print(f"⚠️ Could not delete {f.name}: {e}")
         
         # Ensure ImportedPhotons directory exists
         imported_photons_dir = self.archive / "ImportedPhotons"
@@ -813,17 +801,34 @@ class Analysis:
         imported_photons_dir = self.archive / "ImportedPhotons"
         imported_photons_dir.mkdir(parents=True, exist_ok=True)
         
-        # Create suffixed subfolder
+        # Create suffixed subfolder for binned results
         suffix_dir = analysed_dir / (suffix.strip("_") if suffix else "default")
         suffix_dir.mkdir(parents=True, exist_ok=True)
         
+        # Setup photon2event config
+        p2e_config = self.Photon2EventConfig()
+        p2e_config.dSpace_px = dSpace_px
+        p2e_config.dTime_s = dTime_s
+        p2e_config.durationMax_s = durationMax_s
+        p2e_config.dTime_ext = dTime_ext
+        params_file = suffix_dir / "parameterSettings.json"
+        p2e_config.write(params_file)
+        
+        # Run import photons and photon2event
+        self._run_import_photons(verbosity=verbosity)
+        self._run_photon2event(config=p2e_config, verbosity=verbosity)
+        self._run_export_events(verbosity=verbosity)
+        
         if method == 'nea':
-            # Ensure photon files are exported for nea
-            self._run_import_photons(verbosity=verbosity)
-            self._run_photon2event(config=Photon2EventConfig(dSpace_px=dSpace_px, dTime_s=dTime_s,
-                                   durationMax_s=durationMax_s, dTime_ext=dTime_ext), 
-                                   verbosity=verbosity)
-            self._run_export_events(verbosity=verbosity)
+            # Create AssociatedResults directory
+            associated_dir = self.archive / "AssociatedResults"
+            associated_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Create prefix subfolder (using suffix as prefix)
+            prefix_dir = associated_dir / (suffix.strip("_") if suffix else "default")
+            prefix_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Export photons for nea compatibility
             self._run_export_photons(verbosity=verbosity)
             
             # Run nea association
@@ -831,67 +836,44 @@ class Analysis:
                                         dSpace_px=dSpace_px, max_time_ns=max_time_ns, verbosity=verbosity,
                                         method='kdtree', n_threads=n_threads)
             
+            # Save associated dataframe
             if not self.associated_df.empty:
-                output_csv = suffix_dir / "associated_results.csv"
+                output_csv = prefix_dir / "associated_results.csv"
                 self.associated_df.to_csv(output_csv, index=False)
                 if verbosity >= VerbosityLevel.BASIC:
                     print(f"Associated data saved to {output_csv}")
-                return self.associated_df
-            else:
-                if verbosity >= VerbosityLevel.BASIC:
-                    print("No associated data to return.")
-                return pd.DataFrame()
         
+        # Setup event binning config
+        binning_config = self.EventBinningConfig().time_binning()
+        binning_config.binning_t.nBins = nBins
+        binning_config.binning_t.resolution_s = binning_time_resolution
+        binning_config.binning_t.offset_s = binning_offset
+        if nPhotons_bins is not None:
+            binning_config = binning_config.nphotons_binning()
+            binning_config.binning_nPhotons.nBins = nPhotons_bins
+        event_params_file = suffix_dir / "parameterEvents.json"
+        binning_config.write(event_params_file)
+        
+        # Run event binning
+        self._run_event_binning(config=binning_config, verbosity=verbosity)
+        
+        # Read and process binned data
+        result_df = self._read_binned_data()
+        if nPhotons_bins is None:
+            result_df.columns = ["stacks", "counts"]
         else:
-            # Original processing pipeline
-            self._run_import_photons(verbosity=verbosity)
-            
-            # Setup photon2event config
-            p2e_config = self.Photon2EventConfig()
-            p2e_config.dSpace_px = dSpace_px
-            p2e_config.dTime_s = dTime_s
-            p2e_config.durationMax_s = durationMax_s
-            p2e_config.dTime_ext = dTime_ext
-            params_file = suffix_dir / "parameterSettings.json"
-            p2e_config.write(params_file)
-            
-            # Run photon2event
-            self._run_photon2event(config=p2e_config, verbosity=verbosity)
-
-            # Run export events
-            self._run_export_events(verbosity=verbosity)
-            
-            # Setup event binning config
-            binning_config = self.EventBinningConfig().time_binning()
-            binning_config.binning_t.nBins = nBins
-            binning_config.binning_t.resolution_s = binning_time_resolution
-            binning_config.binning_t.offset_s = binning_offset
-            if nPhotons_bins is not None:
-                binning_config = binning_config.nphotons_binning()
-                binning_config.binning_nPhotons.nBins = nPhotons_bins
-            event_params_file = suffix_dir / "parameterEvents.json"
-            binning_config.write(event_params_file)
-            
-            # Run event binning
-            self._run_event_binning(config=binning_config, verbosity=verbosity)
-            
-            # Read and process binned data
-            result_df = self._read_binned_data()
-            if nPhotons_bins is None:
-                result_df.columns = ["stacks", "counts"]
-            else:
-                result_df.columns = ["stacks", "nPhotons", "counts"]
-            result_df["err"] = np.sqrt(result_df["counts"])
-            result_df["stacks"] = np.arange(len(result_df))
-            
-            # Save results in suffixed folder
-            output_csv = suffix_dir / "counts.csv"
-            result_df.to_csv(output_csv, index=False)
-            
-            if verbosity >= VerbosityLevel.BASIC:
-                print(f"Processed data saved to {output_csv}")
-            
-            return result_df
+            result_df.columns = ["stacks", "nPhotons", "counts"]
+        result_df["err"] = np.sqrt(result_df["counts"])
+        result_df["stacks"] = np.arange(len(result_df))
+        
+        # Save binned results in suffixed folder
+        output_csv = suffix_dir / "counts.csv"
+        result_df.to_csv(output_csv, index=False)
+        
+        if verbosity >= VerbosityLevel.BASIC:
+            print(f"Processed data saved to {output_csv}")
+        
+        return result_df
 
     def process_data_event_by_event(self,
                                    dSpace_px: float = 4.0,
