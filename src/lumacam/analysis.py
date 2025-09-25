@@ -439,6 +439,61 @@ class Analysis:
                     for _ in range(10):
                         pbar.update(10)
 
+    def _run_export_events(self, verbosity: VerbosityLevel = VerbosityLevel.QUIET):
+        """
+        Exports .empirevent files from EventFiles subfolder to CSV files in ExportedEvents subfolder.
+        
+        Args:
+            verbosity: VerbosityLevel - Controls the level of output during processing.
+        """
+        # Ensure EventFiles directory exists
+        event_files_dir = self.archive / "EventFiles"
+        if not event_files_dir.exists():
+            raise FileNotFoundError(f"{event_files_dir} does not exist.")
+        
+        # Create ExportedEvents directory
+        exported_events_dir = self.archive / "ExportedEvents"
+        exported_events_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Get all .empirevent files
+        empirevent_files = sorted(event_files_dir.glob("*.empirevent"))
+        if not empirevent_files:
+            raise FileNotFoundError(f"No .empirevent files found in {event_files_dir}")
+        
+        if verbosity >= VerbosityLevel.BASIC:
+            print(f"Exporting {len(empirevent_files)} .empirevent files to CSV...")
+        
+        # Process each .empirevent file
+        for empirevent_file in tqdm(empirevent_files, desc="Exporting events", disable=(verbosity == VerbosityLevel.QUIET)):
+            try:
+                # Define output CSV path
+                event_result_csv = exported_events_dir / f"{empirevent_file.stem}.csv"
+                
+                # Construct command
+                cmd = (
+                    f"{self.empir_dirpath}/empir_export_events "
+                    f"{empirevent_file} "
+                    f"{event_result_csv} "
+                    f"csv"
+                )
+                
+                # Execute command
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"Running: {cmd}")
+                    subprocess.run(cmd, shell=True)
+                else:
+                    subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    
+                if verbosity >= VerbosityLevel.BASIC:
+                    print(f"✔ Exported {empirevent_file.name} → {event_result_csv.name}")
+                    
+            except Exception as e:
+                if verbosity >= VerbosityLevel.BASIC:
+                    print(f"❌ Error exporting {empirevent_file.name}: {e}")
+        
+        if verbosity >= VerbosityLevel.BASIC:
+            print("✅ Finished exporting all event files!")
+
     def _run_event_binning(self, archive: str = None, 
                                 config: EventBinningConfig = None,
                                 verbosity: VerbosityLevel = VerbosityLevel.QUIET,
