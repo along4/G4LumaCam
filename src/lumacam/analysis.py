@@ -7,12 +7,16 @@ from tqdm.notebook import tqdm
 from enum import IntEnum
 from dataclasses import dataclass, field
 import json
-import os
 from typing import Dict, Any, Optional, Union
 from multiprocessing import Pool
 import glob
 import shutil
 import subprocess
+try:
+    from neutron_event_analyzer import Analyse as NEA
+    NEA_AVAILABLE = True
+except ImportError:
+    NEA_AVAILABLE = False
 
 
 class VerbosityLevel(IntEnum):
@@ -217,7 +221,6 @@ class EventBinningConfig:
         return result
 
 
-
 class Analysis:
     def __init__(self, archive: str = "test",
                  data: "pd.DataFrame" = None,
@@ -272,8 +275,6 @@ class Analysis:
             if not traced_files:
                 raise FileNotFoundError(f"No traced simulation data found in {self.traced_dir}.")
 
-            # print(f"Loading {len(traced_files)} traced photon files...")
-
             valid_dfs = []
             for file in tqdm(traced_files, desc="Loading traced data"):
                 try:
@@ -300,8 +301,6 @@ class Analysis:
             if not sim_files:
                 raise FileNotFoundError(f"No sim simulation data found in {self.sim_dir}.")
 
-            # print(f"Loading {len(sim_files)} sim photon files...")
-
             valid_dfs = []
             for file in tqdm(sim_files, desc="Loading sim data"):
                 try:
@@ -316,7 +315,6 @@ class Analysis:
             else:
                 raise ValueError("No valid sim data found!")
 
-
         # Validate empir directory and executables
         if not self.empir_dirpath.exists():
             raise FileNotFoundError(f"{self.empir_dirpath} does not exist.")
@@ -326,7 +324,8 @@ class Analysis:
             "empir_bin_photons": "empir_bin_photons",
             "empir_bin_events": "empir_bin_events",
             "process_photon2event": "process_photon2event.sh",
-            "empir_export_events": "empir_export_events"
+            "empir_export_events": "empir_export_events",
+            "empir_export_photons": "empir_export_photons"  # Added for nea compatibility
         }
         
         self.executables = {}
@@ -336,6 +335,11 @@ class Analysis:
                 raise FileNotFoundError(f"{filename} not found in {self.empir_dirpath}")
             self.executables[attr_name] = file_path
             setattr(self, attr_name, file_path)
+
+        # Initialize nea-related attributes
+        self.events_df = None
+        self.photons_df = None
+        self.associated_df = None
 
     def _process_single_file(self, file, verbosity: VerbosityLevel = VerbosityLevel.QUIET):
         """
@@ -375,13 +379,28 @@ class Analysis:
             if verbosity >= VerbosityLevel.BASIC: 
                 print(f"❌ Error processing {file.name}: {e}")
 
-    def _run_import_photons(self, parallel=True,verbosity: VerbosityLevel = VerbosityLevel.QUIET):
+    def _run_import_photons(self, parallel=True, clean=True, verbosity: VerbosityLevel = VerbosityLevel.QUIET):
         """
         Runs empir_import_photons for all traced photon files.
+        Args:
+            parallel: bool - Whether to process files in parallel using multiprocessing.
+            clean: bool - Whether to delete existing .empirphot files before processing.
+            verbosity: VerbosityLevel - Controls the level of output during processing.
         """
         traced_files = sorted(self.traced_dir.glob("traced_sim_data_*.csv"))
         if verbosity >= VerbosityLevel.BASIC:
             print(f"Processing {len(traced_files)} traced photon files...")
+
+        if clean:
+            existing_empir_files = list(self.photon_files_dir.glob("*.empirphot"))
+            for f in existing_empir_files:
+                try:
+                    f.unlink()
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"Deleted existing file: {f.name}")
+                except Exception as e:
+                    if verbosity >= VerbosityLevel.BASIC:
+                        print(f"⚠️ Could not delete {f.name}: {e}")
 
         if parallel:
             with Pool() as pool:
@@ -389,15 +408,14 @@ class Analysis:
                           total=len(traced_files), desc="Processing files"))
         else:
             for file in tqdm(traced_files, desc="Processing files"):
-                self._process_single_file(file,verbosity=verbosity)
+                self._process_single_file(file, verbosity=verbosity)
         if verbosity >= VerbosityLevel.BASIC:
             print("✅ Finished processing all files!")
 
-
     def _run_photon2event(self, archive: str = None, 
-                                config: Photon2EventConfig = None,
-                                verbosity: VerbosityLevel = VerbosityLevel.BASIC,
-                                **config_kwargs):
+                         config: Photon2EventConfig = None,
+                         verbosity: VerbosityLevel = VerbosityLevel.BASIC,
+                         **config_kwargs):
         """
         Run the photon2event script with the given configuration, processing all .empirphot files.
         """
@@ -507,10 +525,91 @@ class Analysis:
         if verbosity >= VerbosityLevel.BASIC:
             print("✅ Finished exporting and modifying all event files!")
 
+    def _run_export_photons(self, clean:bool = True, verbosity: VerbosityLevel = VerbosityLevel.QUIET):
+        """
+        Exports .empirphot files from PhotonFiles subfolder to CSV files in ImportedPhotons subfolder.
+        
+        Args:
+            clean: bool - Whether to delete existing CSV files in ImportedPhotons before exporting.
+            verbosity: VerbosityLevel - Controls the level of output during processing.
+        """
+        # Ensure PhotonFiles directory exists
+        photon_files_dir = self.archive / "PhotonFiles"
+        if not photon_files_dir.exists():
+            raise FileNotFoundError(f"{photon_files_dir} does not exist.")
+
+        if clean:
+            existing_csv_files = list((self.archive / "ImportedPhotons").glob("imported_*.csv"))
+            for f in existing_csv_files:
+                try:
+                    f.unlink()
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"Deleted existing file: {f.name}")
+                except Exception as e:
+                    if verbosity >= VerbosityLevel.BASIC:
+                        print(f"⚠️ Could not delete {f.name}: {e}")
+        
+        # Ensure ImportedPhotons directory exists
+        imported_photons_dir = self.archive / "ImportedPhotons"
+        imported_photons_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Get all .empirphot files
+        empirphot_files = sorted(photon_files_dir.glob("*.empirphot"))
+        if not empirphot_files:
+            raise FileNotFoundError(f"No .empirphot files found in {photon_files_dir}")
+        
+        if verbosity >= VerbosityLevel.BASIC:
+            print(f"Exporting {len(empirphot_files)} .empirphot files to CSV...")
+        
+        # Process each .empirphot file
+        for empirphot_file in tqdm(empirphot_files, desc="Exporting photons", disable=(verbosity == VerbosityLevel.QUIET)):
+            try:
+                # Define output CSV path
+                photon_result_csv = imported_photons_dir / f"imported_{empirphot_file.stem}.csv"
+                
+                # Construct command
+                cmd = (
+                    f"{self.empir_dirpath}/empir_export_photons "
+                    f"{empirphot_file} "
+                    f"{photon_result_csv} "
+                    f"csv"
+                )
+                
+                # Execute command
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"Running: {cmd}")
+                    subprocess.run(cmd, shell=True)
+                else:
+                    subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                
+                # Modify headers and convert types
+                try:
+                    df = pd.read_csv(photon_result_csv)
+                    df.columns = ["x", "y", "t", "tof"]
+                    df["x"] = df["x"].astype(float)
+                    df["y"] = df["y"].astype(float)
+                    df["t"] = df["t"].astype(float)
+                    df["tof"] = pd.to_numeric(df["tof"], errors="coerce")
+                    df.to_csv(photon_result_csv, index=False)
+                    
+                    if verbosity >= VerbosityLevel.BASIC:
+                        print(f"✔ Exported and modified {empirphot_file.name} → {photon_result_csv.name}")
+                        
+                except Exception as e:
+                    if verbosity >= VerbosityLevel.BASIC:
+                        print(f"⚠️ Error modifying headers for {photon_result_csv.name}: {e}")
+                    
+            except Exception as e:
+                if verbosity >= VerbosityLevel.BASIC:
+                    print(f"❌ Error exporting {empirphot_file.name}: {e}")
+        
+        if verbosity >= VerbosityLevel.BASIC:
+            print("✅ Finished exporting and modifying all photon files!")
+
     def _run_event_binning(self, archive: str = None, 
-                                config: EventBinningConfig = None,
-                                verbosity: VerbosityLevel = VerbosityLevel.QUIET,
-                                **config_kwargs):
+                          config: EventBinningConfig = None,
+                          verbosity: VerbosityLevel = VerbosityLevel.QUIET,
+                          **config_kwargs):
         """
         Run the binning script with the given configuration, processing all .empirevent files.
         """
@@ -561,8 +660,111 @@ class Analysis:
             archive = self.archive
         archive = Path(archive)
 
-        binned_data = pd.read_csv(archive/"binned.empirevent",header=0)
+        binned_data = pd.read_csv(archive/"binned.empirevent", header=0)
         return binned_data
+
+    def associate_events_photons(self, use_csv: bool = False, time_norm_ns: float = 1.0, 
+                               spatial_norm_px: float = 1.0, dSpace_px: float = np.inf,
+                               max_time_ns: float = 500, verbosity: VerbosityLevel = VerbosityLevel.QUIET,
+                               method: str = 'auto', n_threads: int = 10):
+        """
+        Associate photons to events using neutron_event_analyzer, either by loading .empirphot and .empirevent
+        files or directly from CSV files in ImportedPhotons and ExportedEvents.
+
+        Args:
+            use_csv (bool): If True, load data directly from CSV files in ImportedPhotons and ExportedEvents.
+                           If False, use neutron_event_analyzer's load method to process .empirphot and .empirevent files.
+            time_norm_ns (float): Time normalization factor in nanoseconds for association.
+            spatial_norm_px (float): Spatial normalization factor in pixels for association.
+            dSpace_px (float): Maximum allowed center-of-mass distance in pixels.
+            max_time_ns (float): Maximum time duration in nanoseconds for association.
+            verbosity (VerbosityLevel): Level of output verbosity.
+            method (str): Association method ('auto', 'kdtree', 'window', 'simple').
+            n_threads (int): Number of threads for parallel processing.
+        """
+        if not NEA_AVAILABLE:
+            raise ImportError("neutron_event_analyzer is required for this method.")
+
+        if use_csv:
+            # Load from CSV files in ImportedPhotons and ExportedEvents
+            imported_photons_dir = self.archive / "ImportedPhotons"
+            exported_events_dir = self.archive / "ExportedEvents"
+            
+            if not imported_photons_dir.exists():
+                raise FileNotFoundError(f"{imported_photons_dir} does not exist.")
+            if not exported_events_dir.exists():
+                raise FileNotFoundError(f"{exported_events_dir} does not exist.")
+            
+            photon_files = sorted(imported_photons_dir.glob("imported_*.csv"))
+            event_files = sorted(exported_events_dir.glob("*.csv"))
+            
+            if not photon_files:
+                raise FileNotFoundError(f"No CSV files found in {imported_photons_dir}")
+            if not event_files:
+                raise FileNotFoundError(f"No CSV files found in {exported_events_dir}")
+            
+            if verbosity >= VerbosityLevel.BASIC:
+                print(f"Loading {len(photon_files)} photon CSV files and {len(event_files)} event CSV files...")
+            
+            photon_dfs = []
+            event_dfs = []
+            
+            # Load photon CSVs
+            for file in tqdm(photon_files, desc="Loading photon CSVs", disable=(verbosity == VerbosityLevel.QUIET)):
+                try:
+                    df = pd.read_csv(file)
+                    if not df.empty:
+                        photon_dfs.append(df)
+                except Exception as e:
+                    if verbosity >= VerbosityLevel.BASIC:
+                        print(f"⚠️ Skipping {file.name} due to error: {e}")
+            
+            # Load event CSVs
+            for file in tqdm(event_files, desc="Loading event CSVs", disable=(verbosity == VerbosityLevel.QUIET)):
+                try:
+                    df = pd.read_csv(file)
+                    if not df.empty:
+                        event_dfs.append(df)
+                except Exception as e:
+                    if verbosity >= VerbosityLevel.BASIC:
+                        print(f"⚠️ Skipping {file.name} due to error: {e}")
+            
+            if photon_dfs:
+                self.photons_df = pd.concat(photon_dfs, ignore_index=True)
+            else:
+                self.photons_df = pd.DataFrame()
+                if verbosity >= VerbosityLevel.BASIC:
+                    print("⚠️ No valid photon data loaded from CSV files.")
+            
+            if event_dfs:
+                self.events_df = pd.concat(event_dfs, ignore_index=True)
+            else:
+                self.events_df = pd.DataFrame()
+                if verbosity >= VerbosityLevel.BASIC:
+                    print("⚠️ No valid event data loaded from CSV files.")
+            
+        else:
+            # Use neutron_event_analyzer to load .empirphot and .empirevent files
+            nea = NEA(data_folder=str(self.archive), export_dir=str(self.empir_dirpath), n_threads=n_threads)
+            nea.load()
+            self.events_df = nea.events_df
+            self.photons_df = nea.photons_df
+        
+        # Perform association
+        if not self.events_df.empty and not self.photons_df.empty:
+            nea = NEA(data_folder=str(self.archive), export_dir=str(self.empir_dirpath), n_threads=n_threads)
+            # Since nea.load() was used or we loaded CSVs, assign pair_dfs manually
+            nea.pair_dfs = [(self.events_df, self.photons_df)]
+            nea.associate(time_norm_ns=time_norm_ns, spatial_norm_px=spatial_norm_px, dSpace_px=dSpace_px,
+                          max_time_ns=max_time_ns, verbosity=verbosity, method=method)
+            self.associated_df = nea.get_combined_dataframe()
+            
+            if verbosity >= VerbosityLevel.BASIC:
+                print(f"✅ Associated {len(self.associated_df)} photons with events.")
+        else:
+            self.associated_df = pd.DataFrame()
+            if verbosity >= VerbosityLevel.BASIC:
+                print("⚠️ No data to associate (empty events_df or photons_df).")
 
     def process_data(self, 
                     dSpace_px: float = 4.0,
@@ -574,7 +776,12 @@ class Analysis:
                     binning_time_resolution: float = 1.5625e-9,
                     binning_offset: float = 0.0,
                     verbosity: VerbosityLevel = VerbosityLevel.QUIET,
-                    suffix: str = "") -> pd.DataFrame:
+                    suffix: str = "",
+                    method: str = 'default',
+                    time_norm_ns: float = 1.0,
+                    spatial_norm_px: float = 1.0,
+                    max_time_ns: float = 500,
+                    n_threads: int = 10) -> pd.DataFrame:
         """
         Streamlined method to process data through the complete analysis pipeline.
         
@@ -588,10 +795,15 @@ class Analysis:
             binning_time_resolution: Time resolution for binning in seconds
             binning_offset: Time offset for binning in seconds
             verbosity: Level of output verbosity
-            suffix: Optional suffix for output folder and files (e.g., "_test" creates "AnalysedResults/test")
-            
+            suffix: Optional suffix for output folder and files
+            method: Processing method ('default' or 'nea' for neutron_event_analyzer)
+            time_norm_ns: Time normalization factor in nanoseconds for nea association
+            spatial_norm_px: Spatial normalization factor in pixels for nea association
+            max_time_ns: Maximum time duration in nanoseconds for nea association
+            n_threads: Number of threads for parallel processing in nea
+        
         Returns:
-            DataFrame with processed data including stacks, counts, and error
+            DataFrame with processed data
         """
         # Create base directories
         analysed_dir = self.archive / "AnalysedResults"
@@ -605,72 +817,97 @@ class Analysis:
         suffix_dir = analysed_dir / (suffix.strip("_") if suffix else "default")
         suffix_dir.mkdir(parents=True, exist_ok=True)
         
-        # Run the import photons step
-        self._run_import_photons(verbosity=verbosity)
+        if method == 'nea':
+            # Ensure photon files are exported for nea
+            self._run_import_photons(verbosity=verbosity)
+            self._run_photon2event(config=Photon2EventConfig(dSpace_px=dSpace_px, dTime_s=dTime_s,
+                                   durationMax_s=durationMax_s, dTime_ext=dTime_ext), 
+                                   verbosity=verbosity)
+            self._run_export_events(verbosity=verbosity)
+            self._run_export_photons(verbosity=verbosity)
+            
+            # Run nea association
+            self.associate_events_photons(use_csv=True, time_norm_ns=time_norm_ns, spatial_norm_px=spatial_norm_px,
+                                        dSpace_px=dSpace_px, max_time_ns=max_time_ns, verbosity=verbosity,
+                                        method='kdtree', n_threads=n_threads)
+            
+            if not self.associated_df.empty:
+                output_csv = suffix_dir / "associated_results.csv"
+                self.associated_df.to_csv(output_csv, index=False)
+                if verbosity >= VerbosityLevel.BASIC:
+                    print(f"Associated data saved to {output_csv}")
+                return self.associated_df
+            else:
+                if verbosity >= VerbosityLevel.BASIC:
+                    print("No associated data to return.")
+                return pd.DataFrame()
         
-        # Setup photon2event config
-        p2e_config = self.Photon2EventConfig()
-        p2e_config.dSpace_px = dSpace_px
-        p2e_config.dTime_s = dTime_s
-        p2e_config.durationMax_s = durationMax_s
-        p2e_config.dTime_ext = dTime_ext
-        params_file = suffix_dir / "parameterSettings.json"  # Save in suffixed folder
-        p2e_config.write(params_file)
-        
-        # Run photon2event
-        self._run_photon2event(config=p2e_config, verbosity=verbosity)
-
-        # Run export events
-        self._run_export_events(verbosity=verbosity)
-        
-        # Setup event binning config
-        binning_config = self.EventBinningConfig().time_binning()
-        binning_config.binning_t.nBins = nBins
-        binning_config.binning_t.resolution_s = binning_time_resolution
-        binning_config.binning_t.offset_s = binning_offset
-        if nPhotons_bins is not None:
-            binning_config = binning_config.nphotons_binning()
-            binning_config.binning_nPhotons.nBins = nPhotons_bins
-        event_params_file = suffix_dir / "parameterEvents.json"  # Save in suffixed folder
-        binning_config.write(event_params_file)
-        
-        # Run event binning
-        self._run_event_binning(config=binning_config, verbosity=verbosity)
-        
-        # Read and process binned data
-        result_df = self._read_binned_data()
-        if nPhotons_bins is None:
-            result_df.columns = ["stacks", "counts"]
         else:
-            result_df.columns = ["stacks", "nPhotons", "counts"]
-        result_df["err"] = np.sqrt(result_df["counts"])
-        result_df["stacks"] = np.arange(len(result_df))
-        
-        # Save results in suffixed folder
-        output_csv = suffix_dir / "counts.csv"
-        result_df.to_csv(output_csv, index=False)
-        
-        if verbosity >= VerbosityLevel.BASIC:
-            print(f"Processed data saved to {output_csv}")
-        
-        return result_df
+            # Original processing pipeline
+            self._run_import_photons(verbosity=verbosity)
+            
+            # Setup photon2event config
+            p2e_config = self.Photon2EventConfig()
+            p2e_config.dSpace_px = dSpace_px
+            p2e_config.dTime_s = dTime_s
+            p2e_config.durationMax_s = durationMax_s
+            p2e_config.dTime_ext = dTime_ext
+            params_file = suffix_dir / "parameterSettings.json"
+            p2e_config.write(params_file)
+            
+            # Run photon2event
+            self._run_photon2event(config=p2e_config, verbosity=verbosity)
 
+            # Run export events
+            self._run_export_events(verbosity=verbosity)
+            
+            # Setup event binning config
+            binning_config = self.EventBinningConfig().time_binning()
+            binning_config.binning_t.nBins = nBins
+            binning_config.binning_t.resolution_s = binning_time_resolution
+            binning_config.binning_t.offset_s = binning_offset
+            if nPhotons_bins is not None:
+                binning_config = binning_config.nphotons_binning()
+                binning_config.binning_nPhotons.nBins = nPhotons_bins
+            event_params_file = suffix_dir / "parameterEvents.json"
+            binning_config.write(event_params_file)
+            
+            # Run event binning
+            self._run_event_binning(config=binning_config, verbosity=verbosity)
+            
+            # Read and process binned data
+            result_df = self._read_binned_data()
+            if nPhotons_bins is None:
+                result_df.columns = ["stacks", "counts"]
+            else:
+                result_df.columns = ["stacks", "nPhotons", "counts"]
+            result_df["err"] = np.sqrt(result_df["counts"])
+            result_df["stacks"] = np.arange(len(result_df))
+            
+            # Save results in suffixed folder
+            output_csv = suffix_dir / "counts.csv"
+            result_df.to_csv(output_csv, index=False)
+            
+            if verbosity >= VerbosityLevel.BASIC:
+                print(f"Processed data saved to {output_csv}")
+            
+            return result_df
 
     def process_data_event_by_event(self,
-                                    dSpace_px: float = 4.0,
-                                    dTime_s: float = 50e-9,
-                                    durationMax_s: float = 500e-9,
-                                    dTime_ext: float = 1.0,
-                                    nBins: int = 1000,
-                                    binning_time_resolution: float = 1.5625e-9,
-                                    binning_offset: float = 0.0,
-                                    verbosity: int = 0,
-                                    merge: bool = False,
-                                    suffix: str = "",
-                                    time_norm_ns: float = 1.0,
-                                    spatial_norm_px: float = 1.0,
-                                    fov: float = 120.0,
-                                    focus_factor: float = 1.2) -> pd.DataFrame:
+                                   dSpace_px: float = 4.0,
+                                   dTime_s: float = 50e-9,
+                                   durationMax_s: float = 500e-9,
+                                   dTime_ext: float = 1.0,
+                                   nBins: int = 1000,
+                                   binning_time_resolution: float = 1.5625e-9,
+                                   binning_offset: float = 0.0,
+                                   verbosity: int = 0,
+                                   merge: bool = False,
+                                   suffix: str = "",
+                                   time_norm_ns: float = 1.0,
+                                   spatial_norm_px: float = 1.0,
+                                   fov: float = 120.0,
+                                   focus_factor: float = 1.2) -> pd.DataFrame:
         """
         Processes data event by event, grouping optical photons by neutron_id.
         
@@ -921,7 +1158,7 @@ class Analysis:
             if verbosity >= 1:
                 print("Merging processed results with simulation and traced data...")
             
-            def merge_sim_and_recon_data(sim_data, traced_data, recon_data, fov:float = 120, focus_factor: float = 1.2):
+            def merge_sim_and_recon_data(sim_data, traced_data, recon_data, fov: float = 120, focus_factor: float = 1.2):
                 """
                 Merge simulation, traced photon, and reconstruction dataframes based on neutron_id
                 and row-by-row correspondence between sim_data and traced_data.
@@ -933,8 +1170,8 @@ class Analysis:
                     sim_data: DataFrame with simulation data
                     traced_data: DataFrame with traced photon data (row-aligned with sim_data)
                     recon_data: DataFrame with reconstructed event data
-                    fov (float, optional): Field of View in mm, used to scale photon positions
-                    focus_factor (float, optional): determines the ratio of position recorded on the sensor to the actual hit position on the scintillator screen 
+                    fov: Field of View in mm, used to scale photon positions
+                    focus_factor: Factor for hit position on sensor to scintillator screen
                 
                 Returns:
                     Merged DataFrame with simulation, traced, and reconstruction columns
@@ -960,7 +1197,6 @@ class Analysis:
                         sim_df = sim_df.iloc[:min_len].copy()
                         traced_df = traced_df.iloc[:min_len].copy()
                     
-                    # Identify time column
                     time_col = None
                     for candidate in ['toa2', 'toa', 'time']:
                         if candidate in traced_df.columns:
@@ -1096,24 +1332,23 @@ class Analysis:
         
         return combined_results
         
-    def calculate_reconstruction_stats(self,df: pd.DataFrame, fov:float=120, focus_factor:float = 1.25):
+    def calculate_reconstruction_stats(self, df: pd.DataFrame, fov: float = 120, focus_factor: float = 1.25):
         """
-        Calculates stats on reconstructed events, Adds columms to the analysis dataframe.
+        Calculates stats on reconstructed events, Adds columns to the analysis dataframe.
 
         Input:
             - df (pd.DataFrame): merged_df that contains all the reconstructed event-by-event columns
             - fov (float): Field of view in mm, used to scale pixel coordinates
-            - focus_factor (float): A fcator that translates the position recorded on the sensor to the original position on the scintillator
+            - focus_factor (float): A factor that translates the position recorded on the sensor to the original position on the scintillator
 
         Returns:
             - df (pd.DataFrame): table with new stats columns
         """
-                # Compute additional columns
-        df["x3"] = (128 - df["x [px]"]) / 256 * fov *focus_factor
-        df["y3"] = (128 - df["y [px]"]) / 256 * fov *focus_factor
+        # Compute additional columns
+        df["x3"] = (128 - df["x [px]"]) / 256 * fov * focus_factor
+        df["y3"] = (128 - df["y [px]"]) / 256 * fov * focus_factor
         df["delta_x"] = df["x3"] - df["nx"]
         df["delta_y"] = df["y3"] - df["ny"]
         df["delta_r"] = np.sqrt(df["delta_x"]**2 + df["delta_y"]**2)
 
         return df
-
