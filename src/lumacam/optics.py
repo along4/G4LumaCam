@@ -1,3 +1,6 @@
+import logging
+# Or more specifically, suppress all INFO messages globally
+logging.disable(logging.INFO)
 from rayoptics.environment import OpticalModel, PupilSpec, FieldSpec, WvlSpec, InteractiveLayout
 from rayoptics.environment import RayFanFigure, SpotDiagramFigure, Fit, open_model
 from rayoptics.gui import roafile
@@ -13,8 +16,6 @@ import numpy as np
 import pandas as pd
 from rayoptics.raytr import analyses
 from lmfit import Parameters, minimize, MinimizerException
-import warnings
-warnings.filterwarnings("ignore")
 from copy import deepcopy
 import glob
 import importlib.resources
@@ -23,6 +24,7 @@ from io import StringIO
 from contextlib import redirect_stdout
 import tempfile
 import os
+
 
 
 class VerbosityLevel(IntEnum):
@@ -125,6 +127,7 @@ class Lens:
         Raises:
             ValueError: If invalid lens kind, missing zmx_file for 'zmx_file', or invalid parameters.
         """
+
         self.kind = kind
         self.focus = focus
         self.zmx_file = zmx_file
