@@ -25,8 +25,6 @@ from contextlib import redirect_stdout
 import tempfile
 import os
 
-
-
 class VerbosityLevel(IntEnum):
     """Verbosity levels for simulation output."""
     QUIET = 0    # Show nothing except progress bar
@@ -405,7 +403,6 @@ class Lens:
 
         sm.gaps[0].thi = dist_from_obj
         osp.pupil = PupilSpec(osp, key=['object', 'f/#'], value=fnumber)
-
         osp.field_of_view = FieldSpec(osp, key=['object', 'height'], flds=[0., 1])  # Set field of view
         osp.spectral_region = WvlSpec([(486.1327, 0.5), (587.5618, 1.0), (656.2725, 0.5)], ref_wl=1)
         sm.do_apertures = False
@@ -623,7 +620,6 @@ class Lens:
             List of chunks, where each chunk is a list of ray tuples
         """
         return [rays[i:i+chunk_size] for i in range(0, len(rays), chunk_size)]
-
 
     def trace_rays(self, opm=None, opm_file=None, zscan=0, zfine=0, fnumber=None,
                 join=False, print_stats=False, n_processes=None, chunk_size=1000, 
@@ -921,7 +917,6 @@ class Lens:
             #         if verbosity >= VerbosityLevel.DETAILED:
             #             print(f"Warning: Could not clean up {temp_opm_file}: {e}")
 
-
     def _align_chunk_results(self, chunk_result, indices, chunk_idx, verbosity):
         """
         Align chunk processing results with original row indices.
@@ -956,7 +951,6 @@ class Lens:
                 chunk_result = chunk_result[:len(indices)]
         
         return list(zip(chunk_result, indices))
-
 
     def _create_result_dataframe(self, results_with_indices, original_df, join, verbosity):
         """
@@ -1074,6 +1068,240 @@ class Lens:
             z_range = result_df['z2'].max() - result_df['z2'].min()
             print(f"    Position ranges - X: {x_range:.3f}mm, Y: {y_range:.3f}mm, Z: {z_range:.3f}mm")
 
+    def saturate_photons(self, deadtime: float = 100.0, output_format: str = "tpx3", min_tot: float = 20.0,
+                         pixel_size: float = None, verbosity: VerbosityLevel = VerbosityLevel.BASIC) -> Union[pd.DataFrame, None]:
+        """
+        Process traced photons to simulate an event camera with pixel saturation within a specified deadtime.
+
+        This method processes photon data from the 'TracedPhotons' directory, grouping photons that arrive
+        at the same integer pixel (256x256 grid) within the specified deadtime. Depending on the output_format,
+        it generates either a TPX3-like output or a photon-averaged output, and saves results to the
+        'SaturatedPhotons' subfolder as CSV files.
+
+        Parameters:
+        -----------
+        deadtime : float, default 100.0
+            Deadtime in nanoseconds for pixel saturation.
+        output_format : str, default "tpx3"
+            Output format: "tpx3" for pixel-based output with TOA and TOT, or "photons" for averaged photon positions
+            with additional columns for photon count and time difference.
+        min_tot : float, default 20.0
+            Minimum Time-Over-Threshold (TOT) in nanoseconds for TPX3 format.
+        pixel_size : float, optional
+            Size of each pixel in mm. If None, automatically determined from the data range.
+        verbosity : VerbosityLevel, default VerbosityLevel.BASIC
+            Controls output detail level:
+            - QUIET: Only essential error messages
+            - BASIC: Progress bars + basic file info
+            - DETAILED: All available information including warnings
+
+        Returns:
+        --------
+        pd.DataFrame or None
+            Combined DataFrame of all processed results if return_df=True, otherwise None.
+            For "tpx3" format, columns are: x, y, toa, tot
+            For "photons" format, columns are: x2, y2, z2, id, neutron_id, toa2, photon_count, time_diff
+
+        Raises:
+        -------
+        ValueError
+            If output_format is invalid or required columns are missing
+        FileNotFoundError
+            If no valid traced photon files are found
+        """
+        if output_format not in ["tpx3", "photons"]:
+            raise ValueError(f"Invalid output_format: {output_format}. Must be 'tpx3' or 'photons'")
+
+        # Set up directories
+        traced_photons_dir = self.archive / "TracedPhotons"
+        saturated_photons_dir = self.archive / "SaturatedPhotons"
+        saturated_photons_dir.mkdir(parents=True, exist_ok=True)
+
+        # Find all non-empty traced_data_*.csv files
+        csv_files = sorted(traced_photons_dir.glob("traced_sim_data_*.csv"))
+        valid_files = [f for f in csv_files if f.stat().st_size > 100]
+
+        if not valid_files:
+            if verbosity > VerbosityLevel.QUIET:
+                print("No valid traced photon files found in 'TracedPhotons' directory.")
+                print(f"Searched in: {traced_photons_dir}")
+                print("Expected files matching pattern: traced_sim_data_*.csv")
+            return None
+
+        if verbosity > VerbosityLevel.QUIET:
+            print(f"Found {len(valid_files)} valid traced photon files to process")
+
+        all_results = []
+
+        # Progress bar for file processing
+        file_desc = f"Processing {len(valid_files)} files"
+        file_iter = tqdm(valid_files, desc=file_desc, disable=not verbosity >= VerbosityLevel.BASIC)
+
+        for csv_file in file_iter:
+            if verbosity >= VerbosityLevel.DETAILED:
+                print(f"\nProcessing file: {csv_file.name}")
+
+            # Load and validate data
+            try:
+                df = pd.read_csv(csv_file)
+            except Exception as e:
+                if verbosity > VerbosityLevel.QUIET:
+                    print(f"Error reading {csv_file.name}: {str(e)}")
+                continue
+
+            if df.empty:
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"Skipping empty file: {csv_file.name}")
+                continue
+
+            # Validate required columns
+            required_cols = ['x2', 'y2', 'z2', 'toa2']
+            if output_format == "photons":
+                required_cols += ['id', 'neutron_id']
+            missing_cols = [col for col in required_cols if col not in df.columns]
+            if missing_cols:
+                if verbosity > VerbosityLevel.QUIET:
+                    print(f"Skipping {csv_file.name}: missing columns {missing_cols}")
+                continue
+
+            # Remove rows with NaN in required columns
+            df = df.dropna(subset=required_cols)
+
+            if df.empty:
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"Skipping {csv_file.name}: no valid data after removing NaNs")
+                continue
+
+            # Determine pixel size if not provided
+            if pixel_size is None:
+                x_range = df['x2'].max() - df['x2'].min()
+                y_range = df['y2'].max() - df['y2'].min()
+                pixel_size = max(x_range, y_range) / 256.0 if x_range > 0 and y_range > 0 else 1.0
+
+            # Assign pixels (0-based indexing)
+            df['pixel_x'] = np.clip((df['x2'] / pixel_size + 128).astype(int), 0, 255)
+            df['pixel_y'] = np.clip((df['y2'] / pixel_size + 128).astype(int), 0, 255)
+
+            # Sort by TOA for processing
+            df = df.sort_values('toa2')
+
+            # Group photons by pixel and deadtime
+            grouped_data = []
+            processed_indices = set()
+            df['group_id'] = -1
+            current_group_id = 0
+
+            for pixel_x in range(256):
+                for pixel_y in range(256):
+                    # Get photons in this pixel
+                    pixel_mask = (df['pixel_x'] == pixel_x) & (df['pixel_y'] == pixel_y)
+                    pixel_df = df[pixel_mask].sort_values('toa2')
+                    
+                    if pixel_df.empty:
+                        continue
+
+                    current_time = None
+                    group_indices = []
+
+                    for idx, row in pixel_df.iterrows():
+                        if idx in processed_indices:
+                            continue
+
+                        if current_time is None or row['toa2'] >= current_time + deadtime:
+                            # Start a new group
+                            if group_indices:
+                                grouped_data.append((pixel_x, pixel_y, group_indices))
+                                for g_idx in group_indices:
+                                    df.loc[g_idx, 'group_id'] = current_group_id
+                                current_group_id += 1
+                                group_indices = []
+
+                            current_time = row['toa2']
+                            group_indices.append(idx)
+                            processed_indices.add(idx)
+                        elif row['toa2'] < current_time + deadtime:
+                            # Add to current group
+                            group_indices.append(idx)
+                            processed_indices.add(idx)
+
+                    # Save the last group
+                    if group_indices:
+                        grouped_data.append((pixel_x, pixel_y, group_indices))
+                        for g_idx in group_indices:
+                            df.loc[g_idx, 'group_id'] = current_group_id
+                        current_group_id += 1
+
+            if not grouped_data:
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"No valid photon groups found in {csv_file.name}")
+                continue
+
+            # Process groups based on output format
+            result_rows = []
+
+            if output_format == "tpx3":
+                for pixel_x, pixel_y, indices in grouped_data:
+                    group_df = df.loc[indices]
+                    if group_df.empty:
+                        continue
+
+                    first_toa = group_df['toa2'].min()
+                    last_toa = group_df['toa2'].max()
+                    toa_bin = int(first_toa / 1.5625)  # Convert to 1.5625 ns bins
+                    tot = max(last_toa - first_toa, min_tot)
+
+                    result_rows.append({
+                        'x': pixel_x + 1,  # 1-based indexing
+                        'y': pixel_y + 1,  # 1-based indexing
+                        'toa': toa_bin,
+                        'tot': tot
+                    })
+
+            elif output_format == "photons":
+                for pixel_x, pixel_y, indices in grouped_data:
+                    group_df = df.loc[indices]
+                    if group_df.empty:
+                        continue
+
+                    first_row = group_df.iloc[0]
+                    mean_x2 = group_df['x2'].mean()
+                    mean_y2 = group_df['y2'].mean()
+                    mean_z2 = group_df['z2'].mean()
+                    photon_count = len(group_df)
+                    time_diff = group_df['toa2'].max() - group_df['toa2'].min()
+
+                    result_rows.append({
+                        'x2': mean_x2,
+                        'y2': mean_y2,
+                        'z2': mean_z2,
+                        'id': first_row['id'],
+                        'neutron_id': first_row['neutron_id'],
+                        'toa2': first_row['toa2'],
+                        'photon_count': photon_count,
+                        'time_diff': time_diff
+                    })
+
+            # Create result DataFrame
+            result_df = pd.DataFrame(result_rows)
+
+            # Save results to file
+            output_file = saturated_photons_dir / f"saturated_{csv_file.name}"
+            result_df.to_csv(output_file, index=False)
+            if verbosity >= VerbosityLevel.DETAILED:
+                print(f"  Saved results to: {output_file}")
+
+            all_results.append(result_df)
+
+        # Return combined results if requested
+        if all_results:
+            combined_df = pd.concat(all_results, ignore_index=True)
+            if verbosity > VerbosityLevel.QUIET:
+                print(f"\nReturning combined DataFrame with {len(combined_df)} rows")
+            return combined_df
+
+        if verbosity > VerbosityLevel.QUIET:
+            print(f"\nProcessing complete. Results saved to: {saturated_photons_dir}")
+        return None
 
     def zscan(self, zfocus_range: Union[np.ndarray, list, float] = 0.,
             zfine_range: Union[np.ndarray, list, float] = 0.,
