@@ -1074,7 +1074,8 @@ class Lens:
         Process traced photons to simulate an event camera with pixel saturation within a specified deadtime.
 
         This method processes photon data from the 'TracedPhotons' directory, grouping photons that arrive
-        at the same integer pixel (256x256 grid) within the specified deadtime. Depending on the output_format,
+        at the same integer pixel (256x256 grid) within the specified deadtime. It checks if the input data
+        is sorted by toa2 and sorts if necessary to ensure correct grouping. Depending on the output_format,
         it generates either a TPX3-like output or a photon-averaged output, and saves results to the
         'SaturatedPhotons' subfolder as CSV files.
 
@@ -1172,64 +1173,58 @@ class Lens:
                     print(f"Skipping {csv_file.name}: no valid data after removing NaNs")
                 continue
 
+            # Check if data is sorted by toa2
+            is_sorted = (df['toa2'].diff().dropna() >= 0).all()
+            if not is_sorted:
+                if verbosity >= VerbosityLevel.BASIC:
+                    print(f"Warning: Data in {csv_file.name} is not sorted by toa2. Sorting now.")
+                df = df.sort_values('toa2').reset_index(drop=True)
+
             # Determine pixel size if not provided
             if pixel_size is None:
                 x_range = df['x2'].max() - df['x2'].min()
                 y_range = df['y2'].max() - df['y2'].min()
                 pixel_size = max(x_range, y_range) / 256.0 if x_range > 0 and y_range > 0 else 1.0
 
-            # Assign pixels (0-based indexing)
+            # Assign pixels (0-based indexing) using vectorized operations
             df['pixel_x'] = np.clip((df['x2'] / pixel_size + 128).astype(int), 0, 255)
             df['pixel_y'] = np.clip((df['y2'] / pixel_size + 128).astype(int), 0, 255)
 
-            # Sort by TOA for processing
-            df = df.sort_values('toa2')
-
             # Group photons by pixel and deadtime
             grouped_data = []
-            processed_indices = set()
-            df['group_id'] = -1
             current_group_id = 0
 
-            for pixel_x in range(256):
-                for pixel_y in range(256):
-                    # Get photons in this pixel
-                    pixel_mask = (df['pixel_x'] == pixel_x) & (df['pixel_y'] == pixel_y)
-                    pixel_df = df[pixel_mask].sort_values('toa2')
-                    
-                    if pixel_df.empty:
-                        continue
+            # Group by pixel_x and pixel_y
+            grouped_pixels = df.groupby(['pixel_x', 'pixel_y'])
+            
+            for (pixel_x, pixel_y), pixel_df in grouped_pixels:
+                group_indices = []
+                current_time = None
 
-                    current_time = None
-                    group_indices = []
+                for idx, row in pixel_df.iterrows():
+                    if current_time is None:
+                        # Start a new group
+                        current_time = row['toa2']
+                        group_indices = [idx]
+                    elif row['toa2'] <= current_time + deadtime:
+                        # Add to current group
+                        group_indices.append(idx)
+                    else:
+                        # Close current group and start a new one
+                        if group_indices:
+                            grouped_data.append((pixel_x, pixel_y, group_indices))
+                            for g_idx in group_indices:
+                                df.loc[g_idx, 'group_id'] = current_group_id
+                            current_group_id += 1
+                        current_time = row['toa2']
+                        group_indices = [idx]
 
-                    for idx, row in pixel_df.iterrows():
-                        if idx in processed_indices:
-                            continue
-
-                        if current_time is None or row['toa2'] >= current_time + deadtime:
-                            # Start a new group
-                            if group_indices:
-                                grouped_data.append((pixel_x, pixel_y, group_indices))
-                                for g_idx in group_indices:
-                                    df.loc[g_idx, 'group_id'] = current_group_id
-                                current_group_id += 1
-                                group_indices = []
-
-                            current_time = row['toa2']
-                            group_indices.append(idx)
-                            processed_indices.add(idx)
-                        elif row['toa2'] < current_time + deadtime:
-                            # Add to current group
-                            group_indices.append(idx)
-                            processed_indices.add(idx)
-
-                    # Save the last group
-                    if group_indices:
-                        grouped_data.append((pixel_x, pixel_y, group_indices))
-                        for g_idx in group_indices:
-                            df.loc[g_idx, 'group_id'] = current_group_id
-                        current_group_id += 1
+                # Save the last group
+                if group_indices:
+                    grouped_data.append((pixel_x, pixel_y, group_indices))
+                    for g_idx in group_indices:
+                        df.loc[g_idx, 'group_id'] = current_group_id
+                    current_group_id += 1
 
             if not grouped_data:
                 if verbosity >= VerbosityLevel.DETAILED:
@@ -1263,12 +1258,21 @@ class Lens:
                     if group_df.empty:
                         continue
 
+                    first_toa = group_df['toa2'].min()
+                    last_toa = group_df['toa2'].max()
+                    time_diff = last_toa - first_toa
+
+                    # Validate time_diff
+                    if time_diff > deadtime + 1e-6:  # Allow small numerical tolerance
+                        if verbosity >= VerbosityLevel.DETAILED:
+                            print(f"Warning: time_diff {time_diff:.2f} ns exceeds deadtime {deadtime} ns "
+                                  f"in pixel ({pixel_x}, {pixel_y}) of {csv_file.name}")
+
                     first_row = group_df.iloc[0]
                     mean_x2 = group_df['x2'].mean()
                     mean_y2 = group_df['y2'].mean()
                     mean_z2 = group_df['z2'].mean()
                     photon_count = len(group_df)
-                    time_diff = group_df['toa2'].max() - group_df['toa2'].min()
 
                     result_rows.append({
                         'x2': mean_x2,
