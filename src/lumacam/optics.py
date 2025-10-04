@@ -226,7 +226,7 @@ class Lens:
         if opm is None:
             opm = self.opm0
         pm = opm['parax_model']
-        
+
         output = StringIO()
         with redirect_stdout(output):
             pm.first_order_data()
@@ -329,7 +329,7 @@ class Lens:
             gap_between_lenses (float, optional): Gap between lenses in mm.
             dist_to_screen (float, optional): Distance from last lens to screen in mm.
             fnumber (float, optional): F-number of the optical system.
-            save (bool, optional): Save the optical model to a file.
+            save (bool): Save the optical model to a file.
 
         Returns:
             OpticalModel: The loaded optical model.
@@ -622,22 +622,26 @@ class Lens:
         return [rays[i:i+chunk_size] for i in range(0, len(rays), chunk_size)]
 
     def trace_rays(self, opm=None, opm_file=None, zscan=0, zfine=0, fnumber=None,
-                join=False, print_stats=False, n_processes=None, chunk_size=1000, 
-                progress_bar=True, timeout=3600, return_df=False, 
-                verbosity=VerbosityLevel.BASIC):
+                   join=False, print_stats=False, n_processes=None, chunk_size=1000, 
+                   progress_bar=True, timeout=3600, return_df=False, 
+                   verbosity=VerbosityLevel.BASIC, deadtime=None):
         """
-        Trace rays from simulation data files and save processed results.
+        Trace rays from simulation data files and save processed results, optionally applying pixel saturation.
 
         This method processes ray data from CSV files in the 'SimPhotons' directory using either
         a provided optical model, a saved optical model file, or by creating a refocused version
-        of the default optical model. Results are saved to the 'TracedPhotons' directory.
+        of the default optical model. If deadtime is provided, it applies the saturate_photons
+        method with output_format="photons" and saves the results directly to the 'TracedPhotons'
+        directory, including photon_count and time_diff columns. Otherwise, it saves raw traced
+        results to 'TracedPhotons'.
 
         Processing Pipeline:
         1. Locates all non-empty 'sim_data_*.csv' files in 'SimPhotons' directory
         2. Converts ray data to appropriate format for optical tracing
         3. Processes rays in parallel chunks using multiprocessing
-        4. Saves traced results to 'TracedPhotons' directory
-        5. Optionally returns combined results as a DataFrame
+        4. If deadtime is provided, applies saturation to group photons by pixel and deadtime
+        5. Saves results to 'TracedPhotons' directory
+        6. Optionally returns combined results as a DataFrame
 
         Parameters:
         -----------
@@ -679,16 +683,19 @@ class Lens:
             - QUIET: Only essential error messages
             - BASIC: Progress bars + basic file info + statistics
             - DETAILED: All available information including warnings
+        deadtime : float, optional
+            Deadtime in nanoseconds for pixel saturation. If provided, applies
+            saturate_photons with output_format="photons" and saves results to
+            'TracedPhotons' instead of 'SaturatedPhotons'.
 
         Returns:
         --------
         pd.DataFrame or None
             Combined DataFrame of all processed results if return_df=True, 
             otherwise None. Each row represents a traced ray with columns:
-            - x2, y2, z2: Final ray position coordinates
-            - id, neutron_id: Ray identifiers (if present in original data)
-            - toa2: Time of arrival (if 'toa' present in original data)
-            - Original columns (if join=True)
+            - Without deadtime: x2, y2, z2, id, neutron_id, toa2 (if join=False)
+            - With deadtime: x2, y2, z2, id, neutron_id, toa2, photon_count, time_diff
+            - Additional columns if join=True
 
         Raises:
         -------
@@ -706,6 +713,9 @@ class Lens:
         if opm_file is not None and not Path(opm_file).exists():
             raise FileNotFoundError(f"Optical model file not found: {opm_file}")
         
+        if deadtime is not None and deadtime <= 0:
+            raise ValueError(f"deadtime must be positive, got {deadtime}")
+
         # Set up directories
         sim_photons_dir = self.archive / "SimPhotons"
         traced_photons_dir = self.archive / "TracedPhotons"
@@ -716,13 +726,13 @@ class Lens:
         valid_files = [f for f in csv_files if f.stat().st_size > 100]
 
         if not valid_files:
-            if verbosity > VerbosityLevel.BASIC:
+            if verbosity > VerbosityLevel.QUIET:
                 print("No valid simulation data files found in 'SimPhotons' directory.")
                 print(f"Searched in: {sim_photons_dir}")
                 print("Expected files matching pattern: sim_data_*.csv")
             return None
 
-        if verbosity > VerbosityLevel.BASIC:
+        if verbosity > VerbosityLevel.QUIET:
             print(f"Found {len(valid_files)} valid simulation files to process")
 
         # Handle optical model setup
@@ -781,7 +791,7 @@ class Lens:
                 try:
                     df = pd.read_csv(csv_file)
                 except Exception as e:
-                    if verbosity > VerbosityLevel.BASIC:
+                    if verbosity > VerbosityLevel.QUIET:
                         print(f"Error reading {csv_file.name}: {str(e)}")
                     continue
                     
@@ -794,7 +804,7 @@ class Lens:
                 required_cols = ['x', 'y', 'z', 'dx', 'dy', 'dz', 'wavelength']
                 missing_cols = [col for col in required_cols if col not in df.columns]
                 if missing_cols:
-                    if verbosity > VerbosityLevel.BASIC:
+                    if verbosity > VerbosityLevel.QUIET:
                         print(f"Skipping {csv_file.name}: missing columns {missing_cols}")
                     continue
 
@@ -880,6 +890,31 @@ class Lens:
                 result_df = self._create_result_dataframe(results_with_indices, df, join, verbosity)
                 result_df["toa2"] = df["toa"] if "toa" in df.columns else np.nan
 
+                # Apply saturation if deadtime is provided
+                if deadtime is not None:
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"  Applying saturation with deadtime={deadtime} ns")
+                    # Ensure required columns for saturation
+                    required_cols = ['x2', 'y2', 'z2', 'toa2', 'id', 'neutron_id']
+                    missing_cols = [col for col in required_cols if col not in result_df.columns]
+                    if missing_cols:
+                        if verbosity > VerbosityLevel.QUIET:
+                            print(f"Cannot apply saturation to {csv_file.name}: missing columns {missing_cols}")
+                        continue
+                    # Call saturate_photons with output_format="photons"
+                    result_df = self.saturate_photons(
+                        data=result_df,
+                        deadtime=deadtime,
+                        output_format="photons",
+                        min_tot=20.0,  # Default value, not used in "photons" format
+                        pixel_size=None,
+                        verbosity=verbosity
+                    )
+                    if result_df is None or result_df.empty:
+                        if verbosity > VerbosityLevel.QUIET:
+                            print(f"  Saturation produced no results for {csv_file.name}")
+                        continue
+
                 # Print statistics if requested
                 if print_stats and verbosity >= VerbosityLevel.BASIC:
                     self._print_tracing_stats(csv_file.name, df, result_df)
@@ -896,11 +931,11 @@ class Lens:
             # Return combined results if requested
             if return_df and all_results:
                 combined_df = pd.concat(all_results, ignore_index=True)
-                if verbosity > VerbosityLevel.BASIC:
+                if verbosity > VerbosityLevel.QUIET:
                     print(f"\nReturning combined DataFrame with {len(combined_df)} rows")
                 return combined_df
 
-            if verbosity > VerbosityLevel.BASIC:
+            if verbosity > VerbosityLevel.QUIET:
                 print(f"\nProcessing complete. Results saved to: {traced_photons_dir}")
             
             return None
@@ -1068,19 +1103,22 @@ class Lens:
             z_range = result_df['z2'].max() - result_df['z2'].min()
             print(f"    Position ranges - X: {x_range:.3f}mm, Y: {y_range:.3f}mm, Z: {z_range:.3f}mm")
 
-    def saturate_photons(self, deadtime: float = 100.0, output_format: str = "tpx3", min_tot: float = 20.0,
-                         pixel_size: float = None, verbosity: VerbosityLevel = VerbosityLevel.BASIC) -> Union[pd.DataFrame, None]:
+    def saturate_photons(self, data: pd.DataFrame = None, deadtime: float = 100.0, output_format: str = "tpx3",
+                         min_tot: float = 20.0, pixel_size: float = None, verbosity: VerbosityLevel = VerbosityLevel.BASIC
+                         ) -> Union[pd.DataFrame, None]:
         """
         Process traced photons to simulate an event camera with pixel saturation within a specified deadtime.
 
-        This method processes photon data from the 'TracedPhotons' directory, grouping photons that arrive
-        at the same integer pixel (256x256 grid) within the specified deadtime. It checks if the input data
-        is sorted by toa2 and sorts if necessary to ensure correct grouping. Depending on the output_format,
-        it generates either a TPX3-like output or a photon-averaged output, and saves results to the
-        'SaturatedPhotons' subfolder as CSV files.
+        This method processes photon data, either from the provided DataFrame or from CSV files in the
+        'TracedPhotons' directory, grouping photons that arrive at the same integer pixel (256x256 grid)
+        within the specified deadtime. It checks if the input data is sorted by toa2 and sorts if necessary
+        to ensure correct grouping. Depending on the output_format, it generates either a TPX3-like output
+        or a photon-averaged output, and saves results to the 'SaturatedPhotons' subfolder as CSV files.
 
         Parameters:
         -----------
+        data : pd.DataFrame, optional
+            DataFrame containing photon data to process. If None, loads from 'TracedPhotons' directory.
         deadtime : float, default 100.0
             Deadtime in nanoseconds for pixel saturation.
         output_format : str, default "tpx3"
@@ -1099,8 +1137,8 @@ class Lens:
         Returns:
         --------
         pd.DataFrame or None
-            Combined DataFrame of all processed results if return_df=True, otherwise None.
-            For "tpx3" format, columns are: x, y, toa, tot
+            Combined DataFrame of all processed results if data is provided or files are processed,
+            otherwise None. For "tpx3" format, columns are: x, y, toa, tot
             For "photons" format, columns are: x2, y2, z2, id, neutron_id, toa2, photon_count, time_diff
 
         Raises:
@@ -1108,51 +1146,50 @@ class Lens:
         ValueError
             If output_format is invalid or required columns are missing
         FileNotFoundError
-            If no valid traced photon files are found
+            If no valid traced photon files are found when data is None
         """
         if output_format not in ["tpx3", "photons"]:
             raise ValueError(f"Invalid output_format: {output_format}. Must be 'tpx3' or 'photons'")
 
-        # Set up directories
-        traced_photons_dir = self.archive / "TracedPhotons"
-        saturated_photons_dir = self.archive / "SaturatedPhotons"
-        saturated_photons_dir.mkdir(parents=True, exist_ok=True)
+        # Set up input data
+        if data is not None:
+            dfs = [data]
+            save_results = False
+        else:
+            # Set up directories
+            traced_photons_dir = self.archive / "TracedPhotons"
+            saturated_photons_dir = self.archive / "SaturatedPhotons"
+            saturated_photons_dir.mkdir(parents=True, exist_ok=True)
 
-        # Find all non-empty traced_data_*.csv files
-        csv_files = sorted(traced_photons_dir.glob("traced_sim_data_*.csv"))
-        valid_files = [f for f in csv_files if f.stat().st_size > 100]
+            # Find all non-empty traced_data_*.csv files
+            csv_files = sorted(traced_photons_dir.glob("traced_sim_data_*.csv"))
+            dfs = [pd.read_csv(f) for f in csv_files if f.stat().st_size > 100]
 
-        if not valid_files:
-            if verbosity > VerbosityLevel.QUIET:
-                print("No valid traced photon files found in 'TracedPhotons' directory.")
-                print(f"Searched in: {traced_photons_dir}")
-                print("Expected files matching pattern: traced_sim_data_*.csv")
-            return None
+            if not dfs:
+                if verbosity > VerbosityLevel.QUIET:
+                    print("No valid traced photon files found in 'TracedPhotons' directory.")
+                    print(f"Searched in: {traced_photons_dir}")
+                    print("Expected files matching pattern: traced_sim_data_*.csv")
+                return None
+            save_results = True
 
-        if verbosity > VerbosityLevel.QUIET:
-            print(f"Found {len(valid_files)} valid traced photon files to process")
+        if verbosity > VerbosityLevel.QUIET and save_results:
+            print(f"Found {len(dfs)} valid traced photon files to process")
 
         all_results = []
 
         # Progress bar for file processing
-        file_desc = f"Processing {len(valid_files)} files"
-        file_iter = tqdm(valid_files, desc=file_desc, disable=not verbosity >= VerbosityLevel.BASIC)
+        file_desc = f"Processing {len(dfs)} files" if save_results else "Processing provided data"
+        file_iter = tqdm(dfs, desc=file_desc, disable=not verbosity >= VerbosityLevel.BASIC)
 
-        for csv_file in file_iter:
+        for i, df in enumerate(file_iter):
+            file_name = f"provided_data_{i}.csv" if not save_results else Path(df.name).name
             if verbosity >= VerbosityLevel.DETAILED:
-                print(f"\nProcessing file: {csv_file.name}")
-
-            # Load and validate data
-            try:
-                df = pd.read_csv(csv_file)
-            except Exception as e:
-                if verbosity > VerbosityLevel.QUIET:
-                    print(f"Error reading {csv_file.name}: {str(e)}")
-                continue
+                print(f"\nProcessing: {file_name}")
 
             if df.empty:
                 if verbosity >= VerbosityLevel.DETAILED:
-                    print(f"Skipping empty file: {csv_file.name}")
+                    print(f"Skipping empty data: {file_name}")
                 continue
 
             # Validate required columns
@@ -1162,7 +1199,7 @@ class Lens:
             missing_cols = [col for col in required_cols if col not in df.columns]
             if missing_cols:
                 if verbosity > VerbosityLevel.QUIET:
-                    print(f"Skipping {csv_file.name}: missing columns {missing_cols}")
+                    print(f"Skipping {file_name}: missing columns {missing_cols}")
                 continue
 
             # Remove rows with NaN in required columns
@@ -1170,14 +1207,14 @@ class Lens:
 
             if df.empty:
                 if verbosity >= VerbosityLevel.DETAILED:
-                    print(f"Skipping {csv_file.name}: no valid data after removing NaNs")
+                    print(f"Skipping {file_name}: no valid data after removing NaNs")
                 continue
 
             # Check if data is sorted by toa2
             is_sorted = (df['toa2'].diff().dropna() >= 0).all()
             if not is_sorted:
                 if verbosity >= VerbosityLevel.BASIC:
-                    print(f"Warning: Data in {csv_file.name} is not sorted by toa2. Sorting now.")
+                    print(f"Warning: Data in {file_name} is not sorted by toa2. Sorting now.")
                 df = df.sort_values('toa2').reset_index(drop=True)
 
             # Determine pixel size if not provided
@@ -1228,7 +1265,7 @@ class Lens:
 
             if not grouped_data:
                 if verbosity >= VerbosityLevel.DETAILED:
-                    print(f"No valid photon groups found in {csv_file.name}")
+                    print(f"No valid photon groups found in {file_name}")
                 continue
 
             # Process groups based on output format
@@ -1266,7 +1303,7 @@ class Lens:
                     if time_diff > deadtime + 1e-6:  # Allow small numerical tolerance
                         if verbosity >= VerbosityLevel.DETAILED:
                             print(f"Warning: time_diff {time_diff:.2f} ns exceeds deadtime {deadtime} ns "
-                                  f"in pixel ({pixel_x}, {pixel_y}) of {csv_file.name}")
+                                  f"in pixel ({pixel_x}, {pixel_y}) of {file_name}")
 
                     first_row = group_df.iloc[0]
                     mean_x2 = group_df['x2'].mean()
@@ -1288,11 +1325,12 @@ class Lens:
             # Create result DataFrame
             result_df = pd.DataFrame(result_rows)
 
-            # Save results to file
-            output_file = saturated_photons_dir / f"saturated_{csv_file.name}"
-            result_df.to_csv(output_file, index=False)
-            if verbosity >= VerbosityLevel.DETAILED:
-                print(f"  Saved results to: {output_file}")
+            # Save results to file if processing files
+            if save_results:
+                output_file = saturated_photons_dir / f"saturated_{file_name}"
+                result_df.to_csv(output_file, index=False)
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"  Saved results to: {output_file}")
 
             all_results.append(result_df)
 
@@ -1306,7 +1344,7 @@ class Lens:
         if verbosity > VerbosityLevel.QUIET:
             print(f"\nProcessing complete. Results saved to: {saturated_photons_dir}")
         return None
-
+        
     def zscan(self, zfocus_range: Union[np.ndarray, list, float] = 0.,
             zfine_range: Union[np.ndarray, list, float] = 0.,
             data: pd.DataFrame = None, opm: "OpticalModel" = None,
