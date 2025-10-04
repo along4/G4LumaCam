@@ -426,8 +426,6 @@ class Lens:
 
         opm.flip(1, 15)
         
-        # opm.rebuild_from_seq()
-
         # Store default gap thicknesses for microscope
         self.default_focus_gaps = [(24, sm.gaps[24].thi), (31, sm.gaps[31].thi)]
         opm = self.refocus(opm=opm, zfine=focus, save=False)
@@ -476,27 +474,18 @@ class Lens:
         opm.add_from_file(zmx_path)
         opm.update_model()
 
-        # Debug: Print number of gaps
-        # print(f"Loaded {len(sm.gaps)} gaps from .zmx file")
-
         # Correct specific thicknesses
         if len(sm.gaps) <= 30:
             raise ValueError(f"Insufficient gaps in .zmx file: {len(sm.gaps)} found, expected at least 31")
 
         # Correct surface 22 thickness (from 21.2900 mm to 2.68000 mm)
         if abs(sm.gaps[22].thi - 2.68) > 1e-6:
-            # print(f"Correcting surface 22 thickness from {sm.gaps[22].thi:.6f} to 2.68000 mm")
             sm.gaps[22].thi = 2.68
 
         # Correct surface 30 thickness (from 0.00000 mm to 1.00000 mm)
         if abs(sm.gaps[30].thi - 1.0) > 1e-6:
-            # print(f"Correcting surface 30 thickness from {sm.gaps[30].thi:.6f} to 1.00000 mm")
             sm.gaps[30].thi = 1.0
 
-        # Ensure stop is at surface 14
-        # sm.set_stop(surface=14)
-
-        # Apply paraxial vignetting and update model
         opm.update_model()
         apply_paraxial_vignetting(opm)
 
@@ -541,36 +530,29 @@ class Lens:
                 raise ValueError(f"Invalid gap index {gap_index} for nikkor_58mm lens")
             if zfine != 0:
                 new_thi = default_thi + zfine
-                # print(f"Adjusting nikkor_58mm focus: gap {gap_index} from {sm.gaps[gap_index].thi:.6f} to {new_thi:.6f} mm (zfine={zfine})")
                 sm.gaps[gap_index].thi = new_thi
             sm.gaps[0].thi = self.dist_from_obj + zscan
-            # print(f"Adjusting nikkor_58mm object distance: from {sm.gaps[0].thi - zscan:.6f} to {sm.gaps[0].thi:.6f} mm (zscan={zscan})")
             
         elif self.kind == "microscope":
             if len(self.default_focus_gaps) != 2:
                 raise ValueError("Default focus gaps not set correctly for microscope")
             if zfine != 0:
-                # Gap 24: Increase by zfine
                 gap_index_24, default_thi_24 = self.default_focus_gaps[0]
                 if gap_index_24 >= len(sm.gaps):
                     raise ValueError(f"Invalid gap index {gap_index_24} for microscope lens")
                 if default_thi_24 is None:
                     raise ValueError(f"Default thickness not set for gap {gap_index_24}")
                 new_thi_24 = default_thi_24 + zfine
-                # print(f"Adjusting microscope focus: gap {gap_index_24} from {sm.gaps[gap_index_24].thi:.6f} to {new_thi_24:.6f} mm (zfine=+{zfine})")
                 sm.gaps[gap_index_24].thi = new_thi_24
 
-                # Gap 31: Decrease by zfine
                 gap_index_31, default_thi_31 = self.default_focus_gaps[1]
                 if gap_index_31 >= len(sm.gaps):
                     raise ValueError(f"Invalid gap index {gap_index_31} for microscope lens")
                 if default_thi_31 is None:
                     raise ValueError(f"Default thickness not set for gap {gap_index_31}")
                 new_thi_31 = default_thi_31 - zfine
-                # print(f"Adjusting microscope focus: gap {gap_index_31} from {sm.gaps[gap_index_31].thi:.6f} to {new_thi_31:.6f} mm (zfine=-{zfine})")
                 sm.gaps[gap_index_31].thi = new_thi_31
             sm.gaps[0].thi = self.dist_from_obj + zscan
-            # print(f"Adjusting microscope object distance: from {sm.gaps[0].thi - zscan:.6f} to {sm.gaps[0].thi:.6f} mm (zscan={zscan})")
             
         elif self.kind == "zmx_file":
             if zfine != 0 and self.focus_gaps is not None:
@@ -579,10 +561,8 @@ class Lens:
                         raise ValueError(f"Invalid gap index {gap_index} for zmx_file lens")
                     default_thi = sm.gaps[gap_index].thi
                     new_thi = default_thi + zfine * scaling_factor
-                    # print(f"Adjusting zmx_file focus: gap {gap_index} from {sm.gaps[gap_index].thi:.6f} to {new_thi:.6f} mm (zfine={zfine}, scale={scaling_factor})")
                     sm.gaps[gap_index].thi = new_thi
             sm.gaps[0].thi = self.dist_from_obj + zscan
-            # print(f"Adjusting zmx_file object distance: from {sm.gaps[0].thi - zscan:.6f} to {sm.gaps[0].thi:.6f} mm (zscan={zscan})")
             
         else:
             raise ValueError(f"Unsupported lens kind: {self.kind}")
@@ -632,15 +612,15 @@ class Lens:
         a provided optical model, a saved optical model file, or by creating a refocused version
         of the default optical model. If deadtime is provided, it applies the saturate_photons
         method with output_format="photons" and saves the results directly to the 'TracedPhotons'
-        directory, including photon_count and time_diff columns. Otherwise, it saves raw traced
-        results to 'TracedPhotons'.
+        directory, including photon_count, time_diff, nz, and pz columns. Otherwise, it saves raw traced
+        results to 'TracedPhotons' with nz and pz columns.
 
         Processing Pipeline:
         1. Locates all non-empty 'sim_data_*.csv' files in 'SimPhotons' directory
         2. Converts ray data to appropriate format for optical tracing
         3. Processes rays in parallel chunks using multiprocessing
         4. If deadtime is provided, applies saturation to group photons by pixel and deadtime
-        5. Saves results to 'TracedPhotons' directory
+        5. Saves results to 'TracedPhotons' directory with nz and pz from SimPhotons
         6. Optionally returns combined results as a DataFrame
 
         Parameters:
@@ -693,8 +673,8 @@ class Lens:
         pd.DataFrame or None
             Combined DataFrame of all processed results if return_df=True, 
             otherwise None. Each row represents a traced ray with columns:
-            - Without deadtime: x2, y2, z2, id, neutron_id, toa2 (if join=False)
-            - With deadtime: x2, y2, z2, id, neutron_id, toa2, photon_count, time_diff
+            - Without deadtime: x2, y2, z2, id, neutron_id, toa2, nz, pz (if join=False)
+            - With deadtime: x2, y2, z2, id, neutron_id, toa2, photon_count, time_diff, nz, pz
             - Additional columns if join=True
 
         Raises:
@@ -808,6 +788,15 @@ class Lens:
                         print(f"Skipping {csv_file.name}: missing columns {missing_cols}")
                     continue
 
+                # Validate nz and pz columns
+                nz_pz_cols = ['nz', 'pz']
+                missing_nz_pz = [col for col in nz_pz_cols if col not in df.columns]
+                if missing_nz_pz:
+                    if verbosity > VerbosityLevel.QUIET:
+                        print(f"Warning: {csv_file.name} missing columns {missing_nz_pz}. Setting nz and pz to NaN.")
+                    for col in missing_nz_pz:
+                        df[col] = np.nan
+
                 # Get wavelengths for the optical model
                 wvl = df["wavelength"].value_counts().to_frame().reset_index()
                 wvl["count"] = 1
@@ -906,7 +895,7 @@ class Lens:
                         data=result_df,
                         deadtime=deadtime,
                         output_format="photons",
-                        min_tot=20.0,  # Default value, not used in "photons" format
+                        min_tot=20.0,
                         pixel_size=None,
                         verbosity=verbosity
                     )
@@ -942,15 +931,6 @@ class Lens:
 
         finally:
             pass
-            # # Clean up temporary files
-            # if temp_opm_file and temp_opm_file.exists():
-            #     try:
-            #         temp_opm_file.unlink()
-            #         if verbosity >= VerbosityLevel.DETAILED:
-            #             print(f"Cleaned up temporary file: {temp_opm_file}")
-            #     except Exception as e:
-            #         if verbosity >= VerbosityLevel.DETAILED:
-            #             print(f"Warning: Could not clean up {temp_opm_file}: {e}")
 
     def _align_chunk_results(self, chunk_result, indices, chunk_idx, verbosity):
         """
@@ -979,24 +959,22 @@ class Lens:
                 print(f"    Warning: Chunk {chunk_idx} returned {len(chunk_result)} "
                     f"results but expected {len(indices)}")
             if len(chunk_result) < len(indices):
-                # Pad with None for missing results
                 chunk_result = chunk_result + [None] * (len(indices) - len(chunk_result))
             else:
-                # Truncate excess results
                 chunk_result = chunk_result[:len(indices)]
         
         return list(zip(chunk_result, indices))
 
     def _create_result_dataframe(self, results_with_indices, original_df, join, verbosity):
         """
-        Create a DataFrame from traced ray results.
+        Create a DataFrame from traced ray results, including nz and pz from original data.
         
         Parameters:
         -----------
         results_with_indices : list
             List of (result, original_index) tuples
         original_df : pd.DataFrame
-            Original simulation data
+            Original simulation data containing nz and pz
         join : bool
             Whether to join with original data
         verbosity : VerbosityLevel
@@ -1005,69 +983,54 @@ class Lens:
         Returns:
         --------
         pd.DataFrame
-            DataFrame with traced ray results
+            DataFrame with traced ray results, including nz and pz
         """
-        # Sort results by original row index to maintain order
         results_with_indices.sort(key=lambda x: x[1])
         
-        # Handle length mismatches
         if len(results_with_indices) != len(original_df):
             if verbosity > VerbosityLevel.BASIC:
                 print(f"    Warning: Result count mismatch. Expected {len(original_df)}, "
                     f"got {len(results_with_indices)}")
             
             if len(results_with_indices) < len(original_df):
-                # Add missing results as None
                 missing_indices = set(range(len(original_df))) - set(idx for _, idx in results_with_indices)
                 for idx in sorted(missing_indices):
                     results_with_indices.append((None, idx))
                 results_with_indices.sort(key=lambda x: x[1])
             else:
-                # Truncate excess results
                 results_with_indices = results_with_indices[:len(original_df)]
         
-        # Convert results to DataFrame rows
         processed_results = []
         for entry, row_idx in results_with_indices:
-            if entry is None:
-                # Ray tracing failed
-                processed_results.append({
-                    "x2": np.nan, "y2": np.nan, "z2": np.nan
-                })
-            else:
+            row_data = {
+                "x2": np.nan, "y2": np.nan, "z2": np.nan
+            }
+            if entry is not None:
                 try:
-                    # Extract ray position from trace result
                     ray, path_length, wvl = entry
-                    position = ray[0]  # Final position
-                    processed_results.append({
+                    position = ray[0]
+                    row_data.update({
                         "x2": position[0], "y2": position[1], "z2": position[2]
                     })
                 except Exception as e:
                     if verbosity >= VerbosityLevel.DETAILED:
                         print(f"    Error extracting result: {str(e)}")
-                    processed_results.append({
-                        "x2": np.nan, "y2": np.nan, "z2": np.nan
-                    })
+            
+            processed_results.append(row_data)
 
-        # Create result DataFrame with the same index as original_df
         result_df = pd.DataFrame(processed_results, index=[idx for _, idx in results_with_indices])
         result_df = result_df.sort_index()
 
         if join:
-            # Merge with original data using indices
             result = pd.merge(original_df, result_df, 
                             left_index=True, right_index=True, how="left")
         else:
-            # Include only essential columns
             result = result_df.copy()
-            
-            # Add identifier columns if present
-            id_cols = ["id", "neutron_id"]
+            id_cols = ["id", "neutron_id", "nz", "pz"]
             for col in id_cols:
                 if col in original_df.columns:
                     result[col] = original_df[col].values
                     
-            # Add time-of-arrival if present  
             if "toa" in original_df.columns:
                 result["toa2"] = original_df["toa"].values
 
@@ -1097,7 +1060,6 @@ class Lens:
         print(f" Failed traces: {failed:,} ({100-percentage:.1f}%)")
         
         if traced > 0:
-            # Basic position statistics
             x_range = result_df['x2'].max() - result_df['x2'].min()
             y_range = result_df['y2'].max() - result_df['y2'].min()
             z_range = result_df['z2'].max() - result_df['z2'].min()
@@ -1114,6 +1076,8 @@ class Lens:
         within the specified deadtime. It checks if the input data is sorted by toa2 and sorts if necessary
         to ensure correct grouping. Depending on the output_format, it generates either a TPX3-like output
         or a photon-averaged output, and saves results to the 'SaturatedPhotons' subfolder as CSV files.
+        For output_format="photons", includes nz and pz columns from the corresponding SimPhotons file
+        or the input DataFrame.
 
         Parameters:
         -----------
@@ -1123,7 +1087,7 @@ class Lens:
             Deadtime in nanoseconds for pixel saturation.
         output_format : str, default "tpx3"
             Output format: "tpx3" for pixel-based output with TOA and TOT, or "photons" for averaged photon positions
-            with additional columns for photon count and time difference.
+            with additional columns for photon count, time difference, nz, and pz.
         min_tot : float, default 20.0
             Minimum Time-Over-Threshold (TOT) in nanoseconds for TPX3 format.
         pixel_size : float, optional
@@ -1139,7 +1103,7 @@ class Lens:
         pd.DataFrame or None
             Combined DataFrame of all processed results if data is provided or files are processed,
             otherwise None. For "tpx3" format, columns are: x, y, toa, tot
-            For "photons" format, columns are: x2, y2, z2, id, neutron_id, toa2, photon_count, time_diff
+            For "photons" format, columns are: x2, y2, z2, id, neutron_id, toa2, photon_count, time_diff, nz, pz
 
         Raises:
         -------
@@ -1153,17 +1117,52 @@ class Lens:
 
         # Set up input data
         if data is not None:
-            dfs = [data]
+            dfs = [(data, None)]
             save_results = False
         else:
             # Set up directories
             traced_photons_dir = self.archive / "TracedPhotons"
             saturated_photons_dir = self.archive / "SaturatedPhotons"
+            sim_photons_dir = self.archive / "SimPhotons"
             saturated_photons_dir.mkdir(parents=True, exist_ok=True)
 
             # Find all non-empty traced_data_*.csv files
             csv_files = sorted(traced_photons_dir.glob("traced_sim_data_*.csv"))
-            dfs = [pd.read_csv(f) for f in csv_files if f.stat().st_size > 100]
+            dfs = []
+            for f in csv_files:
+                if f.stat().st_size > 100:
+                    sim_file = sim_photons_dir / f.name.replace("traced_", "")
+                    if not sim_file.exists():
+                        if verbosity > VerbosityLevel.QUIET:
+                            print(f"Warning: Corresponding SimPhotons file {sim_file.name} not found for {f.name}")
+                        sim_df = None
+                    else:
+                        try:
+                            sim_df = pd.read_csv(sim_file)
+                            if sim_df.empty:
+                                sim_df = None
+                                if verbosity > VerbosityLevel.QUIET:
+                                    print(f"Warning: SimPhotons file {sim_file.name} is empty")
+                            else:
+                                # Validate nz and pz in SimPhotons
+                                missing_cols = [col for col in ['nz', 'pz'] if col not in sim_df.columns]
+                                if missing_cols:
+                                    if verbosity > VerbosityLevel.QUIET:
+                                        print(f"Warning: SimPhotons file {sim_file.name} missing columns {missing_cols}. Setting to NaN.")
+                                    for col in missing_cols:
+                                        sim_df[col] = np.nan
+                        except Exception as e:
+                            if verbosity > VerbosityLevel.QUIET:
+                                print(f"Error reading SimPhotons file {sim_file.name}: {str(e)}")
+                            sim_df = None
+                    try:
+                        df = pd.read_csv(f)
+                        if not df.empty:
+                            dfs.append((df, sim_df))
+                    except Exception as e:
+                        if verbosity > VerbosityLevel.QUIET:
+                            print(f"Error reading {f.name}: {str(e)}")
+                        continue
 
             if not dfs:
                 if verbosity > VerbosityLevel.QUIET:
@@ -1182,7 +1181,7 @@ class Lens:
         file_desc = f"Processing {len(dfs)} files" if save_results else "Processing provided data"
         file_iter = tqdm(dfs, desc=file_desc, disable=not verbosity >= VerbosityLevel.BASIC)
 
-        for i, df in enumerate(file_iter):
+        for i, (df, sim_df) in enumerate(file_iter):
             file_name = f"provided_data_{i}.csv" if not save_results else Path(df.name).name
             if verbosity >= VerbosityLevel.DETAILED:
                 print(f"\nProcessing: {file_name}")
@@ -1217,6 +1216,38 @@ class Lens:
                     print(f"Warning: Data in {file_name} is not sorted by toa2. Sorting now.")
                 df = df.sort_values('toa2').reset_index(drop=True)
 
+            # Map nz and pz if sim_df is available or if columns exist in df
+            neutron_id_to_nz_pz = {}
+            if sim_df is not None and 'neutron_id' in sim_df.columns:
+                # Validate consistency of nz and pz per neutron_id
+                grouped = sim_df.groupby('neutron_id')
+                for neutron_id, group in grouped:
+                    if 'nz' in group.columns:
+                        unique_nz = group['nz'].nunique(dropna=True)
+                        if unique_nz > 1:
+                            if verbosity >= VerbosityLevel.DETAILED:
+                                print(f"Warning: Inconsistent nz values for neutron_id {neutron_id} in SimPhotons file")
+                        neutron_id_to_nz_pz[neutron_id] = {
+                            'nz': group['nz'].iloc[0] if 'nz' in group.columns else np.nan,
+                            'pz': group['pz'].iloc[0] if 'pz' in group.columns else np.nan
+                        }
+            elif 'neutron_id' in df.columns and all(col in df.columns for col in ['nz', 'pz']):
+                # Use nz and pz from input DataFrame if available
+                grouped = df.groupby('neutron_id')
+                for neutron_id, group in grouped:
+                    unique_nz = group['nz'].nunique(dropna=True)
+                    if unique_nz > 1:
+                        if verbosity >= VerbosityLevel.DETAILED:
+                            print(f"Warning: Inconsistent nz values for neutron_id {neutron_id} in input data")
+                    neutron_id_to_nz_pz[neutron_id] = {
+                        'nz': group['nz'].iloc[0],
+                        'pz': group['pz'].iloc[0]
+                    }
+            else:
+                if verbosity >= VerbosityLevel.QUIET:
+                    print(f"Warning: No nz/pz data available for {file_name}. Setting to NaN.")
+                neutron_id_to_nz_pz = {nid: {'nz': np.nan, 'pz': np.nan} for nid in df['neutron_id'].unique()}
+
             # Determine pixel size if not provided
             if pixel_size is None:
                 x_range = df['x2'].max() - df['x2'].min()
@@ -1240,14 +1271,11 @@ class Lens:
 
                 for idx, row in pixel_df.iterrows():
                     if current_time is None:
-                        # Start a new group
                         current_time = row['toa2']
                         group_indices = [idx]
                     elif row['toa2'] <= current_time + deadtime:
-                        # Add to current group
                         group_indices.append(idx)
                     else:
-                        # Close current group and start a new one
                         if group_indices:
                             grouped_data.append((pixel_x, pixel_y, group_indices))
                             for g_idx in group_indices:
@@ -1256,7 +1284,6 @@ class Lens:
                         current_time = row['toa2']
                         group_indices = [idx]
 
-                # Save the last group
                 if group_indices:
                     grouped_data.append((pixel_x, pixel_y, group_indices))
                     for g_idx in group_indices:
@@ -1279,12 +1306,12 @@ class Lens:
 
                     first_toa = group_df['toa2'].min()
                     last_toa = group_df['toa2'].max()
-                    toa_bin = int(first_toa / 1.5625)  # Convert to 1.5625 ns bins
+                    toa_bin = int(first_toa / 1.5625)
                     tot = max(last_toa - first_toa, min_tot)
 
                     result_rows.append({
-                        'x': pixel_x + 1,  # 1-based indexing
-                        'y': pixel_y + 1,  # 1-based indexing
+                        'x': pixel_x + 1,
+                        'y': pixel_y + 1,
                         'toa': toa_bin,
                         'tot': tot
                     })
@@ -1299,8 +1326,7 @@ class Lens:
                     last_toa = group_df['toa2'].max()
                     time_diff = last_toa - first_toa
 
-                    # Validate time_diff
-                    if time_diff > deadtime + 1e-6:  # Allow small numerical tolerance
+                    if time_diff > deadtime + 1e-6:
                         if verbosity >= VerbosityLevel.DETAILED:
                             print(f"Warning: time_diff {time_diff:.2f} ns exceeds deadtime {deadtime} ns "
                                   f"in pixel ({pixel_x}, {pixel_y}) of {file_name}")
@@ -1310,16 +1336,22 @@ class Lens:
                     mean_y2 = group_df['y2'].mean()
                     mean_z2 = group_df['z2'].mean()
                     photon_count = len(group_df)
+                    neutron_id = first_row['neutron_id']
+
+                    # Get nz and pz for this neutron_id
+                    nz_pz = neutron_id_to_nz_pz.get(neutron_id, {'nz': np.nan, 'pz': np.nan})
 
                     result_rows.append({
                         'x2': mean_x2,
                         'y2': mean_y2,
                         'z2': mean_z2,
                         'id': first_row['id'],
-                        'neutron_id': first_row['neutron_id'],
+                        'neutron_id': neutron_id,
                         'toa2': first_row['toa2'],
                         'photon_count': photon_count,
-                        'time_diff': time_diff
+                        'time_diff': time_diff,
+                        'nz': nz_pz['nz'],
+                        'pz': nz_pz['pz']
                     })
 
             # Create result DataFrame
@@ -1344,7 +1376,6 @@ class Lens:
         if verbosity > VerbosityLevel.QUIET:
             print(f"\nProcessing complete. Results saved to: {saturated_photons_dir}")
         return None
-        
     def zscan(self, zfocus_range: Union[np.ndarray, list, float] = 0.,
             zfine_range: Union[np.ndarray, list, float] = 0.,
             data: pd.DataFrame = None, opm: "OpticalModel" = None,
