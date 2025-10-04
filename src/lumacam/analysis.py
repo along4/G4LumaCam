@@ -359,7 +359,7 @@ class Analysis:
             df = df[["px", "py", "toa2"]]
             df.columns = ["x [px]", "y [px]", "t [s]"]
             df["t_relToExtTrigger [s]"] = df["t [s]"]
-            df = df.loc[(df["t [s]"] >= 0) & (df["t [s]"] < 1)]
+            # df = df.loc[(df["t [s]"] >= 0) & (df["t [s]"] < 1)]
 
             # Create ImportedPhotons directory if it doesn't exist
             imported_photons_dir = self.archive / "ImportedPhotons"
