@@ -889,12 +889,13 @@ class Analysis:
                                    time_norm_ns: float = 1.0,
                                    spatial_norm_px: float = 1.0,
                                    fov: float = 120.0,
-                                   focus_factor: float = 1.2) -> pd.DataFrame:
+                                   focus_factor: float = 1.2,
+                                   deadtime: float = None) -> pd.DataFrame:
         """
         Processes data event by event, grouping optical photons by neutron_id.
         
         This method:
-        1. Combines self.data with neutron_id from self.sim_data
+        1. Combines self.data with neutron_id from self.sim_data using a merge
         2. Determines the number of batches from SimPhotons or TracedPhotons folder
         3. Groups traced photons by neutron_id and organizes them by batch
         4. Processes each neutron event independently
@@ -917,11 +918,11 @@ class Analysis:
             spatial_norm_px: Normalization factor for spatial differences (px) in matching
             fov: Field of view in mm
             focus_factor: Factor that relates the hit position on the sensor to the actual hit position on the scintillator screen
+            deadtime: Deadtime in nanoseconds for photon grouping (optional)
         
         Returns:
             DataFrame with processed event data (optionally merged with sim_data and traced_data)
         """
-        
         # Create base directories
         analysed_dir = self.archive / "AnalysedResults"
         analysed_dir.mkdir(parents=True, exist_ok=True)
@@ -968,11 +969,30 @@ class Analysis:
         if 'neutron_id' not in self.sim_data.columns:
             raise ValueError("Simulation data must contain a 'neutron_id' column")
         
-        if len(self.data) != len(self.sim_data):
-            raise ValueError(f"Data length mismatch: self.data has {len(self.data)} rows, self.sim_data has {len(self.sim_data)} rows")
+        # Merge self.data with self.sim_data based on neutron_id
+        combined_data = self.sim_data.copy()
+        if not self.data.empty:
+            required_cols = ['neutron_id', 'x2', 'y2', 'z2', 'toa2']
+            if deadtime is not None:
+                required_cols += ['photon_count', 'time_diff', 'nz', 'pz']
+            missing_cols = [col for col in required_cols if col not in self.data.columns]
+            if missing_cols:
+                if verbosity >= 1:
+                    print(f"Cannot merge data: missing columns {missing_cols} in traced data")
+                for col in ['x2', 'y2', 'z2', 'toa2', 'photon_count', 'time_diff', 'nz', 'pz']:
+                    combined_data[col] = np.nan
+            else:
+                # Create a mapping from neutron_id to traced data
+                traced_cols = ['x2', 'y2', 'z2', 'toa2']
+                if deadtime is not None:
+                    traced_cols += ['photon_count', 'time_diff', 'nz', 'pz']
+                neutron_id_map = self.data.groupby('neutron_id')[traced_cols].first().reset_index()
+                combined_data = combined_data.merge(neutron_id_map, on='neutron_id', how='left')
         
-        combined_data = self.data.copy()
-        combined_data['neutron_id'] = self.sim_data['neutron_id']
+        # Apply spatial normalization if fov is provided
+        if fov is not None:
+            combined_data['x2'] = combined_data['x2'] / fov * 256
+            combined_data['y2'] = combined_data['y2'] / fov * 256
         
         has_batch_id = 'batch_id' in self.sim_data.columns
         
@@ -1142,15 +1162,14 @@ class Analysis:
             
             def merge_sim_and_recon_data(sim_data, traced_data, recon_data, fov: float = 120, focus_factor: float = 1.2):
                 """
-                Merge simulation, traced photon, and reconstruction dataframes based on neutron_id
-                and row-by-row correspondence between sim_data and traced_data.
+                Merge simulation, traced photon, and reconstruction dataframes based on neutron_id.
                 Matches reconstructed events to simulation photons by minimizing a combined
                 time and spatial distance metric.
                 Adds event_id for each reconstructed event per neutron_id.
                 
                 Args:
                     sim_data: DataFrame with simulation data
-                    traced_data: DataFrame with traced photon data (row-aligned with sim_data)
+                    traced_data: DataFrame with traced photon data
                     recon_data: DataFrame with reconstructed event data
                     fov: Field of View in mm, used to scale photon positions
                     focus_factor: Factor for hit position on sensor to scintillator screen
@@ -1167,36 +1186,64 @@ class Analysis:
                 sim_df['y2'] = np.nan
                 sim_df['z2'] = np.nan
                 sim_df['toa2'] = np.nan
+                sim_df['photon_count'] = np.nan
+                sim_df['time_diff'] = np.nan
+                sim_df['nz'] = np.nan
+                sim_df['pz'] = np.nan
                 sim_df['photon_px'] = np.nan
                 sim_df['photon_py'] = np.nan
                 
-                # Assign traced data columns (row-by-row correspondence)
+                # Assign traced data columns (based on neutron_id)
                 if not traced_df.empty:
-                    if len(traced_df) != len(sim_df):
+                    # Check for standard column names
+                    x_col = next((col for col in ['x2', 'x', 'px'] if col in traced_df.columns), None)
+                    y_col = next((col for col in ['y2', 'y', 'py'] if col in traced_df.columns), None)
+                    z_col = next((col for col in ['z2', 'z'] if col in traced_df.columns), None)
+                    time_col = next((col for col in ['toa2', 'time', 'toa'] if col in traced_df.columns), None)
+                    
+                    required_cols = ['neutron_id']
+                    if x_col: required_cols.append(x_col)
+                    if y_col: required_cols.append(y_col)
+                    if z_col: required_cols.append(z_col)
+                    if time_col: required_cols.append(time_col)
+                    if deadtime is not None:
+                        required_cols += ['photon_count', 'time_diff', 'nz', 'pz']
+                    
+                    missing_cols = [col for col in required_cols if col not in traced_df.columns]
+                    if missing_cols:
                         if verbosity >= 1:
-                            print(f"Warning: traced_data ({len(traced_df)} rows) and sim_data ({len(sim_df)} rows) have different lengths. Truncating to minimum.")
-                        min_len = min(len(traced_df), len(sim_df))
-                        sim_df = sim_df.iloc[:min_len].copy()
-                        traced_df = traced_df.iloc[:min_len].copy()
-                    
-                    time_col = None
-                    for candidate in ['toa2', 'toa', 'time']:
-                        if candidate in traced_df.columns:
-                            time_col = candidate
-                            break
-                    
-                    if time_col and all(col in traced_df.columns for col in ['x2', 'y2']):
-                        sim_df['x2'] = traced_df['x2'].values
-                        sim_df['y2'] = traced_df['y2'].values
-                        sim_df['z2'] = traced_df.get('z2', pd.Series(np.nan, index=traced_df.index)).values
-                        sim_df['toa2'] = traced_df[time_col].values
-                        sim_df['photon_px'] = (sim_df['x2'] + 10) / 10 * 128
-                        sim_df['photon_py'] = (sim_df['y2'] + 10) / 10 * 128
+                            print(f"Warning: traced_data missing required columns {missing_cols}. Traced columns remain NaN.")
+                    else:
+                        # Rename columns to standard names for consistency
+                        rename_dict = {}
+                        if x_col and x_col != 'x2': rename_dict[x_col] = 'x2'
+                        if y_col and y_col != 'y2': rename_dict[y_col] = 'y2'
+                        if z_col and z_col != 'z2': rename_dict[z_col] = 'z2'
+                        if time_col and time_col != 'toa2': rename_dict[time_col] = 'toa2'
+                        temp_traced_df = traced_df.rename(columns=rename_dict)
+                        
+                        traced_cols = ['x2', 'y2', 'z2', 'toa2']
+                        if deadtime is not None:
+                            traced_cols += ['photon_count', 'time_diff', 'nz', 'pz']
+                        neutron_id_map = temp_traced_df.groupby('neutron_id')[traced_cols].first().reset_index()
+                        if verbosity >= 2:
+                            print(f"neutron_id_map columns: {neutron_id_map.columns.tolist()}")
+                            print(f"neutron_id_map non-NaN counts: {neutron_id_map.notna().sum().to_dict()}")
+                            print(f"neutron_id overlap: {len(set(sim_df['neutron_id']).intersection(set(neutron_id_map['neutron_id'])))} common IDs")
+                        if not neutron_id_map.empty:
+                            sim_df = sim_df.merge(neutron_id_map, on='neutron_id', how='left', suffixes=('', '_traced'))
+                            # Handle duplicate columns from merge
+                            for col in traced_cols:
+                                if f"{col}_traced" in sim_df.columns:
+                                    sim_df[col] = sim_df[f"{col}_traced"].combine_first(sim_df[col])
+                                    sim_df = sim_df.drop(columns=f"{col}_traced")
+                        if verbosity >= 2:
+                            print(f"sim_df columns after merge: {sim_df.columns.tolist()}")
+                        # Compute photon_px and photon_py only where x2 and y2 are not NaN
+                        sim_df['photon_px'] = np.where(sim_df['x2'].notna(), (sim_df['x2'] + 10) / 10 * 128, np.nan)
+                        sim_df['photon_py'] = np.where(sim_df['y2'].notna(), (sim_df['y2'] + 10) / 10 * 128, np.nan)
                         if verbosity >= 2:
                             print(f"Assigned traced columns. Non-NaN counts: x2={sim_df['x2'].notna().sum()}, toa2={sim_df['toa2'].notna().sum()}")
-                    else:
-                        if verbosity >= 1:
-                            print("Warning: traced_data missing required columns (x2, y2, toa2/toa/time). Traced columns remain NaN.")
                 
                 # Initialize merged DataFrame with sim_df
                 merged_df = sim_df.copy()
@@ -1233,11 +1280,11 @@ class Analysis:
                         event_id = recon_row['event_id']
                         
                         # Compute distances
-                        sim_times = sim_group['toa2'].values  # in seconds
+                        sim_times = sim_group['toa2'].values * 1e-9  # Convert to seconds
                         sim_px = sim_group['photon_px'].values
                         sim_py = sim_group['photon_py'].values
                         
-                        time_diffs = np.abs(sim_times * 1e-9 - recon_time_s) * 1e9  # Convert sim_times to seconds, compute difference, then convert to ns
+                        time_diffs = np.abs(sim_times - recon_time_s) * 1e9  # Convert to ns
                         spatial_diffs = np.sqrt((sim_px - recon_x)**2 + (sim_py - recon_y)**2)
                         
                         if np.all(np.isnan(sim_px)) or np.all(np.isnan(sim_py)) or np.all(np.isnan(sim_times)):
@@ -1273,15 +1320,15 @@ class Analysis:
                                     for col in recon_df.columns:
                                         if col != 'neutron_id':
                                             merged_df.loc[sim_idx, col] = recon_row[col]
-                                        merged_df.loc[sim_idx, 'event_id'] = event_id
-                                        merged_df.loc[sim_idx, 'time_diff_ns'] = time_diffs[idx]
-                                        merged_df.loc[sim_idx, 'spatial_diff_px'] = spatial_diffs[idx]
+                                    merged_df.loc[sim_idx, 'event_id'] = event_id
+                                    merged_df.loc[sim_idx, 'time_diff_ns'] = time_diffs[idx]
+                                    merged_df.loc[sim_idx, 'spatial_diff_px'] = spatial_diffs[idx]
                 
                 merged_df = self.calculate_reconstruction_stats(merged_df, fov=fov, focus_factor=focus_factor)
                 
                 # Ensure column order
-                sim_cols = [col for col in sim_df.columns if col not in ['x2', 'y2', 'z2', 'toa2', 'photon_px', 'photon_py']]
-                traced_cols = ['x2', 'y2', 'z2', 'toa2', 'photon_px', 'photon_py']
+                sim_cols = [col for col in sim_df.columns if col not in ['x2', 'y2', 'z2', 'toa2', 'photon_count', 'time_diff', 'nz', 'pz', 'photon_px', 'photon_py']]
+                traced_cols = ['x2', 'y2', 'z2', 'toa2', 'photon_count', 'time_diff', 'nz', 'pz', 'photon_px', 'photon_py']
                 recon_cols = [col for col in recon_df.columns if col != 'neutron_id']
                 final_cols = sim_cols + traced_cols + recon_cols + ['event_id', 'time_diff_ns', 'spatial_diff_px', 'x3', 'y3', 'delta_x', 'delta_y', 'delta_r']
                 merged_df = merged_df[[col for col in final_cols if col in merged_df.columns]]
@@ -1313,24 +1360,33 @@ class Analysis:
             return merged_df
         
         return combined_results
-        
-    def calculate_reconstruction_stats(self, df: pd.DataFrame, fov: float = 120, focus_factor: float = 1.25):
-        """
-        Calculates stats on reconstructed events, Adds columns to the analysis dataframe.
 
-        Input:
-            - df (pd.DataFrame): merged_df that contains all the reconstructed event-by-event columns
-            - fov (float): Field of view in mm, used to scale pixel coordinates
-            - focus_factor (float): A factor that translates the position recorded on the sensor to the original position on the scintillator
+
+    def calculate_reconstruction_stats(self, df, fov=60.0, focus_factor=1.25):
+        """
+        Calculate reconstructed coordinates and differences for the DataFrame.
+
+        Computes x3, y3 from pixel coordinates (x [px], y [px]) using the provided
+        field of view and focus factor, and calculates differences (delta_x, delta_y, delta_r)
+        relative to simulation coordinates (x, y).
+
+        Args:
+            df: DataFrame containing 'x [px]', 'y [px]' (reconstructed) and 'x', 'y' (simulation)
+            fov: Field of view in mm (default: 60.0)
+            focus_factor: Factor to compensate for sensor-to-scintillator scaling (default: 1.25)
 
         Returns:
-            - df (pd.DataFrame): table with new stats columns
+            DataFrame with added columns x3, y3, delta_x, delta_y, delta_r
         """
-        # Compute additional columns
-        df["x3"] = (128 - df["x [px]"]) / 256 * fov * focus_factor
-        df["y3"] = (128 - df["y [px]"]) / 256 * fov * focus_factor
-        df["delta_x"] = df["x3"] - df["nx"]
-        df["delta_y"] = df["y3"] - df["ny"]
-        df["delta_r"] = np.sqrt(df["delta_x"]**2 + df["delta_y"]**2)
-
+        df['x3'] = np.where(df['x [px]'].notna(), -(df['x [px]'] - 128) * fov / 128 * focus_factor, np.nan)
+        df['y3'] = np.where(df['y [px]'].notna(), -(df['y [px]'] - 128) * fov / 128 * focus_factor, np.nan)
+        df['delta_x'] = np.where(df['x3'].notna() & df['nx'].notna(), df['x3'] - df['nx'], np.nan)
+        df['delta_y'] = np.where(df['y3'].notna() & df['ny'].notna(), df['y3'] - df['ny'], np.nan)
+        df['delta_r'] = np.where(df['delta_x'].notna() & df['delta_y'].notna(), 
+                                np.sqrt(df['delta_x']**2 + df['delta_y']**2), np.nan)
         return df
+
+    # # Placeholder for empir paths (adjust as needed)
+    # empir_import_photons = "empir_import_photons"
+    # empir_dirpath = Path("empir")
+        
