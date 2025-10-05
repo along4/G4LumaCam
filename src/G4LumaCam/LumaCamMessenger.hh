@@ -18,6 +18,8 @@ public:
     void SetScintillatorMaterial(const G4String& materialName);
     void SetScintThickness(G4double thickness);
     void SetSampleThickness(G4double thickness);
+    void SetFlux(G4double flux); // New: Set neutron flux
+    void SetFrequency(G4double freq); // New: Set pulse frequency
 
 private:
     G4String* csvFilename;
@@ -26,8 +28,6 @@ private:
     G4int batchSize;
     G4GenericMessenger* messenger;
     MaterialBuilder* matBuilder;
-
-    
 };
 
 #endif

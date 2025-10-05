@@ -1,11 +1,11 @@
 #include "LumaCamMessenger.hh"
 #include "SimConfig.hh"
-
 #include "G4RunManager.hh"
 #include "G4VUserDetectorConstruction.hh"
 #include "G4NistManager.hh"
 #include "G4Material.hh"
 #include "G4SystemOfUnits.hh"
+#include "G4UnitsTable.hh"
 
 LumaCamMessenger::LumaCamMessenger(G4String* filename, G4LogicalVolume* sampleLogVolume, 
                                    G4LogicalVolume* scintLogVolume, G4int batch)
@@ -45,7 +45,6 @@ LumaCamMessenger::LumaCamMessenger(G4String* filename, G4LogicalVolume* sampleLo
         G4cerr << "WARNING: scintLog is nullptr, /lumacam/scintMaterial command will fail until scintLog is set" << G4endl;
     }
 
-    // Thickness commands (input in cm)
     messenger->DeclareMethod("ScintThickness", &LumaCamMessenger::SetScintThickness)
         .SetGuidance("Set the scintillator half-thickness in cm")
         .SetParameterName("thickness", false)
@@ -61,9 +60,6 @@ LumaCamMessenger::LumaCamMessenger(G4String* filename, G4LogicalVolume* sampleLo
         .SetParameterName("size", false)
         .SetDefaultValue("10000");
 
-    // ----------------------------
-    // NEW: Time spread configuration
-    // ----------------------------
     messenger->DeclarePropertyWithUnit("tmin", "ns", Sim::TMIN)
         .SetGuidance("Set minimum emission time (ns)")
         .SetParameterName("tmin", false)
@@ -72,6 +68,17 @@ LumaCamMessenger::LumaCamMessenger(G4String* filename, G4LogicalVolume* sampleLo
     messenger->DeclarePropertyWithUnit("tmax", "ns", Sim::TMAX)
         .SetGuidance("Set maximum emission time (ns). If > tmin, uniform distribution is applied.")
         .SetParameterName("tmax", false)
+        .SetDefaultValue("0.0");
+
+    // New commands for flux and frequency
+    messenger->DeclareMethod("flux", &LumaCamMessenger::SetFlux)
+        .SetGuidance("Set neutron flux in n/cm²/s")
+        .SetParameterName("flux", false)
+        .SetDefaultValue("0.0");
+
+    messenger->DeclareMethod("freq", &LumaCamMessenger::SetFrequency)
+        .SetGuidance("Set pulse frequency in Hz")
+        .SetParameterName("freq", false)
         .SetDefaultValue("0.0");
 }
 
@@ -130,9 +137,7 @@ void LumaCamMessenger::SetScintillatorMaterial(const G4String& materialName) {
 }
 
 void LumaCamMessenger::SetScintThickness(G4double thickness) {
-    // Convert thickness from cm (user input) to Geant4 internal units
     Sim::SetScintThickness(thickness * cm);
-    // Rebuild geometry
     G4RunManager* runManager = G4RunManager::GetRunManager();
     if (runManager && runManager->GetUserDetectorConstruction()) {
         G4VUserDetectorConstruction* detector = const_cast<G4VUserDetectorConstruction*>(
@@ -146,9 +151,7 @@ void LumaCamMessenger::SetScintThickness(G4double thickness) {
 }
 
 void LumaCamMessenger::SetSampleThickness(G4double thickness) {
-    // Convert thickness from cm (user input) to Geant4 internal units
     Sim::SetSampleThickness(thickness * cm);
-    // Rebuild geometry
     G4RunManager* runManager = G4RunManager::GetRunManager();
     if (runManager && runManager->GetUserDetectorConstruction()) {
         G4VUserDetectorConstruction* detector = const_cast<G4VUserDetectorConstruction*>(
@@ -158,5 +161,23 @@ void LumaCamMessenger::SetSampleThickness(G4double thickness) {
         G4cout << "Geometry rebuilt with new sample half-thickness: " << thickness << " cm" << G4endl;
     } else {
         G4cerr << "ERROR: RunManager or DetectorConstruction is nullptr, cannot rebuild geometry" << G4endl;
+    }
+}
+
+void LumaCamMessenger::SetFlux(G4double flux) {
+    if (flux >= 0) {
+        Sim::FLUX = flux;
+        G4cout << "Neutron flux set to: " << flux << " n/cm²/s" << G4endl;
+    } else {
+        G4cerr << "ERROR: Neutron flux must be non-negative!" << G4endl;
+    }
+}
+
+void LumaCamMessenger::SetFrequency(G4double freq) {
+    if (freq >= 0) {
+        Sim::FREQ = freq;
+        G4cout << "Pulse frequency set to: " << freq / 1000 << " kHz" << G4endl;
+    } else {
+        G4cerr << "ERROR: Pulse frequency must be non-negative!" << G4endl;
     }
 }

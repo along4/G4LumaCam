@@ -11,17 +11,10 @@
 #include "G4OpticalPhysics.hh"
 #include "G4RadioactiveDecayPhysics.hh"
 
-// Remove these lines to avoid multiple definitions
-// G4String Sim::outputFileName = "sim_data.csv";
-// G4int Sim::batchSize = 10000;
-// std::default_random_engine Sim::randomEngine(time(nullptr));
-
 int main(int argc, char** argv) {
-    // Override default batchSize if needed
-    Sim::batchSize = 10000;  // Only set value, don't redefine the variable
+    Sim::batchSize = 10000;
     
     G4RunManager* runMgr = new G4RunManager();
-    // Step 1: Set up the physics list first
     G4VModularPhysicsList* phys = new QGSP_BERT_HP();
     G4OpticalPhysics* optPhys = new G4OpticalPhysics();
     optPhys->Configure(kCerenkov, true);
@@ -29,7 +22,7 @@ int main(int argc, char** argv) {
     phys->RegisterPhysics(optPhys);
     phys->RegisterPhysics(new G4RadioactiveDecayPhysics());
     runMgr->SetUserInitialization(phys);
-    // Step 2: Now instantiate user actions
+    
     ParticleGenerator* gen = new ParticleGenerator();
     GeometryConstructor* geo = new GeometryConstructor(gen);
     runMgr->SetUserInitialization(geo);
@@ -38,9 +31,11 @@ int main(int argc, char** argv) {
     runMgr->SetUserAction(simMgr);
     runMgr->SetUserAction(new SimulationManager::EventHandler(simMgr));
     runMgr->Initialize();
+    
     G4VisManager* visMgr = new G4VisExecutive();
     visMgr->Initialize();
     G4UImanager* uiMgr = G4UImanager::GetUIpointer();
+    
     if (argc > 1) {
         uiMgr->ApplyCommand("/control/execute " + G4String(argv[1]));
     } else {
@@ -56,6 +51,8 @@ int main(int argc, char** argv) {
         uiMgr->ApplyCommand("/gps/particle neutron");
         uiMgr->ApplyCommand("/lumacam/sampleMaterial G4_Galactic");
         uiMgr->ApplyCommand("/lumacam/scintMaterial EJ200");
+        uiMgr->ApplyCommand("/lumacam/flux 1e4"); // Example default flux
+        uiMgr->ApplyCommand("/lumacam/freq 200000"); // Example default 200 kHz
         uiMgr->ApplyCommand("/vis/filtering/trajectories/particleFilter-0/add proton");
         uiMgr->ApplyCommand("/vis/filtering/trajectories/particleFilter-0/add opticalphoton");
         uiMgr->ApplyCommand("/vis/filtering/trajectories/particleFilter-0/add neutron");
@@ -71,15 +68,15 @@ int main(int argc, char** argv) {
         ui = nullptr;
     }
     
-    // Delete visualization manager first
+    // Example: Set total neutrons (modify based on your macro or input)
+    simMgr->SetTotalNeutrons(10000); // Set via macro or command-line in practice
+    
     if (visMgr) {
         delete visMgr;
         visMgr = nullptr;
     }
     
-    // Delete run manager last, as it owns many other components
     if (runMgr) {
-        // This will trigger cleanup of owned components like detector construction
         delete runMgr;
         runMgr = nullptr;
     }

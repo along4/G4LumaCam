@@ -11,10 +11,12 @@ public:
 
     void GeneratePrimaries(G4Event* anEvent) override;
     G4double getParticleEnergy() const { return lastEnergy; }
+    void SetTotalNeutrons(G4int totalNeutrons); // New: Set total neutrons for pulse structure
 
 private:
     G4GeneralParticleSource* source;
     G4double lastEnergy;
+    G4int currentPulseIndex; // Track current pulse for neutron assignment
 };
 
 #endif

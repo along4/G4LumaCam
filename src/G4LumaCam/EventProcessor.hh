@@ -7,10 +7,7 @@
 #include <map>
 #include <fstream>
 
-class ParticleGenerator; // Forward declaration
-class G4HCofThisEvent;
-class G4Step;
-class G4TouchableHistory;
+class ParticleGenerator;
 
 class EventProcessor : public G4VSensitiveDetector {
 public:
@@ -33,7 +30,7 @@ private:
     struct TrackData {
         G4String type;
         G4double x, y, z, energy;
-        G4bool isLightProducer; // Flag to track light production
+        G4bool isLightProducer;
     };
 
     std::vector<PhotonRecord> photons;
@@ -42,12 +39,16 @@ private:
     G4double lensPos[2];
     G4int neutronCount, batchCount, eventCount;
     std::ofstream dataFile;
+    std::ofstream triggerFile; // New: File for trigger times
     ParticleGenerator* particleGen;
     G4bool neutronRecorded;
+    std::vector<G4double> neutronTriggerTimes; // New: Store trigger times for neutrons
 
     void resetData();
     void writeData();
     void openOutputFile();
+    void writeTriggerData(); // New: Write trigger times
+    void openTriggerFile(); // New: Open trigger file
 };
 
 #endif
