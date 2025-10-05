@@ -53,6 +53,10 @@ class Config:
     tmax: float = 0.0  # Maximum time in ns
     time_unit: str = "ns"
     
+    # Pulse parameters
+    flux: Optional[float] = None  # Neutron flux in n/cm²/s
+    freq: Optional[float] = None  # Pulse frequency in Hz
+    
     sample_material: str = "G4_Galactic"  # Material of the sample
     scintillator: str = "EJ200"  # Scintillator type: PVT, EJ-200, GS20
     sample_thickness: float = 0.2  # Sample thickness in cm (default 0.2 cm = 200 microns)
@@ -231,16 +235,16 @@ class Config:
             energy_unit="eV",
             position_z=-1059,
             position_unit="cm",
-            halfx=60, # mm
-            halfy=60, # mm
+            halfx=60,
+            halfy=60,
             shape_unit="mm",
             num_events=100000,
             progress_interval=100,
             csv_filename="sim_data.csv",
             sample_material="G4_TUNGSTEN",
             scintillator="GS20",
-            sample_thickness=0.05,  # 50 microns = 0.05 mm
-            scintillator_thickness=1,  # 1 mm thick scintillator
+            sample_thickness=0.05,
+            scintillator_thickness=1,
             csv_batch_size=0,
         )
 
@@ -267,6 +271,59 @@ class Config:
             sample_thickness=20,
             csv_batch_size=0,
         )
+
+    @classmethod
+    def neutrons_tof(cls, energy_min: Optional[float] = None, energy_max: Optional[float] = None) -> 'Config':
+        """Neutron configuration for time-of-flight with pulsed structure and optional energy range."""
+        if energy_min is not None and energy_max is not None:
+            # Use linear energy distribution
+            return cls(
+                particle="neutron",
+                energy_type="Lin",
+                energy_min=energy_min,
+                energy_max=energy_max,
+                energy_gradient=0.0,
+                energy_intercept=1.0,
+                energy_unit="MeV",
+                position_z=-1085,  # Flight path of 10.85 m
+                position_unit="cm",
+                halfx=60,  # 12 cm FOV = 120 mm, halfx = 60 mm
+                halfy=60,  # 12 cm FOV = 120 mm, halfy = 60 mm
+                shape_unit="mm",
+                flux=1e4,  # Neutron flux in n/cm²/s
+                freq=200000,  # Pulse frequency in Hz (200 kHz)
+                num_events=10000,
+                progress_interval=100,
+                csv_filename="sim_data.csv",
+                sample_material="G4_Graphite",
+                scintillator="EJ200",
+                sample_thickness=75,  # 7.5 cm = 75 mm
+                scintillator_thickness=20,  # 2 cm = 20 mm
+                csv_batch_size=10000,
+            )
+        else:
+            # Default to monoenergetic 10 MeV
+            return cls(
+                particle="neutron",
+                energy=10.0,
+                energy_type="Mono",
+                energy_unit="MeV",
+                position_z=-1085,  # Flight path of 10.85 m
+                position_unit="cm",
+                halfx=60,  # 12 cm FOV = 120 mm, halfx = 60 mm
+                halfy=60,  # 12 cm FOV = 120 mm, halfy = 60 mm
+                shape_unit="mm",
+                flux=1e4,  # Neutron flux in n/cm²/s
+                freq=200000,  # Pulse frequency in Hz (200 kHz)
+                num_events=10000,
+                progress_interval=100,
+                csv_filename="sim_data.csv",
+                sample_material="G4_Graphite",
+                scintillator="EJ200",
+                sample_thickness=75,  # 7.5 cm = 75 mm
+                scintillator_thickness=20,  # 2 cm = 20 mm
+                csv_batch_size=10000,
+            )
 
     def write(self, output_file: str) -> str:
         """
@@ -305,10 +362,16 @@ class Config:
 
         # Add time spread configuration
         if self.tmax > self.tmin:
-            # Use histogram approach for uniform time distribution
             macro_content += f"""
 /lumacam/tmin {self.tmin} {self.time_unit}
 /lumacam/tmax {self.tmax} {self.time_unit}
+"""
+
+        # Add pulse configuration
+        if self.flux is not None and self.freq is not None:
+            macro_content += f"""
+/lumacam/flux {self.flux}
+/lumacam/freq {self.freq}
 """
 
         macro_content += f"""
@@ -327,6 +390,7 @@ class Config:
 /lumacam/SampleThickness {self.sample_thickness*0.1*0.5}
 /lumacam/ScintThickness {self.scintillator_thickness*0.1*0.5}
 /lumacam/batchSize {self.csv_batch_size}
+/lumacam/csvFilename {self.csv_filename}
 /run/beamOn {self.num_events}
 """
         with open(output_file, 'w') as f:
@@ -358,11 +422,17 @@ class Config:
             time_info = f"  Time spread: {self.tmin} to {self.tmax} {self.time_unit}\n"
         elif self.tmin != 0.0 or self.tmax != 0.0:
             time_info = f"  Time: {self.tmin} {self.time_unit}\n"
+        
+        # Add pulse info
+        pulse_info = ""
+        if self.flux is not None and self.freq is not None:
+            pulse_info = f"  Neutron Flux: {self.flux} n/cm²/s\n  Pulse Frequency: {self.freq/1000} kHz\n"
             
         return (
             f"Configuration:\n"
             f"  {source_info}"
             f"{time_info}"
+            f"{pulse_info}"
             f"  Position: ({self.position_x}, {self.position_y}, {self.position_z}) {self.position_unit}\n"
             f"  Direction: ({self.direction_x}, {self.direction_y}, {self.direction_z})\n"
             f"  Shape: {self.shape} ({self.halfx}x{self.halfy} {self.shape_unit})\n"
@@ -372,7 +442,6 @@ class Config:
             f"  Scintillator: {self.scintillator}\n"
             f"  Scintillator Thickness: {self.scintillator_thickness} mm\n"
             f"  CSV Batch Size: {self.csv_batch_size}\n"
-            f"  Time Spread: {self.tmin} to {self.tmax} {self.time_unit}\n"
             f"  Progress Interval: {self.progress_interval}\n"
             f"  Events: {self.num_events}\n"
             f"  Output: {self.csv_filename}"
@@ -439,6 +508,10 @@ class Simulate:
         if not os.path.exists(self.lumacam_executable):
             raise FileNotFoundError(f"lumacam executable not found at {self.lumacam_executable}")
 
+        # Check write permissions
+        if not os.access(self.sim_dir, os.W_OK):
+            raise PermissionError(f"No write permission in {self.sim_dir}")
+
         temp_macro = None
         macro_file = None
         num_events = None
@@ -447,6 +520,7 @@ class Simulate:
         if isinstance(config_or_file, Config):
             temp_macro = self.sim_dir / "macro.mac"
             macro_file = config_or_file.write(str(temp_macro))
+            print(f"Generated macro file content:\n{open(macro_file).read()}")
             num_events = config_or_file.num_events
             progress_interval = config_or_file.progress_interval
             shutil.copy(str(temp_macro), str(self.archive / "macro.mac"))
@@ -457,6 +531,7 @@ class Simulate:
             shutil.copy(config_or_file, macro_file)
             with open(macro_file, 'r') as f:
                 content = f.read()
+                print(f"Macro file content:\n{content}")
                 match = re.search(r'/run/beamOn\s+(\d+)', content)
                 if match:
                     num_events = int(match.group(1))
@@ -522,8 +597,8 @@ class Simulate:
                 pbar.close()
 
             stderr = process.stderr.read()
-
             if process.returncode != 0:
+                print(f"lumacam execution failed with error:\n{stderr}")
                 raise RuntimeError(f"lumacam execution failed with error:\n{stderr}")
             
             if isinstance(config_or_file, Config):
