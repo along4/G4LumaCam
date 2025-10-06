@@ -13,7 +13,7 @@ public:
 
     enum class ScintType { EJ200, GS20, LYSO };
 
-    void DefineMaterials(); // Declaration of DefineMaterials
+    void DefineMaterials();
     G4Material* getVacuum() const { return vacuum; }
     G4Material* getAir() const { return air; }
     G4Material* getPVT() const { return scintMaterialPVT; }

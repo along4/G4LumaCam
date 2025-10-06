@@ -2,37 +2,32 @@
 #define GEOMETRY_CONSTRUCTOR_HH
 
 #include "G4VUserDetectorConstruction.hh"
+#include "G4LogicalVolume.hh"
+#include "G4VPhysicalVolume.hh"
 #include "MaterialBuilder.hh"
 #include "LumaCamMessenger.hh"
-#include "G4LogicalVolume.hh"
-#include "SimConfig.hh"
-#include "G4GenericMessenger.hh"
-#include "G4SDManager.hh"
-#include "G4ios.hh"
-
-class EventProcessor;
-class ParticleGenerator;
-class LumaCamMessenger;
+#include "ParticleGenerator.hh"
+#include "EventProcessor.hh"
 
 class GeometryConstructor : public G4VUserDetectorConstruction {
 public:
-    GeometryConstructor(ParticleGenerator* gen = nullptr);
-    ~GeometryConstructor() override;
+    GeometryConstructor(ParticleGenerator* gen);
+    ~GeometryConstructor();
+
     G4VPhysicalVolume* Construct() override;
-    G4LogicalVolume* getScintillatorLog() const { return scintLog; }
-    void UpdateScintillatorGeometry(G4double halfThickness);
-    void UpdateSampleGeometry(G4double halfThickness, G4Material* material);
+    void UpdateSampleGeometry(G4double thickness, G4Material* material);
+    void UpdateScintillatorGeometry(G4double thickness);
 
 private:
+    G4VPhysicalVolume* createWorld();
+    G4LogicalVolume* buildLShape(G4LogicalVolume* worldLog);
+    void addComponents(G4LogicalVolume* lShapeLog);
+
     MaterialBuilder* matBuilder;
     EventProcessor* eventProc;
     G4LogicalVolume* sampleLog;
     G4LogicalVolume* scintLog;
     LumaCamMessenger* lumaCamMessenger;
-
-    G4VPhysicalVolume* createWorld();
-    G4LogicalVolume* buildLShape(G4LogicalVolume* worldLog);
-    void addComponents(G4LogicalVolume* lShapeLog);
 };
 
 #endif

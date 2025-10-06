@@ -38,16 +38,18 @@ LumaCamMessenger::LumaCamMessenger(G4String* filename, G4LogicalVolume* sampleLo
         .SetDefaultValue("EJ200");
 
     if (!scintLog) {
-        G4cerr << "WARNING: scintLog is nullptr, /lumacam/scintMaterial command will fail until scintLog is set" << G4endl;
-    }
+            G4cerr << "ERROR: scintLog is nullptr, cannot set scintillator material to "<< G4endl;
+            return;
+        }
+    
 
     messenger->DeclareMethod("ScintThickness", &LumaCamMessenger::SetScintThickness)
-        .SetGuidance("Set the scintillator half-thickness in cm")
+        .SetGuidance("Set the scintillator thickness in cm")
         .SetParameterName("thickness", false)
         .SetDefaultValue("1.0");
 
     messenger->DeclareMethod("SampleThickness", &LumaCamMessenger::SetSampleThickness)
-        .SetGuidance("Set the sample half-thickness in cm")
+        .SetGuidance("Set the sample thickness in cm")
         .SetParameterName("thickness", false)
         .SetDefaultValue("3.75");
 
@@ -150,14 +152,14 @@ void LumaCamMessenger::SetScintillatorMaterial(const G4String& materialName) {
                << ", Confirmed material: " 
                << scintLog->GetMaterial()->GetName() << G4endl;
     } else {
-        G4cerr << "Scintillator material " << materialName << " not found!" << G4endl;
+        G4cerr << "ERROR: Scintillator material " << materialName << " not found!" << G4endl;
         G4cout << "Available scintillator materials: EJ200, GS20, LYSO" << G4endl;
     }
 }
 
 void LumaCamMessenger::SetScintThickness(G4double thickness) {
     G4cout << "Setting scintillator thickness to: " << thickness << " cm" << G4endl;
-    Sim::SCINT_THICKNESS = thickness * cm * 0.5; // Store half-thickness
+    Sim::SetScintThickness(thickness * cm); // Use full thickness to match SimConfig
     GeometryConstructor* geom = dynamic_cast<GeometryConstructor*>(
         const_cast<G4VUserDetectorConstruction*>(
             G4RunManager::GetRunManager()->GetUserDetectorConstruction()));
@@ -170,7 +172,7 @@ void LumaCamMessenger::SetScintThickness(G4double thickness) {
 
 void LumaCamMessenger::SetSampleThickness(G4double thickness) {
     G4cout << "Setting sample thickness to: " << thickness << " cm" << G4endl;
-    Sim::SAMPLE_THICKNESS = thickness * cm * 0.5; // Store half-thickness
+    Sim::SetSampleThickness(thickness * cm); // Use full thickness to match SimConfig
     GeometryConstructor* geom = dynamic_cast<GeometryConstructor*>(
         const_cast<G4VUserDetectorConstruction*>(
             G4RunManager::GetRunManager()->GetUserDetectorConstruction()));
