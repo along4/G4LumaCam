@@ -87,7 +87,7 @@ class Config:
             num_events=100000,
             progress_interval=100,
             csv_filename="sim_data.csv",
-            sample_material="G4_Graphite",
+            sample_material="G4_GRAPHITE",
             scintillator="EJ200",
             sample_thickness=20,
             csv_batch_size=0,
@@ -112,7 +112,7 @@ class Config:
             num_events=100000,
             progress_interval=100,
             csv_filename="sim_data.csv",
-            sample_material="G4_Graphite",
+            sample_material="G4_GRAPHITE",
             scintillator="EJ200",
             sample_thickness=20,
             csv_batch_size=0,
@@ -266,7 +266,7 @@ class Config:
             num_events=100000,
             progress_interval=100,
             csv_filename="sim_data.csv",
-            sample_material="G4_Graphite",
+            sample_material="G4_GRAPHITE",
             scintillator="EJ200",
             sample_thickness=20,
             csv_batch_size=0,
@@ -295,7 +295,7 @@ class Config:
                 num_events=10000,
                 progress_interval=100,
                 csv_filename="sim_data.csv",
-                sample_material="G4_Graphite",
+                sample_material="G4_GRAPHITE",
                 scintillator="EJ200",
                 sample_thickness=75,  # 7.5 cm = 75 mm
                 scintillator_thickness=20,  # 2 cm = 20 mm
@@ -318,7 +318,7 @@ class Config:
                 num_events=10000,
                 progress_interval=100,
                 csv_filename="sim_data.csv",
-                sample_material="G4_Graphite",
+                sample_material="G4_GRAPHITE",
                 scintillator="EJ200",
                 sample_thickness=75,  # 7.5 cm = 75 mm
                 scintillator_thickness=20,  # 2 cm = 20 mm
