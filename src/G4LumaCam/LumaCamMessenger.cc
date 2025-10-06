@@ -41,7 +41,7 @@ LumaCamMessenger::LumaCamMessenger(G4String* filename, G4LogicalVolume* sampleLo
         .SetDefaultValue("EJ200");
 
     // Scintillator thickness
-    messenger->DeclareMethod("scintillatorThickness", &LumaCamMessenger::SetScintThickness)
+    messenger->DeclareMethod("scintThickness", &LumaCamMessenger::SetScintThickness)
         .SetGuidance("Set the scintillator thickness in cm")
         .SetParameterName("thickness", false)
         .SetDefaultValue("1.0");

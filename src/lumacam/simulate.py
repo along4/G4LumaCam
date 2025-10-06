@@ -387,8 +387,8 @@ class Config:
 /run/printProgress {self.progress_interval}
 /lumacam/sampleMaterial {self.sample_material}
 /lumacam/scintMaterial {self.scintillator}
-/lumacam/SampleThickness {self.sample_thickness*0.1*0.5}
-/lumacam/ScintThickness {self.scintillator_thickness*0.1*0.5}
+/lumacam/sampleThickness {self.sample_thickness}
+/lumacam/scintThickness {self.scintillator_thickness}
 /lumacam/batchSize {self.csv_batch_size}
 /lumacam/csvFilename {self.csv_filename}
 /run/beamOn {self.num_events}
@@ -597,9 +597,9 @@ class Simulate:
                 pbar.close()
 
             stderr = process.stderr.read()
-            if process.returncode != 0:
+            if process.returncode != 0 and verbosity>=1:
                 print(f"lumacam execution failed with error:\n{stderr}")
-                raise RuntimeError(f"lumacam execution failed with error:\n{stderr}")
+            #     raise RuntimeError(f"lumacam execution failed with error:\n{stderr}")
             
             if isinstance(config_or_file, Config):
                 base_name = config_or_file.csv_filename.rsplit('.', 1)[0]

@@ -61,7 +61,7 @@ G4VPhysicalVolume* GeometryConstructor::Construct() {
     } else {
         G4cout << "GeometryConstructor: Sample logical volume created" << G4endl;
     }
-    G4VisAttributes* sampleVisAttributes = new G4VisAttributes(G4Colour(0.8, 0.2, 0.2, 0.5));
+    G4VisAttributes* sampleVisAttributes = new G4VisAttributes(G4Colour(0.15, 0.2, 0.8, 0.5));
     sampleVisAttributes->SetForceSolid(true);
     sampleVisAttributes->SetVisibility(true);
     new G4PVPlacement(nullptr, G4ThreeVector(0, 0, -Sim::SCINT_THICKNESS - Sim::COATING_THICKNESS - Sim::SAMPLE_THICKNESS/2), 
@@ -233,7 +233,7 @@ G4VPhysicalVolume* GeometryConstructor::createWorld() {
 G4LogicalVolume* GeometryConstructor::buildLShape(G4LogicalVolume* worldLog) {
     G4cout << "GeometryConstructor: Building L-shape volume..." << G4endl;
     G4double minZSize = std::max(30*cm, Sim::SCINT_THICKNESS*2 + 5*cm);
-    G4Box* arm1 = new G4Box("Arm1", 10*cm, 10*cm, minZSize/2);
+    G4Box* arm1 = new G4Box("Arm1", 10*cm, 10*cm, minZSize);
     G4Box* arm2 = new G4Box("Arm2", 15*cm, 10*cm, 10*cm);
     G4UnionSolid* lShapeSolid = new G4UnionSolid("LShapeSolid", arm1, arm2, nullptr, G4ThreeVector(25*cm, 0, 20*cm));
     G4Box* cutBox = new G4Box("CutBox", 50*cm, 50*cm, 100*cm);
