@@ -8,7 +8,7 @@
 #include "SimConfig.hh"
 #include "G4GenericMessenger.hh"
 #include "G4SDManager.hh"
-#include "G4ios.hh" // Added for G4cout/G4cerr
+#include "G4ios.hh"
 
 class EventProcessor;
 class ParticleGenerator;
@@ -20,6 +20,8 @@ public:
     ~GeometryConstructor() override;
     G4VPhysicalVolume* Construct() override;
     G4LogicalVolume* getScintillatorLog() const { return scintLog; }
+    void UpdateScintillatorGeometry(G4double halfThickness);
+    void UpdateSampleGeometry(G4double halfThickness, G4Material* material);
 
 private:
     MaterialBuilder* matBuilder;

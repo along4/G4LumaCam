@@ -12,32 +12,43 @@
 #include "G4SDManager.hh"
 #include "G4SubtractionSolid.hh"
 #include "LumaCamMessenger.hh"
+#include "G4PhysicalVolumeStore.hh"
+#include "G4RunManager.hh"
 
 GeometryConstructor::GeometryConstructor(ParticleGenerator* gen) 
     : matBuilder(new MaterialBuilder()), eventProc(nullptr), sampleLog(nullptr), scintLog(nullptr), lumaCamMessenger(nullptr) {
     G4cout << "GeometryConstructor: Initializing..." << G4endl;
+    matBuilder->DefineMaterials();
     eventProc = new EventProcessor("EventProcessor", gen);
     G4SDManager* sdManager = G4SDManager::GetSDMpointer();
     sdManager->AddNewDetector(eventProc);
+    G4String filename = "sim_data.csv";
+    lumaCamMessenger = new LumaCamMessenger(&filename, nullptr, nullptr, Sim::batchSize);
 }
 
 GeometryConstructor::~GeometryConstructor() {
     G4cout << "GeometryConstructor: Cleaning up..." << G4endl;
     delete matBuilder;
     delete lumaCamMessenger;
-    // delete eventProc;
+    // delete eventProc; // Commented out to avoid double deletion
 }
 
 G4VPhysicalVolume* GeometryConstructor::Construct() {
     G4cout << "GeometryConstructor: Constructing geometry..." << G4endl;
+    G4PhysicalVolumeStore* physVolStore = G4PhysicalVolumeStore::GetInstance();
+    G4VPhysicalVolume* existingWorld = physVolStore->GetVolume("World", false);
+    if (existingWorld) {
+        G4cout << "GeometryConstructor: Reusing existing world volume" << G4endl;
+        return existingWorld;
+    }
+
     G4VPhysicalVolume* worldPhys = createWorld();
     G4LogicalVolume* worldLog = worldPhys->GetLogicalVolume();
     G4LogicalVolume* lShapeLog = buildLShape(worldLog);
 
     // Place sample in world volume
     G4Box* sampleSolid = new G4Box("SampleSolid", Sim::SCINT_SIZE, Sim::SCINT_SIZE, Sim::SAMPLE_THICKNESS);
-    G4NistManager* nistManager = G4NistManager::Instance();
-    sampleLog = new G4LogicalVolume(sampleSolid, nistManager->FindOrBuildMaterial("G4_Galactic"), "SampleLog");
+    sampleLog = new G4LogicalVolume(sampleSolid, matBuilder->getGraphite(), "SampleLog");
     if (!sampleLog) {
         G4cerr << "ERROR: sampleLog is nullptr!" << G4endl;
     } else {
@@ -46,22 +57,17 @@ G4VPhysicalVolume* GeometryConstructor::Construct() {
     G4VisAttributes* sampleVisAttributes = new G4VisAttributes(G4Colour(0.8, 0.2, 0.2, 0.5));
     sampleVisAttributes->SetForceSolid(true);
     sampleVisAttributes->SetVisibility(true);
-    new G4PVPlacement(nullptr, G4ThreeVector(0, 0, -20*cm), sampleLog, "SamplePhys", worldLog, false, 0);
+    new G4PVPlacement(nullptr, G4ThreeVector(0, 0, -20*cm), sampleLog, "SamplePhys", worldLog, false, 0, true);
     sampleLog->SetVisAttributes(sampleVisAttributes);
 
-    // Build other components, including scintillator
+    // Build other components
     addComponents(lShapeLog);
 
-    // Update LumaCamMessenger with new logical volumes
+    // Update LumaCamMessenger with logical volumes
     if (lumaCamMessenger) {
-        delete lumaCamMessenger; // Delete old messenger
-    }
-    G4String filename = "sim_data.csv";
-    lumaCamMessenger = new LumaCamMessenger(&filename, sampleLog, scintLog, Sim::batchSize);
-    if (!lumaCamMessenger) {
-        G4cerr << "ERROR: lumaCamMessenger is nullptr!" << G4endl;
-    } else {
-        G4cout << "GeometryConstructor: LumaCamMessenger initialized with sampleLog=" 
+        lumaCamMessenger->SetSampleLog(sampleLog);
+        lumaCamMessenger->SetScintLog(scintLog);
+        G4cout << "GeometryConstructor: LumaCamMessenger updated with sampleLog=" 
                << (sampleLog ? sampleLog->GetName() : "null") 
                << ", scintLog=" << (scintLog ? scintLog->GetName() : "null") << G4endl;
     }
@@ -69,12 +75,68 @@ G4VPhysicalVolume* GeometryConstructor::Construct() {
     return worldPhys;
 }
 
+void GeometryConstructor::UpdateScintillatorGeometry(G4double halfThickness) {
+    G4cout << "GeometryConstructor: Updating scintillator geometry with half-thickness: " 
+           << halfThickness/cm << " cm" << G4endl;
+    
+    if (scintLog) {
+        G4Box* scintSolid = dynamic_cast<G4Box*>(scintLog->GetSolid());
+        if (scintSolid) {
+            scintSolid->SetZHalfLength(halfThickness);
+            G4cout << "GeometryConstructor: Scintillator solid updated" << G4endl;
+        } else {
+            G4cerr << "ERROR: scintLog has no valid G4Box solid!" << G4endl;
+        }
+    } else {
+        G4cerr << "ERROR: scintLog is nullptr!" << G4endl;
+    }
+
+    G4PhysicalVolumeStore* physVolStore = G4PhysicalVolumeStore::GetInstance();
+    G4VPhysicalVolume* scintPhys = physVolStore->GetVolume("ScintPhys", false);
+    if (scintPhys) {
+        scintPhys->SetTranslation(G4ThreeVector(0, 0, halfThickness));
+        G4cout << "GeometryConstructor: Scintillator placement updated" << G4endl;
+    } else {
+        G4cerr << "ERROR: ScintPhys not found in volume store!" << G4endl;
+    }
+
+    G4RunManager::GetRunManager()->GeometryHasBeenModified();
+}
+
+void GeometryConstructor::UpdateSampleGeometry(G4double halfThickness, G4Material* material) {
+    G4cout << "GeometryConstructor: Updating sample geometry with half-thickness: " 
+           << halfThickness/cm << " cm, material: " << (material ? material->GetName() : "null") << G4endl;
+    
+    if (sampleLog) {
+        G4Box* sampleSolid = dynamic_cast<G4Box*>(sampleLog->GetSolid());
+        if (sampleSolid) {
+            sampleSolid->SetZHalfLength(halfThickness);
+            sampleLog->SetMaterial(material);
+            G4cout << "GeometryConstructor: Sample solid and material updated" << G4endl;
+        } else {
+            G4cerr << "ERROR: sampleLog has no valid G4Box solid!" << G4endl;
+        }
+    } else {
+        G4cerr << "ERROR: sampleLog is nullptr!" << G4endl;
+    }
+
+    G4PhysicalVolumeStore* physVolStore = G4PhysicalVolumeStore::GetInstance();
+    G4VPhysicalVolume* samplePhys = physVolStore->GetVolume("SamplePhys", false);
+    if (samplePhys) {
+        samplePhys->SetTranslation(G4ThreeVector(0, 0, -20*cm));
+        G4cout << "GeometryConstructor: Sample placement updated" << G4endl;
+    } else {
+        G4cerr << "ERROR: SamplePhys not found in volume store!" << G4endl;
+    }
+
+    G4RunManager::GetRunManager()->GeometryHasBeenModified();
+}
 
 G4VPhysicalVolume* GeometryConstructor::createWorld() {
     G4cout << "GeometryConstructor: Creating world volume..." << G4endl;
     G4Box* worldSolid = new G4Box("WorldSolid", Sim::WORLD_SIZE, Sim::WORLD_SIZE, Sim::WORLD_SIZE);
     G4LogicalVolume* worldLog = new G4LogicalVolume(worldSolid, matBuilder->getVacuum(), "WorldLog");
-    G4VPhysicalVolume* worldPhys = new G4PVPlacement(nullptr, G4ThreeVector(), worldLog, "World", nullptr, false, 0);
+    G4VPhysicalVolume* worldPhys = new G4PVPlacement(nullptr, G4ThreeVector(), worldLog, "World", nullptr, false, 0, true);
     
     G4VisAttributes* visAttr = new G4VisAttributes(G4Colour(1.0, 1.0, 1.0));
     visAttr->SetVisibility(false);
@@ -85,7 +147,7 @@ G4VPhysicalVolume* GeometryConstructor::createWorld() {
 
 G4LogicalVolume* GeometryConstructor::buildLShape(G4LogicalVolume* worldLog) {
     G4cout << "GeometryConstructor: Building L-shape volume..." << G4endl;
-    G4double minZSize = std::max(30*cm, Sim::SCINT_THICKNESS*2 + 5*cm); // Add some margin
+    G4double minZSize = std::max(30*cm, Sim::SCINT_THICKNESS*2 + 5*cm);
     G4Box* arm1 = new G4Box("Arm1", 10*cm, 10*cm, minZSize);
     G4Box* arm2 = new G4Box("Arm2", 15*cm, 10*cm, 10*cm);
     G4UnionSolid* lShapeSolid = new G4UnionSolid("LShapeSolid", arm1, arm2, nullptr, G4ThreeVector(25*cm, 0, 20*cm));
@@ -93,7 +155,7 @@ G4LogicalVolume* GeometryConstructor::buildLShape(G4LogicalVolume* worldLog) {
     G4SubtractionSolid* trimmedLShape = new G4SubtractionSolid("TrimmedLShape", lShapeSolid, cutBox, 
                                                                nullptr, G4ThreeVector(0, 0, -100.5*cm));
     G4LogicalVolume* lShapeLog = new G4LogicalVolume(trimmedLShape, matBuilder->getAir(), "LShapeLog");
-    new G4PVPlacement(nullptr, G4ThreeVector(), lShapeLog, "LShapePhys", worldLog, false, 0);
+    new G4PVPlacement(nullptr, G4ThreeVector(), lShapeLog, "LShapePhys", worldLog, false, 0, true);
 
     G4OpticalSurface* blackSurf = new G4OpticalSurface("DarkSurface");
     blackSurf->SetType(dielectric_metal);
@@ -129,7 +191,7 @@ void GeometryConstructor::addComponents(G4LogicalVolume* lShapeLog) {
     } else {
         G4cout << "GeometryConstructor: Scintillator logical volume created" << G4endl;
     }
-    new G4PVPlacement(nullptr, G4ThreeVector(0, 0, Sim::SCINT_THICKNESS), scintLog, "ScintPhys", lShapeLog, false, 0);
+    new G4PVPlacement(nullptr, G4ThreeVector(0, 0, Sim::SCINT_THICKNESS), scintLog, "ScintPhys", lShapeLog, false, 0, true);
     scintLog->SetVisAttributes(scintVisAttributes);
     scintLog->SetSensitiveDetector(eventProc);
 
@@ -153,25 +215,25 @@ void GeometryConstructor::addComponents(G4LogicalVolume* lShapeLog) {
     black_side_log->SetVisAttributes(new G4VisAttributes(G4Colour(0.1, 0.1, 0.1)));
 
     G4ThreeVector placement_top(0, Sim::SCINT_SIZE + Sim::COATING_THICKNESS, Sim::SCINT_THICKNESS);
-    new G4PVPlacement(nullptr, placement_top, black_side_log, "black_side_top", lShapeLog, false, 0);
+    new G4PVPlacement(nullptr, placement_top, black_side_log, "black_side_top", lShapeLog, false, 0, true);
 
     G4ThreeVector placement_bottom(0, -(Sim::SCINT_SIZE + Sim::COATING_THICKNESS), Sim::SCINT_THICKNESS);
-    new G4PVPlacement(nullptr, placement_bottom, black_side_log, "black_side_bottom", lShapeLog, false, 1);
+    new G4PVPlacement(nullptr, placement_bottom, black_side_log, "black_side_bottom", lShapeLog, false, 1, true);
 
     G4RotationMatrix* sideRotation = new G4RotationMatrix();
     sideRotation->rotateZ(90.*deg);
 
     G4ThreeVector placement_left(-Sim::SCINT_SIZE - Sim::COATING_THICKNESS, 0, Sim::SCINT_THICKNESS);
-    new G4PVPlacement(sideRotation, placement_left, black_side_log, "black_side_left", lShapeLog, false, 2);
+    new G4PVPlacement(sideRotation, placement_left, black_side_log, "black_side_left", lShapeLog, false, 2, true);
 
     G4ThreeVector placement_right(Sim::SCINT_SIZE + Sim::COATING_THICKNESS, 0, Sim::SCINT_THICKNESS);
-    new G4PVPlacement(sideRotation, placement_right, black_side_log, "black_side_right", lShapeLog, false, 3);
+    new G4PVPlacement(sideRotation, placement_right, black_side_log, "black_side_right", lShapeLog, false, 3, true);
 
     G4Box* black_back_box = new G4Box("black_back_box", Sim::SCINT_SIZE, Sim::SCINT_SIZE, Sim::COATING_THICKNESS);
     G4LogicalVolume* black_back_log = new G4LogicalVolume(black_back_box, matBuilder->getVacuum(), "black_back_log");
     black_back_log->SetVisAttributes(new G4VisAttributes(G4Colour(0.1, 0.1, 0.1)));
     G4ThreeVector placement_back(0, 0, -Sim::COATING_THICKNESS);
-    new G4PVPlacement(nullptr, placement_back, black_back_log, "black_back", lShapeLog, false, 4);
+    new G4PVPlacement(nullptr, placement_back, black_back_log, "black_back", lShapeLog, false, 4, true);
 
     G4OpticalSurface* blackTapeSurf = new G4OpticalSurface("BlackTapeSurface");
     blackTapeSurf->SetType(dielectric_metal);
@@ -198,7 +260,7 @@ void GeometryConstructor::addComponents(G4LogicalVolume* lShapeLog) {
     mirrorVisAttributes->SetVisibility(true);
     G4RotationMatrix* rot = new G4RotationMatrix();
     rot->rotateY(45*deg);
-    new G4PVPlacement(rot, G4ThreeVector(0, 0, 20*cm), mirrorLog, "MirrorPhys", lShapeLog, false, 0);
+    new G4PVPlacement(rot, G4ThreeVector(0, 0, 20*cm), mirrorLog, "MirrorPhys", lShapeLog, false, 0, true);
     G4OpticalSurface* mirrorSurf = new G4OpticalSurface("ReflectiveSurface");
     mirrorSurf->SetType(dielectric_metal);
     mirrorSurf->SetFinish(polished);
@@ -215,7 +277,7 @@ void GeometryConstructor::addComponents(G4LogicalVolume* lShapeLog) {
     sensorVisAttributes->SetVisibility(true);
     rot = new G4RotationMatrix();
     rot->rotateY(90*deg);
-    new G4PVPlacement(rot, G4ThreeVector(30*cm, 0, 20*cm), sensorLog, "SensorPhys", lShapeLog, false, 0);
+    new G4PVPlacement(rot, G4ThreeVector(30*cm, 0, 20*cm), sensorLog, "SensorPhys", lShapeLog, false, 0, true);
     sensorLog->SetVisAttributes(sensorVisAttributes);
     sensorLog->SetSensitiveDetector(eventProc);
 
@@ -225,7 +287,7 @@ void GeometryConstructor::addComponents(G4LogicalVolume* lShapeLog) {
     G4VisAttributes* monitorVisAttributes = new G4VisAttributes(G4Colour(1.0, 0.0, 0.0, 0.5));
     monitorVisAttributes->SetForceSolid(true);
     monitorVisAttributes->SetVisibility(true);
-    new G4PVPlacement(nullptr, G4ThreeVector(0, 0, Sim::SCINT_THICKNESS*2 + 0.5*um), monitorLog, "MonitorPhys", lShapeLog, false, 0);
+    new G4PVPlacement(nullptr, G4ThreeVector(0, 0, Sim::SCINT_THICKNESS*2 + 0.5*um), monitorLog, "MonitorPhys", lShapeLog, false, 0, true);
     monitorLog->SetVisAttributes(monitorVisAttributes);
     monitorLog->SetSensitiveDetector(eventProc);
 

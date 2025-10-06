@@ -1,7 +1,7 @@
 #include "LumaCamMessenger.hh"
+#include "GeometryConstructor.hh"
 #include "SimConfig.hh"
 #include "G4RunManager.hh"
-#include "G4VUserDetectorConstruction.hh"
 #include "G4NistManager.hh"
 #include "G4Material.hh"
 #include "G4SystemOfUnits.hh"
@@ -9,8 +9,8 @@
 
 LumaCamMessenger::LumaCamMessenger(G4String* filename, G4LogicalVolume* sampleLogVolume, 
                                    G4LogicalVolume* scintLogVolume, G4int batch)
- : csvFilename(filename), sampleLog(sampleLogVolume), scintLog(scintLogVolume),
-   batchSize(batch), matBuilder(new MaterialBuilder()) {
+    : csvFilename(filename), sampleLog(sampleLogVolume), scintLog(scintLogVolume),
+      batchSize(batch), matBuilder(new MaterialBuilder()) {
     
     messenger = new G4GenericMessenger(this, "/lumacam/", "lumacam control commands");
 
@@ -27,14 +27,10 @@ LumaCamMessenger::LumaCamMessenger(G4String* filename, G4LogicalVolume* sampleLo
             .SetDefaultValue("sim_data.csv");
     }
 
-    if (sampleLog) {
-        messenger->DeclareMethod("sampleMaterial", &LumaCamMessenger::SetMaterial)
-            .SetGuidance("Set the material of the sample_log")
-            .SetParameterName("material", false)
-            .SetDefaultValue("G4_GRAPHITE");
-    } else {
-        G4cerr << "WARNING: sampleLog is nullptr, /lumacam/sampleMaterial command will not be available" << G4endl;
-    }
+    messenger->DeclareMethod("sampleMaterial", &LumaCamMessenger::SetMaterial)
+        .SetGuidance("Set the material of the sample_log")
+        .SetParameterName("material", false)
+        .SetDefaultValue("G4_GRAPHITE");
 
     messenger->DeclareMethod("scintMaterial", &LumaCamMessenger::SetScintillatorMaterial)
         .SetGuidance("Set the scintillator material (EJ200, GS20 or LYSO)")
@@ -70,7 +66,6 @@ LumaCamMessenger::LumaCamMessenger(G4String* filename, G4LogicalVolume* sampleLo
         .SetParameterName("tmax", false)
         .SetDefaultValue("0.0");
 
-    // New commands for flux and frequency
     messenger->DeclareMethod("flux", &LumaCamMessenger::SetFlux)
         .SetGuidance("Set neutron flux in n/cm²/s")
         .SetParameterName("flux", false)
@@ -87,6 +82,20 @@ LumaCamMessenger::~LumaCamMessenger() {
     delete matBuilder;
 }
 
+void LumaCamMessenger::SetSampleLog(G4LogicalVolume* log) {
+    sampleLog = log;
+    if (sampleLog) {
+        G4cout << "LumaCamMessenger: sampleLog set to " << sampleLog->GetName() << G4endl;
+    }
+}
+
+void LumaCamMessenger::SetScintLog(G4LogicalVolume* log) {
+    scintLog = log;
+    if (scintLog) {
+        G4cout << "LumaCamMessenger: scintLog set to " << scintLog->GetName() << G4endl;
+    }
+}
+
 void LumaCamMessenger::SetMaterial(const G4String& materialName) {
     if (!sampleLog) {
         G4cerr << "ERROR: sampleLog is nullptr, cannot set material to " << materialName << G4endl;
@@ -99,10 +108,18 @@ void LumaCamMessenger::SetMaterial(const G4String& materialName) {
     if (material) {
         G4cout << "Current sample material: " 
                << sampleLog->GetMaterial()->GetName() << G4endl;
-        sampleLog->SetMaterial(material);
-        G4cout << "Sample material set to: " << materialName 
-               << ", Confirmed material: " 
-               << sampleLog->GetMaterial()->GetName() << G4endl;
+        Sim::sampleMaterial = materialName;
+        GeometryConstructor* geom = dynamic_cast<GeometryConstructor*>(
+            const_cast<G4VUserDetectorConstruction*>(
+                G4RunManager::GetRunManager()->GetUserDetectorConstruction()));
+        if (geom) {
+            geom->UpdateSampleGeometry(Sim::SAMPLE_THICKNESS, material);
+            G4cout << "Sample material set to: " << materialName 
+                   << ", Confirmed material: " 
+                   << sampleLog->GetMaterial()->GetName() << G4endl;
+        } else {
+            G4cerr << "ERROR: Failed to cast to GeometryConstructor!" << G4endl;
+        }
     } else {
         G4cerr << "Material " << materialName << " not found!" << G4endl;
         G4cout << "Available NIST materials:" << G4endl;
@@ -126,7 +143,9 @@ void LumaCamMessenger::SetScintillatorMaterial(const G4String& materialName) {
     if (material) {
         G4cout << "Current scintillator material: " 
                << scintLog->GetMaterial()->GetName() << G4endl;
+        Sim::scintillatorMaterial = materialName;
         scintLog->SetMaterial(material);
+        G4RunManager::GetRunManager()->GeometryHasBeenModified();
         G4cout << "Scintillator material set to: " << materialName 
                << ", Confirmed material: " 
                << scintLog->GetMaterial()->GetName() << G4endl;
@@ -137,30 +156,29 @@ void LumaCamMessenger::SetScintillatorMaterial(const G4String& materialName) {
 }
 
 void LumaCamMessenger::SetScintThickness(G4double thickness) {
-    Sim::SetScintThickness(thickness * cm);
-    G4RunManager* runManager = G4RunManager::GetRunManager();
-    if (runManager && runManager->GetUserDetectorConstruction()) {
-        G4VUserDetectorConstruction* detector = const_cast<G4VUserDetectorConstruction*>(
-            runManager->GetUserDetectorConstruction());
-        runManager->DefineWorldVolume(detector->Construct());
-        runManager->GeometryHasBeenModified();
-        G4cout << "Geometry rebuilt with new scintillator half-thickness: " << thickness << " cm" << G4endl;
+    G4cout << "Setting scintillator thickness to: " << thickness << " cm" << G4endl;
+    Sim::SCINT_THICKNESS = thickness * cm * 0.5; // Store half-thickness
+    GeometryConstructor* geom = dynamic_cast<GeometryConstructor*>(
+        const_cast<G4VUserDetectorConstruction*>(
+            G4RunManager::GetRunManager()->GetUserDetectorConstruction()));
+    if (geom) {
+        geom->UpdateScintillatorGeometry(Sim::SCINT_THICKNESS);
     } else {
-        G4cerr << "ERROR: RunManager or DetectorConstruction is nullptr, cannot rebuild geometry" << G4endl;
+        G4cerr << "ERROR: Failed to cast to GeometryConstructor!" << G4endl;
     }
 }
 
 void LumaCamMessenger::SetSampleThickness(G4double thickness) {
-    Sim::SetSampleThickness(thickness * cm);
-    G4RunManager* runManager = G4RunManager::GetRunManager();
-    if (runManager && runManager->GetUserDetectorConstruction()) {
-        G4VUserDetectorConstruction* detector = const_cast<G4VUserDetectorConstruction*>(
-            runManager->GetUserDetectorConstruction());
-        runManager->DefineWorldVolume(detector->Construct());
-        runManager->GeometryHasBeenModified();
-        G4cout << "Geometry rebuilt with new sample half-thickness: " << thickness << " cm" << G4endl;
+    G4cout << "Setting sample thickness to: " << thickness << " cm" << G4endl;
+    Sim::SAMPLE_THICKNESS = thickness * cm * 0.5; // Store half-thickness
+    GeometryConstructor* geom = dynamic_cast<GeometryConstructor*>(
+        const_cast<G4VUserDetectorConstruction*>(
+            G4RunManager::GetRunManager()->GetUserDetectorConstruction()));
+    if (geom && sampleLog) {
+        G4Material* material = sampleLog->GetMaterial();
+        geom->UpdateSampleGeometry(Sim::SAMPLE_THICKNESS, material);
     } else {
-        G4cerr << "ERROR: RunManager or DetectorConstruction is nullptr, cannot rebuild geometry" << G4endl;
+        G4cerr << "ERROR: Failed to cast to GeometryConstructor or sampleLog is nullptr!" << G4endl;
     }
 }
 

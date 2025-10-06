@@ -15,6 +15,8 @@ namespace Sim {
     extern G4double SAMPLE_THICKNESS;
     extern G4double SCINT_SIZE;
     extern G4double COATING_THICKNESS;
+    static G4String sampleMaterial = "G4_GRAPHITE";
+    static G4String scintillatorMaterial = "ScintillatorPVT";
     extern G4double TMIN;
     extern G4double TMAX;
     extern G4double FLUX; // Neutron flux in n/cm²/s

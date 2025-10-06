@@ -5,107 +5,113 @@
 #include <vector>
 
 MaterialBuilder::MaterialBuilder() : currentScintType(ScintType::EJ200) {
-    G4NistManager* nist = G4NistManager::Instance();
-    
-    G4cout << "MaterialBuilder: Initializing materials..." << G4endl;
-    
-    // Elements
-    G4Element* H = new G4Element("H", "H", 1., 1.01 * g/mole);
-    G4Element* C = new G4Element("C", "C", 6., 12.01 * g/mole);
-    G4Element* N = new G4Element("N", "N", 7., 14.01 * g/mole);
-    G4Element* O = new G4Element("O", "O", 8., 16.00 * g/mole);
-    G4Element* Si = new G4Element("Si", "Si", 14., 28.09 * g/mole);
-    G4Element* Li = new G4Element("Li", "Li", 3., 6.941 * g/mole);
-    
-    // Vacuum
-    vacuum = new G4Material("Vacuum", 1., 1.01 * g/mole, CLHEP::universe_mean_density,
-                            kStateGas, 2.73 * kelvin, 3.e-18 * pascal);
-    G4cout << "MaterialBuilder: Vacuum material created" << G4endl;
-    
-    // Air
-    air = new G4Material("Air", 1.290 * mg/cm3, 2);
-    air->AddElement(N, 70 * perCent);
-    air->AddElement(O, 30 * perCent);
-    
-    G4double airEnergy[2] = {1.0 * eV, 20.0 * eV};
-    G4double airRIndex[2] = {1.0, 1.0};
-    G4double airAbs[2] = {100.0 * m, 100.0 * m};
-    setupMaterialProperties(air, airEnergy, airRIndex, airAbs, 2);
-    G4cout << "MaterialBuilder: Air material created" << G4endl;
-    
-    // Scintillator (PVT)
-    scintMaterialPVT = new G4Material("ScintillatorPVT", 1.023 * g/cm3, 2);
-    scintMaterialPVT->AddElement(C, 9);
-    scintMaterialPVT->AddElement(H, 10);
+}
 
-    const int nPVT = 61;
-    G4double pvtEnergy[nPVT] = {
-        3.26*eV, 3.25*eV, 3.23*eV, 3.21*eV, 3.20*eV, 3.18*eV, 3.16*eV, 3.15*eV, 3.13*eV, 3.12*eV,
-        3.10*eV, 3.08*eV, 3.07*eV, 3.05*eV, 3.04*eV, 3.02*eV, 3.01*eV, 2.99*eV, 2.98*eV, 2.96*eV,
-        2.95*eV, 2.94*eV, 2.92*eV, 2.91*eV, 2.90*eV, 2.88*eV, 2.87*eV, 2.85*eV, 2.84*eV, 2.82*eV,
-        2.81*eV, 2.80*eV, 2.79*eV, 2.77*eV, 2.76*eV, 2.75*eV, 2.74*eV, 2.73*eV, 2.72*eV, 2.70*eV,
-        2.69*eV, 2.68*eV, 2.67*eV, 2.66*eV, 2.65*eV, 2.64*eV, 2.63*eV, 2.62*eV, 2.61*eV, 2.59*eV,
-        2.58*eV, 2.57*eV, 2.56*eV, 2.55*eV, 2.54*eV, 2.52*eV, 2.51*eV, 2.50*eV, 2.49*eV, 2.48*eV,
-        2.48*eV
-    };
-    G4double pvtScint[nPVT] = {
-        0.001, 0.001, 0.001, 0.001, 0.001, 0.001, 0.001, 0.001, 0.000, 0.002,
-        0.006, 0.016, 0.044, 0.101, 0.173, 0.251, 0.348, 0.454, 0.596, 0.728,
-        0.861, 0.949, 0.991, 0.999, 0.982, 0.956, 0.926, 0.890, 0.850, 0.804,
-        0.755, 0.706, 0.658, 0.617, 0.582, 0.549, 0.519, 0.492, 0.468, 0.448,
-        0.429, 0.410, 0.389, 0.364, 0.337, 0.306, 0.271, 0.238, 0.212, 0.191,
-        0.171, 0.153, 0.137, 0.123, 0.109, 0.098, 0.087, 0.077, 0.068, 0.059,
-        0.056
-    };
-    G4double pvtRIndex[nPVT];
-    for (int i = 0; i < nPVT; i++) {
-        pvtRIndex[i] = 1.58;
+void MaterialBuilder::DefineMaterials() {
+    G4NistManager* nist = G4NistManager::Instance();
+    G4cout << "MaterialBuilder: Initializing materials..." << G4endl;
+
+    // Vacuum
+    if (!G4Material::GetMaterial("Vacuum", false)) {
+        vacuum = new G4Material("Vacuum", 1., 1.01 * g/mole, CLHEP::universe_mean_density,
+                                kStateGas, 2.73 * kelvin, 3.e-18 * pascal);
+        G4cout << "MaterialBuilder: Vacuum material created" << G4endl;
     }
-    G4double pvtAbs[nPVT];
-    for (int i = 0; i < nPVT; i++) {
-        pvtAbs[i] = 380.*cm;
+
+    // Air
+    if (!G4Material::GetMaterial("Air", false)) {
+        air = new G4Material("Air", 1.290 * mg/cm3, 2);
+        air->AddElement(nist->FindOrBuildElement("N"), 70 * perCent);
+        air->AddElement(nist->FindOrBuildElement("O"), 30 * perCent);
+        G4double airEnergy[2] = {1.0 * eV, 20.0 * eV};
+        G4double airRIndex[2] = {1.0, 1.0};
+        G4double airAbs[2] = {100.0 * m, 100.0 * m};
+        setupMaterialProperties(air, airEnergy, airRIndex, airAbs, 2);
+        G4cout << "MaterialBuilder: Air material created" << G4endl;
     }
-    setupMaterialProperties(scintMaterialPVT, pvtEnergy, pvtRIndex, pvtAbs, nPVT, pvtScint);
-    scintMaterialPVT->GetIonisation()->SetBirksConstant(0.126 * mm/MeV);
-    G4cout << "MaterialBuilder: ScintillatorPVT material created" << G4endl;
-    
+
+    // Scintillator (PVT)
+    if (!G4Material::GetMaterial("ScintillatorPVT", false)) {
+        scintMaterialPVT = new G4Material("ScintillatorPVT", 1.023 * g/cm3, 2);
+        scintMaterialPVT->AddElement(nist->FindOrBuildElement("C"), 9);
+        scintMaterialPVT->AddElement(nist->FindOrBuildElement("H"), 10);
+        const int nPVT = 61;
+        G4double pvtEnergy[nPVT] = {
+            3.26*eV, 3.25*eV, 3.23*eV, 3.21*eV, 3.20*eV, 3.18*eV, 3.16*eV, 3.15*eV, 3.13*eV, 3.12*eV,
+            3.10*eV, 3.08*eV, 3.07*eV, 3.05*eV, 3.04*eV, 3.02*eV, 3.01*eV, 2.99*eV, 2.98*eV, 2.96*eV,
+            2.95*eV, 2.94*eV, 2.92*eV, 2.91*eV, 2.90*eV, 2.88*eV, 2.87*eV, 2.85*eV, 2.84*eV, 2.82*eV,
+            2.81*eV, 2.80*eV, 2.79*eV, 2.77*eV, 2.76*eV, 2.75*eV, 2.74*eV, 2.73*eV, 2.72*eV, 2.70*eV,
+            2.69*eV, 2.68*eV, 2.67*eV, 2.66*eV, 2.65*eV, 2.64*eV, 2.63*eV, 2.62*eV, 2.61*eV, 2.59*eV,
+            2.58*eV, 2.57*eV, 2.56*eV, 2.55*eV, 2.54*eV, 2.52*eV, 2.51*eV, 2.50*eV, 2.49*eV, 2.48*eV,
+            2.48*eV
+        };
+        G4double pvtScint[nPVT] = {
+            0.001, 0.001, 0.001, 0.001, 0.001, 0.001, 0.001, 0.001, 0.000, 0.002,
+            0.006, 0.016, 0.044, 0.101, 0.173, 0.251, 0.348, 0.454, 0.596, 0.728,
+            0.861, 0.949, 0.991, 0.999, 0.982, 0.956, 0.926, 0.890, 0.850, 0.804,
+            0.755, 0.706, 0.658, 0.617, 0.582, 0.549, 0.519, 0.492, 0.468, 0.448,
+            0.429, 0.410, 0.389, 0.364, 0.337, 0.306, 0.271, 0.238, 0.212, 0.191,
+            0.171, 0.153, 0.137, 0.123, 0.109, 0.098, 0.087, 0.077, 0.068, 0.059,
+            0.056
+        };
+        G4double pvtRIndex[nPVT];
+        for (int i = 0; i < nPVT; i++) {
+            pvtRIndex[i] = 1.58;
+        }
+        G4double pvtAbs[nPVT];
+        for (int i = 0; i < nPVT; i++) {
+            pvtAbs[i] = 380.*cm;
+        }
+        setupMaterialProperties(scintMaterialPVT, pvtEnergy, pvtRIndex, pvtAbs, nPVT, pvtScint);
+        scintMaterialPVT->GetIonisation()->SetBirksConstant(0.126 * mm/MeV);
+        G4cout << "MaterialBuilder: ScintillatorPVT material created" << G4endl;
+    }
+
     // Scintillator (GS20)
-    buildGS20();
-    G4cout << "MaterialBuilder: ScintillatorGS20 material created" << G4endl;
-    
+    if (!G4Material::GetMaterial("ScintillatorGS20", false)) {
+        buildGS20();
+        G4cout << "MaterialBuilder: ScintillatorGS20 material created" << G4endl;
+    }
+
     // Scintillator (LYSO)
-    buildLYSO();
-    G4cout << "MaterialBuilder: ScintillatorLYSO material created" << G4endl;
-    
+    if (!G4Material::GetMaterial("ScintillatorLYSO", false)) {
+        buildLYSO();
+        G4cout << "MaterialBuilder: ScintillatorLYSO material created" << G4endl;
+    }
+
+    // Graphite
+    if (!G4Material::GetMaterial("G4_GRAPHITE", false)) {
+        sampleMaterial = nist->FindOrBuildMaterial("G4_GRAPHITE");
+        G4cout << "MaterialBuilder: Graphite material created" << G4endl;
+    }
+
+    // Quartz
+    if (!G4Material::GetMaterial("Quartz", false)) {
+        windowMaterial = new G4Material("Quartz", 2.20 * g/cm3, 2);
+        windowMaterial->AddElement(nist->FindOrBuildElement("Si"), 1);
+        windowMaterial->AddElement(nist->FindOrBuildElement("O"), 2);
+        G4double quartzEnergy[2] = {1.0 * eV, 20.0 * eV};
+        G4double quartzRIndex[2] = {1.59, 1.59};
+        G4double quartzAbs[2] = {160.0 * cm, 160.0 * cm};
+        setupMaterialProperties(windowMaterial, quartzEnergy, quartzRIndex, quartzAbs, 2);
+        G4cout << "MaterialBuilder: Quartz material created" << G4endl;
+    }
+
+    // Absorber
+    if (!G4Material::GetMaterial("Absorber", false)) {
+        absorberMaterial = new G4Material("Absorber", 1.290 * mg/cm3, 2);
+        absorberMaterial->AddElement(nist->FindOrBuildElement("N"), 70 * perCent);
+        absorberMaterial->AddElement(nist->FindOrBuildElement("O"), 30 * perCent);
+        G4double blackEnergy[2] = {1.0 * eV, 20.0 * eV};
+        G4double blackRIndex[2] = {1.58, 1.58};
+        G4double blackAbs[2] = {0.0 * mm, 0.0 * mm};
+        setupMaterialProperties(absorberMaterial, blackEnergy, blackRIndex, blackAbs, 2);
+        G4cout << "MaterialBuilder: Absorber material created" << G4endl;
+    }
+
     // Set default scintillator
     scintMaterial = scintMaterialPVT;
     G4cout << "MaterialBuilder: Default scintillator set to ScintillatorPVT" << G4endl;
-    
-    // Graphite
-    sampleMaterial = nist->FindOrBuildMaterial("G4_GRAPHITE");
-    G4cout << "MaterialBuilder: Graphite material created" << G4endl;
-    
-    // Quartz Window
-    windowMaterial = new G4Material("Quartz", 2.20 * g/cm3, 2);
-    windowMaterial->AddElement(Si, 1);
-    windowMaterial->AddElement(O, 2);
-    
-    G4double quartzEnergy[2] = {1.0 * eV, 20.0 * eV};
-    G4double quartzRIndex[2] = {1.59, 1.59};
-    G4double quartzAbs[2] = {160.0 * cm, 160.0 * cm};
-    setupMaterialProperties(windowMaterial, quartzEnergy, quartzRIndex, quartzAbs, 2);
-    G4cout << "MaterialBuilder: Quartz material created" << G4endl;
-    
-    // Black Material
-    absorberMaterial = new G4Material("Absorber", 1.290 * mg/cm3, 2);
-    absorberMaterial->AddElement(N, 70 * perCent);
-    absorberMaterial->AddElement(O, 30 * perCent);
-    
-    G4double blackEnergy[2] = {1.0 * eV, 20.0 * eV};
-    G4double blackRIndex[2] = {1.58, 1.58};
-    G4double blackAbs[2] = {0.0 * mm, 0.0 * mm};
-    setupMaterialProperties(absorberMaterial, blackEnergy, blackRIndex, blackAbs, 2);
-    G4cout << "MaterialBuilder: Absorber material created" << G4endl;
 }
 
 void MaterialBuilder::buildGS20() {
@@ -205,58 +211,57 @@ void MaterialBuilder::buildGS20() {
 void MaterialBuilder::buildLYSO() {
     G4NistManager* nist = G4NistManager::Instance();
 
-    // Define LYSO material
-    G4String mat_name = "ScintillatorLYSO";
-    scintMaterialLYSO = new G4Material(mat_name, 7.1 * g/cm3, 4);
-    scintMaterialLYSO->AddElement(nist->FindOrBuildElement("Lu"), 71.45 * perCent);
-    scintMaterialLYSO->AddElement(nist->FindOrBuildElement("Y"), 4.03 * perCent);
-    scintMaterialLYSO->AddElement(nist->FindOrBuildElement("Si"), 6.37 * perCent);
-    scintMaterialLYSO->AddElement(nist->FindOrBuildElement("O"), 18.15 * perCent);
+    if (!G4Material::GetMaterial("ScintillatorLYSO", false)) {
+        scintMaterialLYSO = new G4Material("ScintillatorLYSO", 7.1 * g/cm3, 4);
+        scintMaterialLYSO->AddElement(nist->FindOrBuildElement("Lu"), 71.45 * perCent);
+        scintMaterialLYSO->AddElement(nist->FindOrBuildElement("Y"), 4.03 * perCent);
+        scintMaterialLYSO->AddElement(nist->FindOrBuildElement("Si"), 6.37 * perCent);
+        scintMaterialLYSO->AddElement(nist->FindOrBuildElement("O"), 18.15 * perCent);
 
-    // Optical properties
-    G4MaterialPropertiesTable* pt = new G4MaterialPropertiesTable();
-    pt->AddConstProperty("SCINTILLATIONYIELD", 32000. / MeV);
-    pt->AddConstProperty("RESOLUTIONSCALE", 1.0);
-    pt->AddConstProperty("FASTTIMECONSTANT", 41. * ns);
-    pt->AddConstProperty("SCINTILLATIONRISETIME", 0.09 * ns);
-    pt->AddConstProperty("YIELDRATIO", 1.0);
+        G4MaterialPropertiesTable* pt = new G4MaterialPropertiesTable();
+        pt->AddConstProperty("SCINTILLATIONYIELD", 32000. / MeV);
+        pt->AddConstProperty("RESOLUTIONSCALE", 1.0);
+        pt->AddConstProperty("FASTTIMECONSTANT", 41. * ns);
+        pt->AddConstProperty("SCINTILLATIONRISETIME", 0.09 * ns);
+        pt->AddConstProperty("YIELDRATIO", 1.0);
 
-    const int nLYSO = 77;
-    G4double lysoEnergy[nLYSO] = {
-        3.542*eV, 3.503*eV, 3.464*eV, 3.426*eV, 3.390*eV, 3.353*eV, 3.318*eV, 3.283*eV, 3.249*eV, 3.216*eV,
-        3.183*eV, 3.151*eV, 3.120*eV, 3.089*eV, 3.059*eV, 3.030*eV, 3.001*eV, 2.972*eV, 2.945*eV, 2.917*eV,
-        2.890*eV, 2.864*eV, 2.838*eV, 2.813*eV, 2.788*eV, 2.763*eV, 2.739*eV, 2.716*eV, 2.692*eV, 2.669*eV,
-        2.647*eV, 2.625*eV, 2.603*eV, 2.582*eV, 2.561*eV, 2.540*eV, 2.519*eV, 2.499*eV, 2.480*eV, 2.460*eV,
-        2.441*eV, 2.422*eV, 2.404*eV, 2.386*eV, 2.368*eV, 2.350*eV, 2.332*eV, 2.315*eV, 2.298*eV, 2.282*eV,
-        2.265*eV, 2.249*eV, 2.233*eV, 2.217*eV, 2.202*eV, 2.186*eV, 2.171*eV, 2.156*eV, 2.141*eV, 2.127*eV,
-        2.113*eV, 2.099*eV, 2.085*eV, 2.071*eV, 2.057*eV, 2.044*eV, 2.031*eV, 2.018*eV, 1.992*eV, 1.980*eV,
-        1.967*eV, 1.955*eV, 1.943*eV, 1.931*eV, 1.919*eV, 1.907*eV, 1.907*eV
-    };
-    G4double lysoScint[nLYSO] = {
-        0.000, 0.000, 0.000, 0.003, 0.006, 0.010, 0.025, 0.054, 0.089, 0.146,
-        0.238, 0.295, 0.378, 0.492, 0.575, 0.679, 0.743, 0.819, 0.873, 0.921,
-        0.959, 0.987, 0.997, 1.000, 0.994, 0.984, 0.968, 0.949, 0.921, 0.889,
-        0.854, 0.819, 0.787, 0.749, 0.708, 0.676, 0.632, 0.590, 0.559, 0.530,
-        0.505, 0.473, 0.444, 0.410, 0.378, 0.349, 0.321, 0.295, 0.270, 0.251,
-        0.232, 0.213, 0.190, 0.168, 0.152, 0.140, 0.124, 0.111, 0.098, 0.089,
-        0.076, 0.067, 0.063, 0.057, 0.048, 0.041, 0.032, 0.029, 0.025, 0.019,
-        0.016, 0.013, 0.013, 0.010, 0.006, 0.006, 0.006
-    };
-    G4double lysoRIndex[nLYSO];
-    for (int i = 0; i < nLYSO; i++) {
-        lysoRIndex[i] = 1.81;
+        const int nLYSO = 77;
+        G4double lysoEnergy[nLYSO] = {
+            3.542*eV, 3.503*eV, 3.464*eV, 3.426*eV, 3.390*eV, 3.353*eV, 3.318*eV, 3.283*eV, 3.249*eV, 3.216*eV,
+            3.183*eV, 3.151*eV, 3.120*eV, 3.089*eV, 3.059*eV, 3.030*eV, 3.001*eV, 2.972*eV, 2.945*eV, 2.917*eV,
+            2.890*eV, 2.864*eV, 2.838*eV, 2.813*eV, 2.788*eV, 2.763*eV, 2.739*eV, 2.716*eV, 2.692*eV, 2.669*eV,
+            2.647*eV, 2.625*eV, 2.603*eV, 2.582*eV, 2.561*eV, 2.540*eV, 2.519*eV, 2.499*eV, 2.480*eV, 2.460*eV,
+            2.441*eV, 2.422*eV, 2.404*eV, 2.386*eV, 2.368*eV, 2.350*eV, 2.332*eV, 2.315*eV, 2.298*eV, 2.282*eV,
+            2.265*eV, 2.249*eV, 2.233*eV, 2.217*eV, 2.202*eV, 2.186*eV, 2.171*eV, 2.156*eV, 2.141*eV, 2.127*eV,
+            2.113*eV, 2.099*eV, 2.085*eV, 2.071*eV, 2.057*eV, 2.044*eV, 2.031*eV, 2.018*eV, 1.992*eV, 1.980*eV,
+            1.967*eV, 1.955*eV, 1.943*eV, 1.931*eV, 1.919*eV, 1.907*eV, 1.907*eV
+        };
+        G4double lysoScint[nLYSO] = {
+            0.000, 0.000, 0.000, 0.003, 0.006, 0.010, 0.025, 0.054, 0.089, 0.146,
+            0.238, 0.295, 0.378, 0.492, 0.575, 0.679, 0.743, 0.819, 0.873, 0.921,
+            0.959, 0.987, 0.997, 1.000, 0.994, 0.984, 0.968, 0.949, 0.921, 0.889,
+            0.854, 0.819, 0.787, 0.749, 0.708, 0.676, 0.632, 0.590, 0.559, 0.530,
+            0.505, 0.473, 0.444, 0.410, 0.378, 0.349, 0.321, 0.295, 0.270, 0.251,
+            0.232, 0.213, 0.190, 0.168, 0.152, 0.140, 0.124, 0.111, 0.098, 0.089,
+            0.076, 0.067, 0.063, 0.057, 0.048, 0.041, 0.032, 0.029, 0.025, 0.019,
+            0.016, 0.013, 0.013, 0.010, 0.006, 0.006, 0.006
+        };
+        G4double lysoRIndex[nLYSO];
+        for (int i = 0; i < nLYSO; i++) {
+            lysoRIndex[i] = 1.81;
+        }
+        G4double lysoAbs[nLYSO];
+        for (int i = 0; i < nLYSO; i++) {
+            lysoAbs[i] = 41.3 * cm;
+        }
+        pt->AddProperty("FASTCOMPONENT", lysoEnergy, lysoScint, nLYSO);
+        pt->AddProperty("RINDEX", lysoEnergy, lysoRIndex, nLYSO);
+        pt->AddProperty("ABSLENGTH", lysoEnergy, lysoAbs, nLYSO);
+        
+        scintMaterialLYSO->SetMaterialPropertiesTable(pt);
+        scintMaterialLYSO->GetIonisation()->SetBirksConstant(0.023 * mm/MeV);
+        G4cout << "MaterialBuilder: LYSO optical properties set" << G4endl;
     }
-    G4double lysoAbs[nLYSO];
-    for (int i = 0; i < nLYSO; i++) {
-        lysoAbs[i] = 41.3 * cm;
-    }
-    pt->AddProperty("FASTCOMPONENT", lysoEnergy, lysoScint, nLYSO);
-    pt->AddProperty("RINDEX", lysoEnergy, lysoRIndex, nLYSO);
-    pt->AddProperty("ABSLENGTH", lysoEnergy, lysoAbs, nLYSO);
-    
-    scintMaterialLYSO->SetMaterialPropertiesTable(pt);
-    scintMaterialLYSO->GetIonisation()->SetBirksConstant(0.023 * mm/MeV);
-    G4cout << "MaterialBuilder: LYSO optical properties set" << G4endl;
 }
 
 void MaterialBuilder::setScintillatorType(ScintType type) {
