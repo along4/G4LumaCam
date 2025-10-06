@@ -2,21 +2,20 @@
 #define GEOMETRY_CONSTRUCTOR_HH
 
 #include "G4VUserDetectorConstruction.hh"
-#include "G4LogicalVolume.hh"
-#include "G4VPhysicalVolume.hh"
 #include "MaterialBuilder.hh"
-#include "LumaCamMessenger.hh"
-#include "ParticleGenerator.hh"
 #include "EventProcessor.hh"
+#include "ParticleGenerator.hh"
+#include "LumaCamMessenger.hh"
+#include "G4LogicalVolume.hh"
 
 class GeometryConstructor : public G4VUserDetectorConstruction {
 public:
     GeometryConstructor(ParticleGenerator* gen);
-    ~GeometryConstructor();
+    virtual ~GeometryConstructor();
 
-    G4VPhysicalVolume* Construct() override;
-    void UpdateSampleGeometry(G4double thickness, G4Material* material);
+    virtual G4VPhysicalVolume* Construct();
     void UpdateScintillatorGeometry(G4double thickness);
+    void UpdateSampleGeometry(G4double thickness, G4Material* material);
 
 private:
     G4VPhysicalVolume* createWorld();
@@ -27,6 +26,8 @@ private:
     EventProcessor* eventProc;
     G4LogicalVolume* sampleLog;
     G4LogicalVolume* scintLog;
+    G4LogicalVolume* blackSideLog; // Added for coating side boxes
+    G4LogicalVolume* blackBackLog; // Added for coating back box
     LumaCamMessenger* lumaCamMessenger;
 };
 

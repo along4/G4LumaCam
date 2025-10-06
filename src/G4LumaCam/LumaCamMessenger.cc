@@ -12,7 +12,7 @@ LumaCamMessenger::LumaCamMessenger(G4String* filename, G4LogicalVolume* sampleLo
     : csvFilename(filename), sampleLog(sampleLogVolume), scintLog(scintLogVolume),
       batchSize(batch), matBuilder(new MaterialBuilder()) {
     
-    messenger = new G4GenericMessenger(this, "/lumacam/", "lumacam control commands");
+    messenger = new G4GenericMessenger(this, "/lumacam/", "LumaCam control commands");
 
     G4cout << "LumaCamMessenger: Initializing with csvFilename=" 
            << (csvFilename ? *csvFilename : "null")
@@ -20,6 +20,7 @@ LumaCamMessenger::LumaCamMessenger(G4String* filename, G4LogicalVolume* sampleLo
            << ", scintLog=" << (scintLog ? scintLog->GetName() : "null")
            << ", batchSize=" << batchSize << G4endl;
 
+    // CSV filename
     if (csvFilename) {
         messenger->DeclareProperty("csvFilename", *csvFilename)
             .SetGuidance("Set the CSV filename")
@@ -27,52 +28,55 @@ LumaCamMessenger::LumaCamMessenger(G4String* filename, G4LogicalVolume* sampleLo
             .SetDefaultValue("sim_data.csv");
     }
 
+    // Sample material
     messenger->DeclareMethod("sampleMaterial", &LumaCamMessenger::SetMaterial)
         .SetGuidance("Set the material of the sample_log")
         .SetParameterName("material", false)
         .SetDefaultValue("G4_GRAPHITE");
 
+    // Scintillator material
     messenger->DeclareMethod("scintMaterial", &LumaCamMessenger::SetScintillatorMaterial)
-        .SetGuidance("Set the scintillator material (EJ200, GS20 or LYSO)")
+        .SetGuidance("Set the scintillator material (EJ200, GS20, or LYSO)")
         .SetParameterName("material", false)
         .SetDefaultValue("EJ200");
 
-    if (!scintLog) {
-            G4cerr << "ERROR: scintLog is nullptr, cannot set scintillator material to "<< G4endl;
-            return;
-        }
-    
-
-    messenger->DeclareMethod("ScintThickness", &LumaCamMessenger::SetScintThickness)
+    // Scintillator thickness
+    messenger->DeclareMethod("scintillatorThickness", &LumaCamMessenger::SetScintThickness)
         .SetGuidance("Set the scintillator thickness in cm")
         .SetParameterName("thickness", false)
         .SetDefaultValue("1.0");
 
-    messenger->DeclareMethod("SampleThickness", &LumaCamMessenger::SetSampleThickness)
+    // Sample thickness
+    messenger->DeclareMethod("sampleThickness", &LumaCamMessenger::SetSampleThickness)
         .SetGuidance("Set the sample thickness in cm")
         .SetParameterName("thickness", false)
         .SetDefaultValue("3.75");
 
+    // Batch size
     messenger->DeclareProperty("batchSize", batchSize)
         .SetGuidance("Set the number of events per CSV file (0 for single file)")
         .SetParameterName("size", false)
         .SetDefaultValue("10000");
 
+    // Minimum emission time
     messenger->DeclarePropertyWithUnit("tmin", "ns", Sim::TMIN)
         .SetGuidance("Set minimum emission time (ns)")
         .SetParameterName("tmin", false)
         .SetDefaultValue("0.0");
 
+    // Maximum emission time
     messenger->DeclarePropertyWithUnit("tmax", "ns", Sim::TMAX)
         .SetGuidance("Set maximum emission time (ns). If > tmin, uniform distribution is applied.")
         .SetParameterName("tmax", false)
         .SetDefaultValue("0.0");
 
+    // Neutron flux
     messenger->DeclareMethod("flux", &LumaCamMessenger::SetFlux)
         .SetGuidance("Set neutron flux in n/cm²/s")
         .SetParameterName("flux", false)
         .SetDefaultValue("0.0");
 
+    // Pulse frequency
     messenger->DeclareMethod("freq", &LumaCamMessenger::SetFrequency)
         .SetGuidance("Set pulse frequency in Hz")
         .SetParameterName("freq", false)
@@ -116,6 +120,7 @@ void LumaCamMessenger::SetMaterial(const G4String& materialName) {
                 G4RunManager::GetRunManager()->GetUserDetectorConstruction()));
         if (geom) {
             geom->UpdateSampleGeometry(Sim::SAMPLE_THICKNESS, material);
+            G4RunManager::GetRunManager()->GeometryHasBeenModified();
             G4cout << "Sample material set to: " << materialName 
                    << ", Confirmed material: " 
                    << sampleLog->GetMaterial()->GetName() << G4endl;
@@ -158,46 +163,56 @@ void LumaCamMessenger::SetScintillatorMaterial(const G4String& materialName) {
 }
 
 void LumaCamMessenger::SetScintThickness(G4double thickness) {
+    if (thickness <= 0) {
+        G4cerr << "ERROR: Scintillator thickness must be positive!" << G4endl;
+        return;
+    }
     G4cout << "Setting scintillator thickness to: " << thickness << " cm" << G4endl;
-    Sim::SetScintThickness(thickness * cm); // Use full thickness to match SimConfig
+    Sim::SetScintThickness(thickness * cm);
     GeometryConstructor* geom = dynamic_cast<GeometryConstructor*>(
         const_cast<G4VUserDetectorConstruction*>(
             G4RunManager::GetRunManager()->GetUserDetectorConstruction()));
-    if (geom) {
+    if (geom && scintLog) {
         geom->UpdateScintillatorGeometry(Sim::SCINT_THICKNESS);
+        G4RunManager::GetRunManager()->GeometryHasBeenModified();
     } else {
-        G4cerr << "ERROR: Failed to cast to GeometryConstructor!" << G4endl;
+        G4cerr << "ERROR: Failed to cast to GeometryConstructor or scintLog is nullptr!" << G4endl;
     }
 }
 
 void LumaCamMessenger::SetSampleThickness(G4double thickness) {
+    if (thickness <= 0) {
+        G4cerr << "ERROR: Sample thickness must be positive!" << G4endl;
+        return;
+    }
     G4cout << "Setting sample thickness to: " << thickness << " cm" << G4endl;
-    Sim::SetSampleThickness(thickness * cm); // Use full thickness to match SimConfig
+    Sim::SetSampleThickness(thickness * cm);
     GeometryConstructor* geom = dynamic_cast<GeometryConstructor*>(
         const_cast<G4VUserDetectorConstruction*>(
             G4RunManager::GetRunManager()->GetUserDetectorConstruction()));
     if (geom && sampleLog) {
         G4Material* material = sampleLog->GetMaterial();
         geom->UpdateSampleGeometry(Sim::SAMPLE_THICKNESS, material);
+        G4RunManager::GetRunManager()->GeometryHasBeenModified();
     } else {
         G4cerr << "ERROR: Failed to cast to GeometryConstructor or sampleLog is nullptr!" << G4endl;
     }
 }
 
 void LumaCamMessenger::SetFlux(G4double flux) {
-    if (flux >= 0) {
-        Sim::FLUX = flux;
-        G4cout << "Neutron flux set to: " << flux << " n/cm²/s" << G4endl;
-    } else {
+    if (flux < 0) {
         G4cerr << "ERROR: Neutron flux must be non-negative!" << G4endl;
+        return;
     }
+    Sim::FLUX = flux;
+    G4cout << "Neutron flux set to: " << flux << " n/cm²/s" << G4endl;
 }
 
 void LumaCamMessenger::SetFrequency(G4double freq) {
-    if (freq >= 0) {
-        Sim::FREQ = freq;
-        G4cout << "Pulse frequency set to: " << freq / 1000 << " kHz" << G4endl;
-    } else {
+    if (freq < 0) {
         G4cerr << "ERROR: Pulse frequency must be non-negative!" << G4endl;
+        return;
     }
+    Sim::FREQ = freq;
+    G4cout << "Pulse frequency set to: " << freq / 1000 << " kHz" << G4endl;
 }

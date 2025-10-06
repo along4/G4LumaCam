@@ -10,9 +10,9 @@ namespace Sim {
     G4int batchSize = 0;
     std::default_random_engine randomEngine(time(nullptr));
     G4double WORLD_SIZE = 50.0 * m;
-    G4double SCINT_THICKNESS = 1.0 * cm;
-    G4double SAMPLE_THICKNESS = 3.75 * cm;
-    G4double SCINT_SIZE = 6.0 * cm;
+    G4double SCINT_THICKNESS = 2.0 * cm;
+    G4double SAMPLE_THICKNESS = 7.5 * cm;
+    G4double SCINT_SIZE = 12.0 * cm;
     G4double COATING_THICKNESS = 0.01 * cm;
     G4double TMIN = 0.0 * ns;
     G4double TMAX = 0.0 * ns;

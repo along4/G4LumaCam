@@ -16,7 +16,8 @@
 #include "G4RunManager.hh"
 
 GeometryConstructor::GeometryConstructor(ParticleGenerator* gen) 
-    : matBuilder(new MaterialBuilder()), eventProc(nullptr), sampleLog(nullptr), scintLog(nullptr), lumaCamMessenger(nullptr) {
+    : matBuilder(new MaterialBuilder()), eventProc(nullptr), sampleLog(nullptr), scintLog(nullptr), lumaCamMessenger(nullptr),
+      blackSideLog(nullptr), blackBackLog(nullptr) {
     G4cout << "GeometryConstructor: Initializing..." << G4endl;
     matBuilder->DefineMaterials();
     eventProc = new EventProcessor("EventProcessor", gen);
@@ -63,7 +64,7 @@ G4VPhysicalVolume* GeometryConstructor::Construct() {
     G4VisAttributes* sampleVisAttributes = new G4VisAttributes(G4Colour(0.8, 0.2, 0.2, 0.5));
     sampleVisAttributes->SetForceSolid(true);
     sampleVisAttributes->SetVisibility(true);
-    new G4PVPlacement(nullptr, G4ThreeVector(0, 0, -Sim::SCINT_THICKNESS - Sim::COATING_THICKNESS), 
+    new G4PVPlacement(nullptr, G4ThreeVector(0, 0, -Sim::SCINT_THICKNESS - Sim::COATING_THICKNESS - Sim::SAMPLE_THICKNESS/2), 
                       sampleLog, "SamplePhys", worldLog, false, 0, true);
     sampleLog->SetVisAttributes(sampleVisAttributes);
 
@@ -73,7 +74,7 @@ G4VPhysicalVolume* GeometryConstructor::Construct() {
         G4cout << "GeometryConstructor: Set sampleLog in LumaCamMessenger" << G4endl;
     }
 
-    // Build other components (including scintillator)
+    // Build other components (including scintillator and coating)
     addComponents(lShapeLog);
 
     // Set scintLog in LumaCamMessenger after addComponents
@@ -93,10 +94,13 @@ void GeometryConstructor::UpdateScintillatorGeometry(G4double thickness) {
     G4cout << "GeometryConstructor: Updating scintillator geometry with thickness: " 
            << thickness/cm << " cm" << G4endl;
     
+    G4PhysicalVolumeStore* physVolStore = G4PhysicalVolumeStore::GetInstance();
+
+    // Update scintillator
     if (scintLog) {
         G4Box* scintSolid = dynamic_cast<G4Box*>(scintLog->GetSolid());
         if (scintSolid) {
-            scintSolid->SetZHalfLength(thickness/2); // Use half-thickness
+            scintSolid->SetZHalfLength(thickness/2); // Update scintillator thickness
             G4cout << "GeometryConstructor: Scintillator solid updated" << G4endl;
         } else {
             G4cerr << "ERROR: scintLog has no valid G4Box solid!" << G4endl;
@@ -105,13 +109,78 @@ void GeometryConstructor::UpdateScintillatorGeometry(G4double thickness) {
         G4cerr << "ERROR: scintLog is nullptr!" << G4endl;
     }
 
-    G4PhysicalVolumeStore* physVolStore = G4PhysicalVolumeStore::GetInstance();
     G4VPhysicalVolume* scintPhys = physVolStore->GetVolume("ScintPhys", false);
     if (scintPhys) {
         scintPhys->SetTranslation(G4ThreeVector(0, 0, thickness/2));
         G4cout << "GeometryConstructor: Scintillator placement updated" << G4endl;
     } else {
         G4cerr << "ERROR: ScintPhys not found in volume store!" << G4endl;
+    }
+
+    // Update coating (black tape side and back boxes)
+    if (blackSideLog) {
+        G4Box* blackSideSolid = dynamic_cast<G4Box*>(blackSideLog->GetSolid());
+        if (blackSideSolid) {
+            blackSideSolid->SetZHalfLength(thickness/2); // Update side coating thickness
+            G4cout << "GeometryConstructor: Black tape side solid updated" << G4endl;
+        } else {
+            G4cerr << "ERROR: blackSideLog has no valid G4Box solid!" << G4endl;
+        }
+    } else {
+        G4cerr << "ERROR: blackSideLog is nullptr!" << G4endl;
+    }
+
+    // Update side coating placements
+    G4VPhysicalVolume* blackSideTop = physVolStore->GetVolume("black_side_top", false);
+    G4VPhysicalVolume* blackSideBottom = physVolStore->GetVolume("black_side_bottom", false);
+    G4VPhysicalVolume* blackSideLeft = physVolStore->GetVolume("black_side_left", false);
+    G4VPhysicalVolume* blackSideRight = physVolStore->GetVolume("black_side_right", false);
+    if (blackSideTop && blackSideBottom && blackSideLeft && blackSideRight) {
+        blackSideTop->SetTranslation(G4ThreeVector(0, Sim::SCINT_SIZE/2 + Sim::COATING_THICKNESS/2, thickness/2));
+        blackSideBottom->SetTranslation(G4ThreeVector(0, -(Sim::SCINT_SIZE/2 + Sim::COATING_THICKNESS/2), thickness/2));
+        blackSideLeft->SetTranslation(G4ThreeVector(-(Sim::SCINT_SIZE/2 + Sim::COATING_THICKNESS/2), 0, thickness/2));
+        blackSideRight->SetTranslation(G4ThreeVector(Sim::SCINT_SIZE/2 + Sim::COATING_THICKNESS/2, 0, thickness/2));
+        G4cout << "GeometryConstructor: Black tape side placements updated" << G4endl;
+    } else {
+        G4cerr << "ERROR: One or more black tape side physical volumes not found!" << G4endl;
+    }
+
+    if (blackBackLog) {
+        G4Box* blackBackSolid = dynamic_cast<G4Box*>(blackBackLog->GetSolid());
+        if (blackBackSolid) {
+            // Back box dimensions remain the same (covers XY plane)
+            G4cout << "GeometryConstructor: Black tape back solid verified" << G4endl;
+        } else {
+            G4cerr << "ERROR: blackBackLog has no valid G4Box solid!" << G4endl;
+        }
+    } else {
+        G4cerr << "ERROR: blackBackLog is nullptr!" << G4endl;
+    }
+
+    G4VPhysicalVolume* blackBack = physVolStore->GetVolume("black_back", false);
+    if (blackBack) {
+        blackBack->SetTranslation(G4ThreeVector(0, 0, -Sim::COATING_THICKNESS/2));
+        G4cout << "GeometryConstructor: Black tape back placement updated" << G4endl;
+    } else {
+        G4cerr << "ERROR: black_back not found in volume store!" << G4endl;
+    }
+
+    // Update sample position to maintain alignment
+    G4VPhysicalVolume* samplePhys = physVolStore->GetVolume("SamplePhys", false);
+    if (samplePhys) {
+        samplePhys->SetTranslation(G4ThreeVector(0, 0, -thickness - Sim::COATING_THICKNESS - Sim::SAMPLE_THICKNESS/2));
+        G4cout << "GeometryConstructor: Sample placement updated" << G4endl;
+    } else {
+        G4cerr << "ERROR: SamplePhys not found in volume store!" << G4endl;
+    }
+
+    // Update monitor position
+    G4VPhysicalVolume* monitorPhys = physVolStore->GetVolume("MonitorPhys", false);
+    if (monitorPhys) {
+        monitorPhys->SetTranslation(G4ThreeVector(0, 0, thickness + 0.5*um));
+        G4cout << "GeometryConstructor: Monitor placement updated" << G4endl;
+    } else {
+        G4cerr << "ERROR: MonitorPhys not found in volume store!" << G4endl;
     }
 
     G4RunManager::GetRunManager()->GeometryHasBeenModified();
@@ -121,10 +190,12 @@ void GeometryConstructor::UpdateSampleGeometry(G4double thickness, G4Material* m
     G4cout << "GeometryConstructor: Updating sample geometry with thickness: " 
            << thickness/cm << " cm, material: " << (material ? material->GetName() : "null") << G4endl;
     
+    G4PhysicalVolumeStore* physVolStore = G4PhysicalVolumeStore::GetInstance();
+    
     if (sampleLog) {
         G4Box* sampleSolid = dynamic_cast<G4Box*>(sampleLog->GetSolid());
         if (sampleSolid) {
-            sampleSolid->SetZHalfLength(thickness/2); // Use half-thickness
+            sampleSolid->SetZHalfLength(thickness/2); // Update sample thickness
             sampleLog->SetMaterial(material);
             G4cout << "GeometryConstructor: Sample solid and material updated" << G4endl;
         } else {
@@ -134,10 +205,9 @@ void GeometryConstructor::UpdateSampleGeometry(G4double thickness, G4Material* m
         G4cerr << "ERROR: sampleLog is nullptr!" << G4endl;
     }
 
-    G4PhysicalVolumeStore* physVolStore = G4PhysicalVolumeStore::GetInstance();
     G4VPhysicalVolume* samplePhys = physVolStore->GetVolume("SamplePhys", false);
     if (samplePhys) {
-        samplePhys->SetTranslation(G4ThreeVector(0, 0, -Sim::SCINT_THICKNESS - Sim::COATING_THICKNESS));
+        samplePhys->SetTranslation(G4ThreeVector(0, 0, -Sim::SCINT_THICKNESS - Sim::COATING_THICKNESS - thickness/2));
         G4cout << "GeometryConstructor: Sample placement updated" << G4endl;
     } else {
         G4cerr << "ERROR: SamplePhys not found in volume store!" << G4endl;
@@ -148,7 +218,8 @@ void GeometryConstructor::UpdateSampleGeometry(G4double thickness, G4Material* m
 
 G4VPhysicalVolume* GeometryConstructor::createWorld() {
     G4cout << "GeometryConstructor: Creating world volume..." << G4endl;
-    G4Box* worldSolid = new G4Box("WorldSolid", Sim::WORLD_SIZE/2, Sim::WORLD_SIZE/2, Sim::WORLD_SIZE/2);
+    G4double worldZSize = std::max(Sim::WORLD_SIZE, Sim::SCINT_THICKNESS + Sim::SAMPLE_THICKNESS + Sim::COATING_THICKNESS + 50*cm);
+    G4Box* worldSolid = new G4Box("WorldSolid", Sim::WORLD_SIZE/2, Sim::WORLD_SIZE/2, worldZSize/2);
     G4LogicalVolume* worldLog = new G4LogicalVolume(worldSolid, matBuilder->getVacuum(), "WorldLog");
     G4VPhysicalVolume* worldPhys = new G4PVPlacement(nullptr, G4ThreeVector(), worldLog, "World", nullptr, false, 0, true);
     
@@ -230,30 +301,31 @@ void GeometryConstructor::addComponents(G4LogicalVolume* lShapeLog) {
     new G4LogicalSkinSurface("ScintSkinSurface", scintLog, scintSurf);
 
     // Black tape side boxes
-    G4Box* black_side_box = new G4Box("black_side_box", Sim::SCINT_SIZE/2, Sim::COATING_THICKNESS/2, Sim::SCINT_THICKNESS/2);
-    G4LogicalVolume* black_side_log = new G4LogicalVolume(black_side_box, matBuilder->getVacuum(), "black_side_log");
-    black_side_log->SetVisAttributes(new G4VisAttributes(G4Colour(0.1, 0.1, 0.1)));
+    G4Box* blackSideSolid = new G4Box("black_side_box", Sim::SCINT_SIZE/2, Sim::COATING_THICKNESS/2, Sim::SCINT_THICKNESS/2);
+    blackSideLog = new G4LogicalVolume(blackSideSolid, matBuilder->getVacuum(), "black_side_log");
+    blackSideLog->SetVisAttributes(new G4VisAttributes(G4Colour(0.1, 0.1, 0.1)));
 
     G4ThreeVector placement_top(0, Sim::SCINT_SIZE/2 + Sim::COATING_THICKNESS/2, Sim::SCINT_THICKNESS/2);
-    new G4PVPlacement(nullptr, placement_top, black_side_log, "black_side_top", lShapeLog, false, 0, true);
+    new G4PVPlacement(nullptr, placement_top, blackSideLog, "black_side_top", lShapeLog, false, 0, true);
 
     G4ThreeVector placement_bottom(0, -(Sim::SCINT_SIZE/2 + Sim::COATING_THICKNESS/2), Sim::SCINT_THICKNESS/2);
-    new G4PVPlacement(nullptr, placement_bottom, black_side_log, "black_side_bottom", lShapeLog, false, 1, true);
+    new G4PVPlacement(nullptr, placement_bottom, blackSideLog, "black_side_bottom", lShapeLog, false, 1, true);
 
     G4RotationMatrix* sideRotation = new G4RotationMatrix();
     sideRotation->rotateZ(90.*deg);
 
     G4ThreeVector placement_left(-(Sim::SCINT_SIZE/2 + Sim::COATING_THICKNESS/2), 0, Sim::SCINT_THICKNESS/2);
-    new G4PVPlacement(sideRotation, placement_left, black_side_log, "black_side_left", lShapeLog, false, 2, true);
+    new G4PVPlacement(sideRotation, placement_left, blackSideLog, "black_side_left", lShapeLog, false, 2, true);
 
     G4ThreeVector placement_right(Sim::SCINT_SIZE/2 + Sim::COATING_THICKNESS/2, 0, Sim::SCINT_THICKNESS/2);
-    new G4PVPlacement(sideRotation, placement_right, black_side_log, "black_side_right", lShapeLog, false, 3, true);
+    new G4PVPlacement(sideRotation, placement_right, blackSideLog, "black_side_right", lShapeLog, false, 3, true);
 
-    G4Box* black_back_box = new G4Box("black_back_box", Sim::SCINT_SIZE/2, Sim::SCINT_SIZE/2, Sim::COATING_THICKNESS/2);
-    G4LogicalVolume* black_back_log = new G4LogicalVolume(black_back_box, matBuilder->getVacuum(), "black_back_log");
-    black_back_log->SetVisAttributes(new G4VisAttributes(G4Colour(0.1, 0.1, 0.1)));
+    // Black tape back box
+    G4Box* blackBackSolid = new G4Box("black_back_box", Sim::SCINT_SIZE/2, Sim::SCINT_SIZE/2, Sim::COATING_THICKNESS/2);
+    blackBackLog = new G4LogicalVolume(blackBackSolid, matBuilder->getVacuum(), "black_back_log");
+    blackBackLog->SetVisAttributes(new G4VisAttributes(G4Colour(0.1, 0.1, 0.1)));
     G4ThreeVector placement_back(0, 0, -Sim::COATING_THICKNESS/2);
-    new G4PVPlacement(nullptr, placement_back, black_back_log, "black_back", lShapeLog, false, 4, true);
+    new G4PVPlacement(nullptr, placement_back, blackBackLog, "black_back", lShapeLog, false, 4, true);
 
     G4OpticalSurface* blackTapeSurf = new G4OpticalSurface("BlackTapeSurface");
     blackTapeSurf->SetType(dielectric_metal);
@@ -266,11 +338,11 @@ void GeometryConstructor::addComponents(G4LogicalVolume* lShapeLog) {
     blackTapeProp->AddProperty("EFFICIENCY", PhotonEnergyPVT, blackEfficiency, 12);
     blackTapeSurf->SetMaterialPropertiesTable(blackTapeProp);
 
-    new G4LogicalSkinSurface("black_side_top_surf", black_side_log, blackTapeSurf);
-    new G4LogicalSkinSurface("black_side_bottom_surf", black_side_log, blackTapeSurf);
-    new G4LogicalSkinSurface("black_side_left_surf", black_side_log, blackTapeSurf);
-    new G4LogicalSkinSurface("black_side_right_surf", black_side_log, blackTapeSurf);
-    new G4LogicalSkinSurface("black_back_surf", black_back_log, blackTapeSurf);
+    new G4LogicalSkinSurface("black_side_top_surf", blackSideLog, blackTapeSurf);
+    new G4LogicalSkinSurface("black_side_bottom_surf", blackSideLog, blackTapeSurf);
+    new G4LogicalSkinSurface("black_side_left_surf", blackSideLog, blackTapeSurf);
+    new G4LogicalSkinSurface("black_side_right_surf", blackSideLog, blackTapeSurf);
+    new G4LogicalSkinSurface("black_back_surf", blackBackLog, blackTapeSurf);
 
     // Mirror
     G4Box* mirrorSolid = new G4Box("MirrorSolid", 95*mm, 65*mm, 0.5*um);

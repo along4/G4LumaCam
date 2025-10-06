@@ -46,7 +46,7 @@ int main(int argc, char** argv) {
         uiMgr->ApplyCommand("/vis/viewer/set/background white");
         uiMgr->ApplyCommand("/vis/viewer/set/lineWidth 4");
         uiMgr->ApplyCommand("/gps/direction 0 0 1");
-        uiMgr->ApplyCommand("/gps/position 0 0 -1059 cm");
+        uiMgr->ApplyCommand("/gps/position 0 0 -1085 cm");
         uiMgr->ApplyCommand("/gps/energy 10 MeV");
         uiMgr->ApplyCommand("/gps/particle neutron");
         uiMgr->ApplyCommand("/lumacam/sampleMaterial G4_Galactic");

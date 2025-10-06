@@ -89,7 +89,7 @@ class Config:
             csv_filename="sim_data.csv",
             sample_material="G4_GRAPHITE",
             scintillator="EJ200",
-            sample_thickness=20,
+            sample_thickness=2,
             csv_batch_size=0,
         )
     
@@ -114,7 +114,7 @@ class Config:
             csv_filename="sim_data.csv",
             sample_material="G4_GRAPHITE",
             scintillator="EJ200",
-            sample_thickness=20,
+            sample_thickness=2,
             csv_batch_size=0,
         )
 
@@ -137,7 +137,7 @@ class Config:
             csv_filename="sim_data.csv",
             sample_material="G4_Galactic",
             scintillator="EJ200",
-            sample_thickness=20,
+            sample_thickness=2,
             csv_batch_size=1000,
         )
 
@@ -160,7 +160,7 @@ class Config:
             csv_filename="sim_data.csv",
             sample_material="G4_Galactic",
             scintillator="EJ200",
-            sample_thickness=20,
+            sample_thickness=2,
             csv_batch_size=1000,
         )
 
@@ -185,7 +185,7 @@ class Config:
             csv_filename="sim_data.csv",
             sample_material="G4_Galactic",
             scintillator="EJ200",
-            sample_thickness=20,
+            sample_thickness=2,
             csv_batch_size=0,
         )
 
@@ -218,7 +218,7 @@ class Config:
             csv_filename="sim_data.csv",
             sample_material="G4_Galactic",
             scintillator="EJ200",
-            sample_thickness=20,
+            sample_thickness=2,
             csv_batch_size=0,
         )
 
@@ -268,7 +268,7 @@ class Config:
             csv_filename="sim_data.csv",
             sample_material="G4_GRAPHITE",
             scintillator="EJ200",
-            sample_thickness=20,
+            sample_thickness=2,
             csv_batch_size=0,
         )
 
@@ -297,8 +297,8 @@ class Config:
                 csv_filename="sim_data.csv",
                 sample_material="G4_GRAPHITE",
                 scintillator="EJ200",
-                sample_thickness=75,  # 7.5 cm = 75 mm
-                scintillator_thickness=20,  # 2 cm = 20 mm
+                sample_thickness=7.5,  # 7.5 cm = 75 mm
+                scintillator_thickness=2,  # 2 cm = 20 mm
                 csv_batch_size=10000,
             )
         else:
@@ -320,8 +320,8 @@ class Config:
                 csv_filename="sim_data.csv",
                 sample_material="G4_GRAPHITE",
                 scintillator="EJ200",
-                sample_thickness=75,  # 7.5 cm = 75 mm
-                scintillator_thickness=20,  # 2 cm = 20 mm
+                sample_thickness=7.5,  # 7.5 cm = 75 mm
+                scintillator_thickness=2,  # 2 cm = 20 mm
                 csv_batch_size=10000,
             )
 
