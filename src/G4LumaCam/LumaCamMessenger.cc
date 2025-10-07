@@ -12,13 +12,14 @@ LumaCamMessenger::LumaCamMessenger(G4String* filename, G4LogicalVolume* sampleLo
     : csvFilename(filename), sampleLog(sampleLogVolume), scintLog(scintLogVolume),
       batchSize(batch), matBuilder(new MaterialBuilder()) {
     
-    messenger = new G4GenericMessenger(this, "/lumacam/", "LumaCam control commands");
-
+    Sim::batchSize = batchSize; // Initialize Sim::batchSize
     G4cout << "LumaCamMessenger: Initializing with csvFilename=" 
            << (csvFilename ? *csvFilename : "null")
            << ", sampleLog=" << (sampleLog ? sampleLog->GetName() : "null")
            << ", scintLog=" << (scintLog ? scintLog->GetName() : "null")
            << ", batchSize=" << batchSize << G4endl;
+
+    messenger = new G4GenericMessenger(this, "/lumacam/", "LumaCam control commands");
 
     // CSV filename
     if (csvFilename) {
@@ -53,7 +54,7 @@ LumaCamMessenger::LumaCamMessenger(G4String* filename, G4LogicalVolume* sampleLo
         .SetDefaultValue("3.75");
 
     // Batch size
-    messenger->DeclareProperty("batchSize", batchSize)
+    messenger->DeclareMethod("batchSize", &LumaCamMessenger::SetBatchSize)
         .SetGuidance("Set the number of events per CSV file (0 for single file)")
         .SetParameterName("size", false)
         .SetDefaultValue("10000");
@@ -86,6 +87,16 @@ LumaCamMessenger::LumaCamMessenger(G4String* filename, G4LogicalVolume* sampleLo
 LumaCamMessenger::~LumaCamMessenger() {
     delete messenger;
     delete matBuilder;
+}
+
+void LumaCamMessenger::SetBatchSize(G4int size) {
+    if (size < 0) {
+        G4cerr << "ERROR: Batch size must be non-negative!" << G4endl;
+        return;
+    }
+    batchSize = size;
+    Sim::batchSize = size; // Synchronize with Sim::batchSize
+    G4cout << "LumaCamMessenger: Batch size set to " << size << G4endl;
 }
 
 void LumaCamMessenger::SetSampleLog(G4LogicalVolume* log) {

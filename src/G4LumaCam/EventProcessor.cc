@@ -10,7 +10,7 @@
 
 EventProcessor::EventProcessor(const G4String& name, ParticleGenerator* gen) 
     : G4VSensitiveDetector(name), neutronCount(-1), batchCount(0), eventCount(0), 
-      particleGen(gen), neutronRecorded(false) {
+      particleGen(gen), neutronRecorded(false), currentEventTriggerTime(-1.0) {
     resetData();
 }
 
@@ -25,6 +25,7 @@ void EventProcessor::Initialize(G4HCofThisEvent*) {
 
 void EventProcessor::ClearRecordedTriggerTimes() {
     recordedTriggerTimes.clear();
+    triggerTimeToPulseId.clear(); // Clear the trigger time to pulse ID mapping
 }
 
 void EventProcessor::resetData() {
@@ -129,7 +130,7 @@ G4bool EventProcessor::ProcessHits(G4Step* step, G4TouchableHistory*) {
             rec.ny = neutronPos[1] / mm;
             rec.nz = neutronPos[2] / mm;
             rec.neutronEnergy = neutronEnergy;
-            
+            rec.pulseId = triggerTimeToPulseId[currentEventTriggerTime]; // Assign pulse ID
             photons.push_back(rec);
         }
     }
@@ -138,6 +139,7 @@ G4bool EventProcessor::ProcessHits(G4Step* step, G4TouchableHistory*) {
 
 void EventProcessor::EndOfEvent(G4HCofThisEvent*) {
     if (eventCount == 0 && batchCount == 0) {
+        G4cout << "EventProcessor: Starting new run with batchSize=" << Sim::batchSize << G4endl;
         openOutputFile();
         openTriggerFile();
     }
@@ -147,17 +149,22 @@ void EventProcessor::EndOfEvent(G4HCofThisEvent*) {
     // Write trigger time only once per pulse
     if (currentEventTriggerTime >= 0) {
         if (recordedTriggerTimes.find(currentEventTriggerTime) == recordedTriggerTimes.end()) {
-            writeTriggerData(currentEventTriggerTime);
+            static G4int pulseId = 0; // Static to persist across batches
+            writeTriggerData(currentEventTriggerTime, pulseId);
+            triggerTimeToPulseId[currentEventTriggerTime] = pulseId; // Map trigger time to pulse ID
             recordedTriggerTimes.insert(currentEventTriggerTime);
+            pulseId++;
         }
     }
     
     if (Sim::batchSize > 0) {
         eventCount++;
+        G4cout << "EventProcessor: eventCount=" << eventCount << ", batchSize=" << Sim::batchSize << G4endl;
         if (eventCount >= Sim::batchSize) {
             batchCount++;
             eventCount = 0;
             recordedTriggerTimes.clear(); // Clear for new batch
+            G4cout << "EventProcessor: Starting new batch " << batchCount << G4endl;
             openOutputFile();
             openTriggerFile();
         }
@@ -204,7 +211,7 @@ void EventProcessor::openOutputFile() {
                     FatalException, "Cannot open output file");
     }
     
-    dataFile << "id,parent_id,neutron_id,x,y,z,dx,dy,dz,toa,wavelength,"
+    dataFile << "id,parent_id,neutron_id,pulse_id,x,y,z,dx,dy,dz,toa,wavelength,"
              << "parentName,px,py,pz,parentEnergy,nx,ny,nz,neutronEnergy\n";
 }
 
@@ -242,20 +249,12 @@ void EventProcessor::openTriggerFile() {
                     FatalException, "Cannot open trigger file");
     }
     
-    triggerFile << "pulse_id,trigger_time_ns\n"; // Updated to ns
+    triggerFile << "pulse_id,trigger_time_ns\n";
 }
 
-void EventProcessor::writeTriggerData(G4double triggerTime) {
-    static G4int pulseId = 0;
-    
-    // Reset pulse ID for new batch
-    if (eventCount == 0 && batchCount > 0) {
-        pulseId = 0;
-    }
-    
+void EventProcessor::writeTriggerData(G4double triggerTime, G4int pulseId) {
     triggerFile << pulseId << "," << triggerTime << "\n";
     triggerFile.flush();
-    pulseId++;
 }
 
 void EventProcessor::writeData() {
@@ -263,6 +262,7 @@ void EventProcessor::writeData() {
         dataFile << p.id << "," 
                  << p.parentId << "," 
                  << p.neutronId << ","
+                 << p.pulseId << "," // New pulse_id column
                  << p.x << "," 
                  << p.y << "," 
                  << p.z << ","

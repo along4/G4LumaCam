@@ -12,7 +12,7 @@
 #include "G4RadioactiveDecayPhysics.hh"
 
 int main(int argc, char** argv) {
-    Sim::batchSize = 10000;
+    Sim::batchSize = 10000; // Default, will be overridden by macro if set
     
     G4RunManager* runMgr = new G4RunManager();
     
@@ -40,19 +40,25 @@ int main(int argc, char** argv) {
     
     G4UImanager* uiMgr = G4UImanager::GetUIpointer();
     
-    // Set total neutrons BEFORE running (important for pulse structure)
-    G4int defaultNeutrons = 10000;  // Match macro file's 10,000 events
-    simMgr->SetTotalNeutrons(defaultNeutrons);
-    G4cout << "Default total neutrons set to: " << defaultNeutrons << G4endl;
-    G4cout << "(This will be used when /run/beamOn is called)" << G4endl;
-    
     if (argc > 1) {
         // Macro mode - execute commands from file
         G4String command = "/control/execute ";
         G4String fileName = argv[1];
         uiMgr->ApplyCommand(command + fileName);
+        
+        // After macro execution, update totalNeutrons based on /run/beamOn
+        G4int eventsToProcess = runMgr->GetNumberOfEventsToBeProcessed();
+        simMgr->SetTotalNeutrons(eventsToProcess);
+        G4cout << "Total neutrons set to: " << eventsToProcess 
+               << " (from /run/beamOn in macro)" << G4endl;
+        G4cout << "Batch size set to: " << Sim::batchSize << G4endl;
     } else {
         // Interactive mode
+        G4int defaultNeutrons = 10000;
+        simMgr->SetTotalNeutrons(defaultNeutrons);
+        G4cout << "Default total neutrons set to: " << defaultNeutrons << G4endl;
+        G4cout << "Batch size set to: " << Sim::batchSize << G4endl;
+        
         G4UIExecutive* ui = new G4UIExecutive(argc, argv);
         
         // Visualization setup

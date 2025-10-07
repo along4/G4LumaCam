@@ -28,6 +28,7 @@ private:
         G4double wavelength, parentEnergy, neutronEnergy;
         G4String parentType;
         G4double px, py, pz, nx, ny, nz;
+        G4int pulseId; // New field for pulse ID
     };
     
     struct TrackData {
@@ -42,6 +43,7 @@ private:
     G4double neutronPos[3], neutronEnergy, protonEnergy;
     G4double lensPos[2];
     G4int neutronCount, batchCount, eventCount;
+
     
     std::ofstream dataFile;
     std::ofstream triggerFile;
@@ -52,12 +54,14 @@ private:
     // New: Track pulse trigger times
     G4double currentEventTriggerTime;
     std::set<G4double> recordedTriggerTimes;
+    std::map<G4double, G4int> triggerTimeToPulseId; // Map trigger time to pulse ID
     
     void resetData();
     void writeData();
     void openOutputFile();
-    void writeTriggerData(G4double triggerTime);
+    void writeTriggerData(G4double triggerTime, G4int pulseId);
     void openTriggerFile();
+
 };
 
 #endif

@@ -1,5 +1,5 @@
-#include "G4Run.hh"
 #include "SimulationManager.hh"
+#include "G4Run.hh"
 #include "G4RunManager.hh"
 #include "G4SystemOfUnits.hh"
 #include "ParticleGenerator.hh"
@@ -17,7 +17,8 @@ void SimulationManager::BeginOfRunAction(const G4Run* run) {
     G4cout << "################################################" << G4endl;
     
     G4int eventsToProcess = run->GetNumberOfEventToBeProcessed();
-    G4cout << "Events to process: " << eventsToProcess << G4endl;
+    G4cout << "Events to process (from G4RunManager): " << eventsToProcess << G4endl;
+    G4cout << "Total neutrons (from SimulationManager): " << totalNeutrons << G4endl;
     
     // Use the number of events from the run if totalNeutrons wasn't explicitly set
     G4int neutronsForPulseStructure = (totalNeutrons > 0) ? totalNeutrons : eventsToProcess;
@@ -35,6 +36,7 @@ void SimulationManager::BeginOfRunAction(const G4Run* run) {
             G4cout << "\n=== Pulsed Beam Configuration ===" << G4endl;
             G4cout << "Flux: " << Sim::FLUX << " n/cm²/s" << G4endl;
             G4cout << "Frequency: " << Sim::FREQ << " Hz" << G4endl;
+            G4cout << "Batch size: " << Sim::batchSize << G4endl;
             G4cout << "Setting up pulse structure..." << G4endl;
             
             generator->SetTotalNeutrons(neutronsForPulseStructure);

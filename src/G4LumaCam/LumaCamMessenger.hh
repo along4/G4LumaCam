@@ -21,6 +21,7 @@ public:
     void SetSampleThickness(G4double thickness);
     void SetFlux(G4double flux);
     void SetFrequency(G4double freq);
+    void SetBatchSize(G4int size);
     void SetSampleLog(G4LogicalVolume* log);
     void SetScintLog(G4LogicalVolume* log);
 
