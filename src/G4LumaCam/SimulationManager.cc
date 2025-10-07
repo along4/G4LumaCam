@@ -50,6 +50,11 @@ void SimulationManager::BeginOfRunAction(const G4Run* run) {
         G4cerr << "ERROR: Could not find ParticleGenerator!" << G4endl;
     }
     
+    // Clear recorded trigger times for the new run
+    if (processor) {
+        processor->ClearRecordedTriggerTimes();
+    }
+    
     G4cout << "################################################\n" << G4endl;
 }
 

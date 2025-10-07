@@ -30,7 +30,6 @@ int main(int argc, char** argv) {
     runMgr->SetUserAction(gen);
     
     SimulationManager* simMgr = new SimulationManager();
-    // simMgr->SetParticleGenerator(gen);  // IMPORTANT: Connect the generator
     runMgr->SetUserAction(simMgr);
     runMgr->SetUserAction(new SimulationManager::EventHandler(simMgr));
     
@@ -42,8 +41,7 @@ int main(int argc, char** argv) {
     G4UImanager* uiMgr = G4UImanager::GetUIpointer();
     
     // Set total neutrons BEFORE running (important for pulse structure)
-    // This can be overridden by macro commands or user input
-    G4int defaultNeutrons = 1000;  // Default value
+    G4int defaultNeutrons = 10000;  // Match macro file's 10,000 events
     simMgr->SetTotalNeutrons(defaultNeutrons);
     G4cout << "Default total neutrons set to: " << defaultNeutrons << G4endl;
     G4cout << "(This will be used when /run/beamOn is called)" << G4endl;
@@ -76,9 +74,6 @@ int main(int argc, char** argv) {
         uiMgr->ApplyCommand("/lumacam/flux 1e4");
         uiMgr->ApplyCommand("/lumacam/freq 200000");
         
-        // IMPORTANT: Set up pulse structure AFTER flux and freq are set
-        // This should be done before running, but since we're in interactive mode,
-        // we'll create a custom command or do it before each run
         G4cout << "\n=== Initial Pulse Structure Setup (Interactive Mode) ===" << G4endl;
         G4cout << "Note: Call /run/beamOn N to start simulation" << G4endl;
         G4cout << "Pulse structure will be computed when you run." << G4endl;

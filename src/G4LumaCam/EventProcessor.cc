@@ -23,6 +23,10 @@ void EventProcessor::Initialize(G4HCofThisEvent*) {
     resetData();
 }
 
+void EventProcessor::ClearRecordedTriggerTimes() {
+    recordedTriggerTimes.clear();
+}
+
 void EventProcessor::resetData() {
     photons.clear();
     tracks.clear();
@@ -46,6 +50,14 @@ G4bool EventProcessor::ProcessHits(G4Step* step, G4TouchableHistory*) {
     G4int tid = track->GetTrackID();
     G4int parentID = track->GetParentID();
 
+    // Set trigger time for every event
+    if (!neutronRecorded) { // Only set once per event
+        const G4Event* event = G4RunManager::GetRunManager()->GetCurrentEvent();
+        if (event && event->GetNumberOfPrimaryVertex() > 0) {
+            currentEventTriggerTime = event->GetPrimaryVertex(0)->GetT0() / ns;
+        }
+    }
+
     // Record primary particle's first interaction in ScintPhys
     if (volName == "ScintPhys" && parentID == 0 && !neutronRecorded) {
         G4String processName = postStep->GetProcessDefinedStep() ? 
@@ -57,13 +69,6 @@ G4bool EventProcessor::ProcessHits(G4Step* step, G4TouchableHistory*) {
             neutronEnergy = particleGen ? particleGen->getParticleEnergy() : track->GetKineticEnergy() / MeV;
             neutronCount++;
             neutronRecorded = true;
-            
-            // Get the primary vertex T0 time (pulse start time)
-            // This is set by ParticleGenerator::GeneratePrimaries()
-            const G4Event* event = G4RunManager::GetRunManager()->GetCurrentEvent();
-            if (event && event->GetNumberOfPrimaryVertex() > 0) {
-                currentEventTriggerTime = event->GetPrimaryVertex(0)->GetT0() / ns;
-            }
         }
     }
 
@@ -139,9 +144,8 @@ void EventProcessor::EndOfEvent(G4HCofThisEvent*) {
     
     if (!photons.empty()) writeData();
     
-    // Write trigger time only once per pulse (check if it's a new pulse time)
+    // Write trigger time only once per pulse
     if (currentEventTriggerTime >= 0) {
-        // Check if this trigger time hasn't been written yet
         if (recordedTriggerTimes.find(currentEventTriggerTime) == recordedTriggerTimes.end()) {
             writeTriggerData(currentEventTriggerTime);
             recordedTriggerTimes.insert(currentEventTriggerTime);
@@ -238,7 +242,7 @@ void EventProcessor::openTriggerFile() {
                     FatalException, "Cannot open trigger file");
     }
     
-    triggerFile << "pulse_id,trigger_time_ps\n";
+    triggerFile << "pulse_id,trigger_time_ns\n"; // Updated to ns
 }
 
 void EventProcessor::writeTriggerData(G4double triggerTime) {
