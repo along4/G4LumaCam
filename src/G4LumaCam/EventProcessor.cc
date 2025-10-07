@@ -5,6 +5,7 @@
 #include "G4RunManager.hh"
 #include "G4SystemOfUnits.hh"
 #include <filesystem>
+#include <cstdlib>
 
 EventProcessor::EventProcessor(const G4String& name, ParticleGenerator* gen) 
     : G4VSensitiveDetector(name), neutronCount(-1), batchCount(0), eventCount(0), particleGen(gen), neutronRecorded(false) {
@@ -145,6 +146,22 @@ void EventProcessor::EndOfEvent(G4HCofThisEvent*) {
 void EventProcessor::openOutputFile() {
     if (dataFile.is_open()) dataFile.close();
 
+    // Get current working directory
+    std::filesystem::path currentPath = std::filesystem::current_path();
+    
+    // Create SimPhotons directory in current working directory
+    std::filesystem::path simPhotonsDir = currentPath / "SimPhotons";
+    
+    try {
+        std::filesystem::create_directories(simPhotonsDir);
+        G4cout << "Created/verified directory: " << simPhotonsDir << G4endl;
+    } catch (const std::filesystem::filesystem_error& e) {
+        G4cerr << "ERROR: Failed to create directory " << simPhotonsDir << ": " << e.what() << G4endl;
+        G4Exception("EventProcessor::openOutputFile()", "IO001", 
+                    FatalException, "Cannot create SimPhotons directory");
+    }
+
+    // Build filename
     G4String fileName = Sim::outputFileName;
     size_t csvPos = fileName.find(".csv");
     if (csvPos != G4String::npos) {
@@ -157,7 +174,19 @@ void EventProcessor::openOutputFile() {
         fileName += ".csv";
     }
     
-    dataFile.open(fileName);
+    // Create full path
+    std::filesystem::path fullPath = simPhotonsDir / std::string(fileName);
+    
+    G4cout << "Opening output file: " << fullPath << G4endl;
+    
+    dataFile.open(fullPath);
+    
+    if (!dataFile.is_open()) {
+        G4cerr << "ERROR: Failed to open file: " << fullPath << G4endl;
+        G4Exception("EventProcessor::openOutputFile()", "IO002", 
+                    FatalException, "Cannot open output file");
+    }
+    
     dataFile << "id,parent_id,neutron_id,x,y,z,dx,dy,dz,toa,wavelength,"
              << "parentName,px,py,pz,parentEnergy,nx,ny,nz,neutronEnergy\n";
 }
@@ -165,17 +194,42 @@ void EventProcessor::openOutputFile() {
 void EventProcessor::openTriggerFile() {
     if (triggerFile.is_open()) triggerFile.close();
 
-    // Create TriggerTimes directory
-    std::filesystem::create_directory("TriggerTimes");
+    // Get current working directory
+    std::filesystem::path currentPath = std::filesystem::current_path();
+    
+    // Create SimPhotons/TriggerTimes directory in current working directory
+    std::filesystem::path triggerDir = currentPath / "TriggerTimes";
+    
+    try {
+        std::filesystem::create_directories(triggerDir);
+        G4cout << "Created/verified directory: " << triggerDir << G4endl;
+    } catch (const std::filesystem::filesystem_error& e) {
+        G4cerr << "ERROR: Failed to create directory " << triggerDir << ": " << e.what() << G4endl;
+        G4Exception("EventProcessor::openTriggerFile()", "IO003", 
+                    FatalException, "Cannot create TriggerTimes directory");
+    }
 
-    G4String fileName = "TriggerTimes/trigger_data";
+    // Build filename
+    G4String fileName = "trigger_data";
     if (Sim::batchSize > 0) {
         fileName += "_" + std::to_string(batchCount) + ".csv";
     } else {
         fileName += ".csv";
     }
 
-    triggerFile.open(fileName);
+    // Create full path
+    std::filesystem::path fullPath = triggerDir / std::string(fileName);
+    
+    G4cout << "Opening trigger file: " << fullPath << G4endl;
+    
+    triggerFile.open(fullPath);
+    
+    if (!triggerFile.is_open()) {
+        G4cerr << "ERROR: Failed to open trigger file: " << fullPath << G4endl;
+        G4Exception("EventProcessor::openTriggerFile()", "IO004", 
+                    FatalException, "Cannot open trigger file");
+    }
+    
     triggerFile << "neutron_id,trigger_time_ps\n";
 }
 
