@@ -8,15 +8,16 @@ class ParticleGenerator : public G4VUserPrimaryGeneratorAction {
 public:
     ParticleGenerator();
     ~ParticleGenerator() override;
-
+    
     void GeneratePrimaries(G4Event* anEvent) override;
     G4double getParticleEnergy() const { return lastEnergy; }
-    void SetTotalNeutrons(G4int totalNeutrons); // New: Set total neutrons for pulse structure
+    void SetTotalNeutrons(G4int totalNeutrons);
 
 private:
     G4GeneralParticleSource* source;
     G4double lastEnergy;
-    G4int currentPulseIndex; // Track current pulse for neutron assignment
+    G4int currentPulseIndex;
+    G4int neutronsInCurrentPulse;  // ADD THIS LINE
 };
 
 #endif

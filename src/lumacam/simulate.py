@@ -503,8 +503,12 @@ class Simulate:
                 elif verbosity >= VerbosityLevel.BASIC and ('starts.' in line or 'Run' in line or 'G4Exception' in line):
                     output_queue.put(('output', line))
 
-    def clear_subfolders(self):
-        """Remove all contents of SimPhotons and TriggerTimes subfolders if they exist."""
+    def clear_subfolders(self,verbosity: VerbosityLevel = VerbosityLevel.BASIC):
+        """Remove all contents of SimPhotons and TriggerTimes subfolders if they exist.
+        This ensures that old simulation data does not interfere with new runs.
+        Args:
+            verbosity (VerbosityLevel): Level of verbosity for print statements.           
+        """
         for folder in [self.sim_dir, self.trigger_dir]:
             if folder.exists():
                 for item in folder.iterdir():
@@ -532,7 +536,7 @@ class Simulate:
             raise PermissionError(f"No write permission in {self.sim_dir}")
 
         # Clear SimPhotons and TriggerTimes subfolders
-        self.clear_subfolders()
+        self.clear_subfolders(verbosity=verbosity)
 
         temp_macro = None
         macro_file = None

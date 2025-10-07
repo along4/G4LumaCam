@@ -6,9 +6,11 @@
 #include "G4SystemOfUnits.hh"
 #include <filesystem>
 #include <cstdlib>
+#include <set>
 
 EventProcessor::EventProcessor(const G4String& name, ParticleGenerator* gen) 
-    : G4VSensitiveDetector(name), neutronCount(-1), batchCount(0), eventCount(0), particleGen(gen), neutronRecorded(false) {
+    : G4VSensitiveDetector(name), neutronCount(-1), batchCount(0), eventCount(0), 
+      particleGen(gen), neutronRecorded(false) {
     resetData();
 }
 
@@ -29,7 +31,7 @@ void EventProcessor::resetData() {
     protonEnergy = 0.;
     lensPos[0] = lensPos[1] = 0.;
     neutronRecorded = false;
-    neutronTriggerTimes.clear(); // Clear trigger times
+    currentEventTriggerTime = -1.0; // Reset trigger time for this event
 }
 
 G4bool EventProcessor::ProcessHits(G4Step* step, G4TouchableHistory*) {
@@ -55,7 +57,13 @@ G4bool EventProcessor::ProcessHits(G4Step* step, G4TouchableHistory*) {
             neutronEnergy = particleGen ? particleGen->getParticleEnergy() : track->GetKineticEnergy() / MeV;
             neutronCount++;
             neutronRecorded = true;
-            neutronTriggerTimes.push_back(track->GetGlobalTime() / ps); // Store trigger time in ps
+            
+            // Get the primary vertex T0 time (pulse start time)
+            // This is set by ParticleGenerator::GeneratePrimaries()
+            const G4Event* event = G4RunManager::GetRunManager()->GetCurrentEvent();
+            if (event && event->GetNumberOfPrimaryVertex() > 0) {
+                currentEventTriggerTime = event->GetPrimaryVertex(0)->GetT0() / ns;
+            }
         }
     }
 
@@ -128,14 +136,24 @@ void EventProcessor::EndOfEvent(G4HCofThisEvent*) {
         openOutputFile();
         openTriggerFile();
     }
+    
     if (!photons.empty()) writeData();
-    if (!neutronTriggerTimes.empty()) writeTriggerData();
+    
+    // Write trigger time only once per pulse (check if it's a new pulse time)
+    if (currentEventTriggerTime >= 0) {
+        // Check if this trigger time hasn't been written yet
+        if (recordedTriggerTimes.find(currentEventTriggerTime) == recordedTriggerTimes.end()) {
+            writeTriggerData(currentEventTriggerTime);
+            recordedTriggerTimes.insert(currentEventTriggerTime);
+        }
+    }
     
     if (Sim::batchSize > 0) {
         eventCount++;
         if (eventCount >= Sim::batchSize) {
             batchCount++;
             eventCount = 0;
+            recordedTriggerTimes.clear(); // Clear for new batch
             openOutputFile();
             openTriggerFile();
         }
@@ -146,10 +164,7 @@ void EventProcessor::EndOfEvent(G4HCofThisEvent*) {
 void EventProcessor::openOutputFile() {
     if (dataFile.is_open()) dataFile.close();
 
-    // Get current working directory
     std::filesystem::path currentPath = std::filesystem::current_path();
-    
-    // Create SimPhotons directory in current working directory
     std::filesystem::path simPhotonsDir = currentPath / "SimPhotons";
     
     try {
@@ -161,7 +176,6 @@ void EventProcessor::openOutputFile() {
                     FatalException, "Cannot create SimPhotons directory");
     }
 
-    // Build filename
     G4String fileName = Sim::outputFileName;
     size_t csvPos = fileName.find(".csv");
     if (csvPos != G4String::npos) {
@@ -174,7 +188,6 @@ void EventProcessor::openOutputFile() {
         fileName += ".csv";
     }
     
-    // Create full path
     std::filesystem::path fullPath = simPhotonsDir / std::string(fileName);
     
     G4cout << "Opening output file: " << fullPath << G4endl;
@@ -194,10 +207,7 @@ void EventProcessor::openOutputFile() {
 void EventProcessor::openTriggerFile() {
     if (triggerFile.is_open()) triggerFile.close();
 
-    // Get current working directory
     std::filesystem::path currentPath = std::filesystem::current_path();
-    
-    // Create SimPhotons/TriggerTimes directory in current working directory
     std::filesystem::path triggerDir = currentPath / "TriggerTimes";
     
     try {
@@ -209,7 +219,6 @@ void EventProcessor::openTriggerFile() {
                     FatalException, "Cannot create TriggerTimes directory");
     }
 
-    // Build filename
     G4String fileName = "trigger_data";
     if (Sim::batchSize > 0) {
         fileName += "_" + std::to_string(batchCount) + ".csv";
@@ -217,7 +226,6 @@ void EventProcessor::openTriggerFile() {
         fileName += ".csv";
     }
 
-    // Create full path
     std::filesystem::path fullPath = triggerDir / std::string(fileName);
     
     G4cout << "Opening trigger file: " << fullPath << G4endl;
@@ -230,15 +238,20 @@ void EventProcessor::openTriggerFile() {
                     FatalException, "Cannot open trigger file");
     }
     
-    triggerFile << "neutron_id,trigger_time_ps\n";
+    triggerFile << "pulse_id,trigger_time_ps\n";
 }
 
-void EventProcessor::writeTriggerData() {
-    for (size_t i = 0; i < neutronTriggerTimes.size(); ++i) {
-        triggerFile << (neutronCount - neutronTriggerTimes.size() + i + 1) << ","
-                    << neutronTriggerTimes[i] << "\n";
+void EventProcessor::writeTriggerData(G4double triggerTime) {
+    static G4int pulseId = 0;
+    
+    // Reset pulse ID for new batch
+    if (eventCount == 0 && batchCount > 0) {
+        pulseId = 0;
     }
+    
+    triggerFile << pulseId << "," << triggerTime << "\n";
     triggerFile.flush();
+    pulseId++;
 }
 
 void EventProcessor::writeData() {

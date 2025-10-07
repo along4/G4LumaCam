@@ -5,6 +5,7 @@
 #include "G4SystemOfUnits.hh"
 #include <vector>
 #include <map>
+#include <set>
 #include <fstream>
 
 class ParticleGenerator;
@@ -13,6 +14,7 @@ class EventProcessor : public G4VSensitiveDetector {
 public:
     EventProcessor(const G4String& name, ParticleGenerator* gen = nullptr);
     ~EventProcessor() override;
+    
     void Initialize(G4HCofThisEvent*) override;
     G4bool ProcessHits(G4Step*, G4TouchableHistory*) override;
     void EndOfEvent(G4HCofThisEvent*) override;
@@ -26,29 +28,35 @@ private:
         G4String parentType;
         G4double px, py, pz, nx, ny, nz;
     };
-
+    
     struct TrackData {
         G4String type;
         G4double x, y, z, energy;
         G4bool isLightProducer;
     };
-
+    
     std::vector<PhotonRecord> photons;
     std::map<G4int, TrackData> tracks;
+    
     G4double neutronPos[3], neutronEnergy, protonEnergy;
     G4double lensPos[2];
     G4int neutronCount, batchCount, eventCount;
+    
     std::ofstream dataFile;
-    std::ofstream triggerFile; // New: File for trigger times
+    std::ofstream triggerFile;
+    
     ParticleGenerator* particleGen;
     G4bool neutronRecorded;
-    std::vector<G4double> neutronTriggerTimes; // New: Store trigger times for neutrons
-
+    
+    // New: Track pulse trigger times
+    G4double currentEventTriggerTime;
+    std::set<G4double> recordedTriggerTimes;
+    
     void resetData();
     void writeData();
     void openOutputFile();
-    void writeTriggerData(); // New: Write trigger times
-    void openTriggerFile(); // New: Open trigger file
+    void writeTriggerData(G4double triggerTime);
+    void openTriggerFile();
 };
 
 #endif
