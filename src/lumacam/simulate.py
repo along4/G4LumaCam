@@ -274,7 +274,7 @@ class Config:
         )
 
     @classmethod
-    def neutrons_tof(cls, energy_min: Optional[float] = None, energy_max: Optional[float] = None) -> 'Config':
+    def neutrons_tof(cls, energy_min: Optional[float] = 1.0, energy_max: Optional[float] = 10.) -> 'Config':
         """Neutron configuration for time-of-flight with pulsed structure and optional energy range."""
         if energy_min is not None and energy_max is not None:
             # Use linear energy distribution
@@ -687,7 +687,8 @@ class Simulate:
                 return pd.DataFrame()  # Return empty DataFrame instead of raising an error
             
             combined_df = pd.concat(dfs, ignore_index=True)
-            print(f"Combined DataFrame: {combined_df.shape[0]} rows, {combined_df.shape[1]} columns")
+            if verbosity >= VerbosityLevel.DETAILED:
+                print(f"Combined DataFrame: {combined_df.shape[0]} rows, {combined_df.shape[1]} columns")
             return combined_df
 
         finally:
