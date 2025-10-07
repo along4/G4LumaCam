@@ -12,12 +12,13 @@ public:
     void GeneratePrimaries(G4Event* anEvent) override;
     G4double getParticleEnergy() const { return lastEnergy; }
     void SetTotalNeutrons(G4int totalNeutrons);
+    G4int getCurrentPulseIndex() const { return currentPulseIndex; } 
 
 private:
     G4GeneralParticleSource* source;
     G4double lastEnergy;
     G4int currentPulseIndex;
-    G4int neutronsInCurrentPulse;  // ADD THIS LINE
+    G4int neutronsInCurrentPulse;
 };
 
 #endif

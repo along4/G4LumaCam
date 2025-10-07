@@ -46,23 +46,21 @@ void ParticleGenerator::GeneratePrimaries(G4Event* anEvent) {
             G4double t0 = Sim::pulseTimes[currentPulseIndex];
             anEvent->GetPrimaryVertex()->SetT0(t0 * ns);
             
-            // Debug output
-            // if (neutronsInCurrentPulse == 0) {
-            //     G4cout << ">>> Starting pulse " << currentPulseIndex 
-            //            << " at t=" << t0 << " ns with " 
-            //            << Sim::neutronsPerPulse[currentPulseIndex] 
-            //            << " neutrons" << G4endl;
-            // }
+            if (neutronsInCurrentPulse == 0) {
+                G4cout << ">>> Starting pulse " << currentPulseIndex 
+                       << " at t=" << t0 << " ns with " 
+                       << Sim::neutronsPerPulse[currentPulseIndex] 
+                       << " neutrons" << G4endl;
+            }
             
             neutronsInCurrentPulse++;
             
-            // Debug: show progress through pulse
-            // if (neutronsInCurrentPulse % 100 == 0 || 
-            //     neutronsInCurrentPulse == Sim::neutronsPerPulse[currentPulseIndex]) {
-            //     G4cout << "    Pulse " << currentPulseIndex 
-            //            << " progress: " << neutronsInCurrentPulse 
-            //            << "/" << Sim::neutronsPerPulse[currentPulseIndex] << G4endl;
-            // }
+            if (neutronsInCurrentPulse % 100 == 0 || 
+                neutronsInCurrentPulse == Sim::neutronsPerPulse[currentPulseIndex]) {
+                G4cout << "    Pulse " << currentPulseIndex 
+                       << " progress: " << neutronsInCurrentPulse 
+                       << "/" << Sim::neutronsPerPulse[currentPulseIndex] << G4endl;
+            }
             
             // Move to next pulse when current pulse is complete
             if (neutronsInCurrentPulse >= Sim::neutronsPerPulse[currentPulseIndex]) {
@@ -70,7 +68,6 @@ void ParticleGenerator::GeneratePrimaries(G4Event* anEvent) {
                 neutronsInCurrentPulse = 0;
             }
         } else {
-            // No more pulses: abort event
             G4cout << "INFO: All pulses exhausted. No more primaries generated." << G4endl;
             anEvent->SetEventAborted();
             return;
@@ -88,4 +85,8 @@ void ParticleGenerator::GeneratePrimaries(G4Event* anEvent) {
     }
     
     lastEnergy = source->GetParticleEnergy() / MeV;
+    if (lastEnergy <= 0) {
+        G4cerr << "WARNING: Generated neutron energy is " << lastEnergy << " MeV for event " 
+               << anEvent->GetEventID() << G4endl;
+    }
 }

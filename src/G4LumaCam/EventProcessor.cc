@@ -25,7 +25,6 @@ void EventProcessor::Initialize(G4HCofThisEvent*) {
 
 void EventProcessor::ClearRecordedTriggerTimes() {
     recordedTriggerTimes.clear();
-    triggerTimeToPulseId.clear(); // Clear the trigger time to pulse ID mapping
 }
 
 void EventProcessor::resetData() {
@@ -36,7 +35,7 @@ void EventProcessor::resetData() {
     protonEnergy = 0.;
     lensPos[0] = lensPos[1] = 0.;
     neutronRecorded = false;
-    currentEventTriggerTime = -1.0; // Reset trigger time for this event
+    currentEventTriggerTime = -1.0;
 }
 
 G4bool EventProcessor::ProcessHits(G4Step* step, G4TouchableHistory*) {
@@ -51,25 +50,51 @@ G4bool EventProcessor::ProcessHits(G4Step* step, G4TouchableHistory*) {
     G4int tid = track->GetTrackID();
     G4int parentID = track->GetParentID();
 
-    // Set trigger time for every event
-    if (!neutronRecorded) { // Only set once per event
+    // Set trigger time, neutron energy, and neutron position for every event
+    if (!neutronRecorded) {
         const G4Event* event = G4RunManager::GetRunManager()->GetCurrentEvent();
         if (event && event->GetNumberOfPrimaryVertex() > 0) {
             currentEventTriggerTime = event->GetPrimaryVertex(0)->GetT0() / ns;
+            neutronEnergy = particleGen ? particleGen->getParticleEnergy() : track->GetKineticEnergy() / MeV;
+            // Set neutron position from primary vertex as fallback
+            G4ThreeVector primaryPos = event->GetPrimaryVertex(0)->GetPosition();
+            neutronPos[0] = primaryPos.x();
+            neutronPos[1] = primaryPos.y();
+            neutronPos[2] = primaryPos.z();
+            neutronCount++;
+            neutronRecorded = true;
+            if (currentEventTriggerTime < 0) {
+                G4cerr << "WARNING: Invalid trigger time " << currentEventTriggerTime 
+                       << " for event " << event->GetEventID() << G4endl;
+            }
+            if (neutronEnergy <= 0) {
+                G4cerr << "WARNING: Invalid neutron energy " << neutronEnergy 
+                       << " MeV for event " << event->GetEventID() << G4endl;
+            }
+            if (neutronPos[0] == 0 && neutronPos[1] == 0 && neutronPos[2] == 0) {
+                G4cerr << "WARNING: Neutron position set to (0, 0, 0) from primary vertex for event " 
+                       << event->GetEventID() << G4endl;
+            }
+        } else {
+            G4cerr << "WARNING: No primary vertex for event " << event->GetEventID() << G4endl;
+            currentEventTriggerTime = -1.0;
+            neutronEnergy = 0.0;
+            neutronPos[0] = neutronPos[1] = neutronPos[2] = 0.;
         }
     }
 
-    // Record primary particle's first interaction in ScintPhys
-    if (volName == "ScintPhys" && parentID == 0 && !neutronRecorded) {
+    // Record neutron position at first interaction in ScintPhys or SamplePhys
+    if ((volName == "ScintPhys" || volName == "SamplePhys") && parentID == 0 && particleName == "neutron") {
         G4String processName = postStep->GetProcessDefinedStep() ? 
                                postStep->GetProcessDefinedStep()->GetProcessName() : "None";
         if (processName != "Transportation") {
             neutronPos[0] = postPos.x();
             neutronPos[1] = postPos.y();
             neutronPos[2] = postPos.z();
-            neutronEnergy = particleGen ? particleGen->getParticleEnergy() : track->GetKineticEnergy() / MeV;
-            neutronCount++;
-            neutronRecorded = true;
+            G4cout << "Neutron position set in " << volName << " for event " 
+                   << G4RunManager::GetRunManager()->GetCurrentEvent()->GetEventID() 
+                   << ": (" << neutronPos[0] / mm << ", " << neutronPos[1] / mm 
+                   << ", " << neutronPos[2] / mm << ") mm" << G4endl;
         }
     }
 
@@ -130,7 +155,7 @@ G4bool EventProcessor::ProcessHits(G4Step* step, G4TouchableHistory*) {
             rec.ny = neutronPos[1] / mm;
             rec.nz = neutronPos[2] / mm;
             rec.neutronEnergy = neutronEnergy;
-            rec.pulseId = triggerTimeToPulseId[currentEventTriggerTime]; // Assign pulse ID
+            rec.pulseId = particleGen ? particleGen->getCurrentPulseIndex() : -1;
             photons.push_back(rec);
         }
     }
@@ -149,11 +174,8 @@ void EventProcessor::EndOfEvent(G4HCofThisEvent*) {
     // Write trigger time only once per pulse
     if (currentEventTriggerTime >= 0) {
         if (recordedTriggerTimes.find(currentEventTriggerTime) == recordedTriggerTimes.end()) {
-            static G4int pulseId = 0; // Static to persist across batches
-            writeTriggerData(currentEventTriggerTime, pulseId);
-            triggerTimeToPulseId[currentEventTriggerTime] = pulseId; // Map trigger time to pulse ID
+            writeTriggerData(currentEventTriggerTime, particleGen ? particleGen->getCurrentPulseIndex() : -1);
             recordedTriggerTimes.insert(currentEventTriggerTime);
-            pulseId++;
         }
     }
     
@@ -163,7 +185,7 @@ void EventProcessor::EndOfEvent(G4HCofThisEvent*) {
         if (eventCount >= Sim::batchSize) {
             batchCount++;
             eventCount = 0;
-            recordedTriggerTimes.clear(); // Clear for new batch
+            recordedTriggerTimes.clear();
             G4cout << "EventProcessor: Starting new batch " << batchCount << G4endl;
             openOutputFile();
             openTriggerFile();
@@ -262,7 +284,7 @@ void EventProcessor::writeData() {
         dataFile << p.id << "," 
                  << p.parentId << "," 
                  << p.neutronId << ","
-                 << p.pulseId << "," // New pulse_id column
+                 << p.pulseId << "," 
                  << p.x << "," 
                  << p.y << "," 
                  << p.z << ","
