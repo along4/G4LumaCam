@@ -1361,7 +1361,9 @@ class Lens:
             Deadtime in nanoseconds for pixel saturation. During this window after first photon,
             pixel accumulates additional photons but doesn't reset.
         blob : float, default 0.0
-            Blob radius in pixels (can be float). Each photon triggers all pixels within this radius.
+            Blob radius in pixel units (can be float). Each photon from the intensifier triggers 
+            all camera pixels within this radius. A larger blob increases the number of triggered pixels.
+            Example: blob=0 → 1 pixel per photon, blob=1 → ~9 pixels, blob=2 → ~25 pixels.
         output_format : str, default "tpx3"
             Output format: "tpx3" for pixel-based output (x, y, toa, tot) or 
             "photons" for photon-averaged output with nz, pz columns.
@@ -1518,14 +1520,15 @@ class Lens:
             
             if blob > 0:
                 if verbosity >= VerbosityLevel.DETAILED:
-                    print(f"  Applying blob effect with radius {blob} pixels")
+                    print(f"  Applying circular blob effect with radius {blob} pixels")
                 
                 for idx in range(len(df)):
                     px_center = px_float[idx]
                     py_center = py_float[idx]
                     toa_i = toa[idx]
                     
-                    # Find all pixels within blob radius
+                    # Find all pixels within circular blob radius
+                    # We check a square region but only include pixels within circular distance
                     px_min = int(np.floor(px_center - blob))
                     px_max = int(np.ceil(px_center + blob))
                     py_min = int(np.floor(py_center - blob))
@@ -1533,8 +1536,12 @@ class Lens:
                     
                     for px_j in range(px_min, px_max + 1):
                         for py_j in range(py_min, py_max + 1):
-                            # Check if pixel center is within blob radius
-                            dist = np.sqrt((px_center - (px_j + 0.5))**2 + (py_center - (py_j + 0.5))**2)
+                            # Calculate distance from photon center to pixel center
+                            # This ensures a circular blob, not a square
+                            pixel_center_x = px_j + 0.5
+                            pixel_center_y = py_j + 0.5
+                            dist = np.sqrt((px_center - pixel_center_x)**2 + (py_center - pixel_center_y)**2)
+                            
                             if dist <= blob:
                                 pixel_key = (px_j, py_j)
                                 if pixel_key not in pixel_events:
@@ -1554,6 +1561,9 @@ class Lens:
                 print(f"  Total pixels triggered: {len(pixel_events)}")
                 total_events = sum(len(events) for events in pixel_events.values())
                 print(f"  Total pixel-photon pairs: {total_events}")
+                if blob > 0:
+                    avg_pixels_per_photon = total_events / len(df) if len(df) > 0 else 0
+                    print(f"  Average pixels triggered per photon: {avg_pixels_per_photon:.1f}")
 
             # Process each pixel with deadtime logic
             result_rows = []
@@ -1617,6 +1627,9 @@ class Lens:
             # Print stats
             if verbosity >= VerbosityLevel.BASIC:
                 print(f"  Input photons: {len(df)}, Output events: {len(result_df)}")
+                if blob > 0:
+                    ratio = len(result_df) / len(df) if len(df) > 0 else 0
+                    print(f"  Expansion ratio (blob effect): {ratio:.2f}x")
                 if output_format == "photons" and 'photon_count' in result_df.columns:
                     total_photons = result_df['photon_count'].sum()
                     print(f"  Total photons in output: {total_photons}")
