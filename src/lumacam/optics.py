@@ -1,5 +1,5 @@
 import logging
-# Or more specifically, suppress all INFO messages globally
+# Suppress all INFO messages globally
 logging.disable(logging.INFO)
 from rayoptics.environment import OpticalModel, PupilSpec, FieldSpec, WvlSpec, InteractiveLayout
 from rayoptics.environment import RayFanFigure, SpotDiagramFigure, Fit, open_model
@@ -56,7 +56,6 @@ def _process_ray_chunk_standalone(chunk, opm_file_path, wvl_values, verbosity=0)
         List of traced ray results, or None for failed traces
     """
     try:
-        
         # Log start of chunk processing
         if verbosity >= 2:
             print(f"Worker processing chunk of {len(chunk)} rays with opm_file: {opm_file_path}")
@@ -126,7 +125,6 @@ class Lens:
         Raises:
             ValueError: If invalid lens kind, missing zmx_file for 'zmx_file', or invalid parameters.
         """
-
         self.kind = kind
         self.focus = focus
         self.zmx_file = zmx_file
@@ -605,24 +603,26 @@ class Lens:
     def trace_rays(self, opm=None, opm_file=None, zscan=0, zfine=0, fnumber=None,
                    join=False, print_stats=False, n_processes=None, chunk_size=1000, 
                    progress_bar=True, timeout=3600, return_df=False, 
-                   verbosity=VerbosityLevel.BASIC, deadtime=None):
+                   verbosity=VerbosityLevel.BASIC, deadtime=None, blob=0.0):
         """
-        Trace rays from simulation data files and save processed results, optionally applying pixel saturation.
+        Trace rays from simulation data files and save processed results, optionally applying pixel saturation and blob effect.
 
         This method processes ray data from CSV files in the 'SimPhotons' directory using either
         a provided optical model, a saved optical model file, or by creating a refocused version
-        of the default optical model. If deadtime is provided, it applies the saturate_photons
+        of the default optical model. If deadtime or blob is provided, it applies the saturate_photons
         method with output_format="photons" and saves the results directly to the 'TracedPhotons'
-        directory, including photon_count, time_diff, nz, and pz columns. Otherwise, it saves raw traced
-        results to 'TracedPhotons' with nz and pz columns.
+        directory, including photon_count, time_diff, nz, and pz columns. It then calls _write_tpx3
+        to generate TPX3 files, reading trigger times from corresponding TriggerTimes CSV files (converting ns to ps).
+        Otherwise, it saves raw traced results to 'TracedPhotons' with nz and pz columns.
 
         Processing Pipeline:
         1. Locates all non-empty 'sim_data_*.csv' files in 'SimPhotons' directory
         2. Converts ray data to appropriate format for optical tracing
         3. Processes rays in parallel chunks using multiprocessing
-        4. If deadtime is provided, applies saturation to group photons by pixel and deadtime
+        4. If deadtime or blob is provided, applies saturation with blob effect to group photons by pixel and deadtime
         5. Saves results to 'TracedPhotons' directory with nz and pz from SimPhotons
-        6. Optionally returns combined results as a DataFrame
+        6. If deadtime or blob is provided, calls _write_tpx3 for each processed file
+        7. Optionally returns combined results as a DataFrame
 
         Parameters:
         -----------
@@ -667,15 +667,19 @@ class Lens:
         deadtime : float, optional
             Deadtime in nanoseconds for pixel saturation. If provided, applies
             saturate_photons with output_format="photons" and saves results to
-            'TracedPhotons' instead of 'SaturatedPhotons'.
+            'TracedPhotons', followed by _write_tpx3.
+        blob : float, default 0.0
+            Interaction radius in pixels for photon hits. If > 0, each photon hit affects
+            all pixels within this radius. If provided, applies saturate_photons and
+            triggers _write_tpx3.
 
         Returns:
         --------
         pd.DataFrame or None
             Combined DataFrame of all processed results if return_df=True, 
             otherwise None. Each row represents a traced ray with columns:
-            - Without deadtime: x2, y2, z2, id, neutron_id, toa2, nz, pz (if join=False)
-            - With deadtime: x2, y2, z2, id, neutron_id, toa2, photon_count, time_diff, nz, pz
+            - Without deadtime/blob: x2, y2, z2, id, neutron_id, toa2, nz, pz (if join=False)
+            - With deadtime/blob: x2, y2, z2, id, neutron_id, toa2, photon_count, time_diff, nz, pz
             - Additional columns if join=True
 
         Raises:
@@ -696,10 +700,14 @@ class Lens:
         
         if deadtime is not None and deadtime <= 0:
             raise ValueError(f"deadtime must be positive, got {deadtime}")
+        
+        if blob < 0:
+            raise ValueError(f"blob must be non-negative, got {blob}")
 
         # Set up directories
         sim_photons_dir = self.archive / "SimPhotons"
         traced_photons_dir = self.archive / "TracedPhotons"
+        trigger_times_dir = self.archive / "TriggerTimes"
         traced_photons_dir.mkdir(parents=True, exist_ok=True)
 
         # Find all non-empty sim_data_*.csv files
@@ -880,10 +888,10 @@ class Lens:
                 result_df = self._create_result_dataframe(results_with_indices, df, join, verbosity)
                 result_df["toa2"] = df["toa"] if "toa" in df.columns else np.nan
 
-                # Apply saturation if deadtime is provided
-                if deadtime is not None:
+                # Apply saturation if deadtime or blob is provided
+                if deadtime is not None or blob > 0:
                     if verbosity >= VerbosityLevel.DETAILED:
-                        print(f"  Applying saturation with deadtime={deadtime} ns")
+                        print(f"  Applying saturation with deadtime={deadtime} ns, blob={blob} pixels")
                     # Ensure required columns for saturation
                     required_cols = ['x2', 'y2', 'z2', 'toa2', 'id', 'neutron_id']
                     missing_cols = [col for col in required_cols if col not in result_df.columns]
@@ -895,6 +903,7 @@ class Lens:
                     result_df = self.saturate_photons(
                         data=result_df,
                         deadtime=deadtime,
+                        blob=blob,
                         output_format="photons",
                         min_tot=20.0,
                         pixel_size=None,
@@ -905,15 +914,42 @@ class Lens:
                             print(f"  Saturation produced no results for {csv_file.name}")
                         continue
 
-                # Print statistics if requested
-                if print_stats and verbosity >= VerbosityLevel.BASIC:
-                    self._print_tracing_stats(csv_file.name, df, result_df)
-
                 # Save results to file
                 output_file = traced_photons_dir / f"traced_{csv_file.name}"
                 result_df.to_csv(output_file, index=False)
                 if verbosity >= VerbosityLevel.DETAILED:
                     print(f"  Saved results to: {output_file}")
+
+                # Call _write_tpx3 if deadtime or blob is provided
+                if deadtime is not None or blob > 0:
+                    trigger_file = trigger_times_dir / f"trigger_{csv_file.name}"
+                    trigger_times_ps = None
+                    if trigger_file.exists():
+                        try:
+                            trigger_df = pd.read_csv(trigger_file)
+                            if 'trigger_time_ns' in trigger_df.columns:
+                                trigger_times_ps = (trigger_df['trigger_time_ns'] * 1000).astype(np.int64).values
+                            else:
+                                if verbosity > VerbosityLevel.QUIET:
+                                    print(f"Warning: {trigger_file.name} missing 'trigger_time_ns' column")
+                        except Exception as e:
+                            if verbosity > VerbosityLevel.QUIET:
+                                print(f"Error reading trigger file {trigger_file.name}: {str(e)}")
+                    else:
+                        if verbosity > VerbosityLevel.QUIET:
+                            print(f"Warning: Trigger file {trigger_file.name} not found")
+                    
+                    self._write_tpx3(
+                        trigger_times_ps=trigger_times_ps,
+                        traced_data=result_df,
+                        chip_index=0,
+                        verbosity=verbosity,
+                        sensor_size=256
+                    )
+
+                # Print statistics if requested
+                if print_stats and verbosity >= VerbosityLevel.BASIC:
+                    self._print_tracing_stats(csv_file.name, df, result_df)
 
                 if return_df:
                     all_results.append(result_df)
@@ -1304,96 +1340,84 @@ class Lens:
             z_range = result_df['z2'].max() - result_df['z2'].min()
             print(f"    Position ranges - X: {x_range:.3f}mm, Y: {y_range:.3f}mm, Z: {z_range:.3f}mm")
 
-    def saturate_photons(self, data: pd.DataFrame = None, deadtime: float = 100.0, output_format: str = "tpx3",
-                         min_tot: float = 20.0, pixel_size: float = None, verbosity: VerbosityLevel = VerbosityLevel.BASIC
-                         ) -> Union[pd.DataFrame, None]:
+    def saturate_photons(self, data: pd.DataFrame = None, deadtime: float = 600.0, blob: float = 0.0, output_format: str = "tpx3",
+                        min_tot: float = 20.0, pixel_size: float = None, verbosity: VerbosityLevel = VerbosityLevel.BASIC
+                        ) -> Union[pd.DataFrame, None]:
         """
-        Process traced photons to simulate an event camera with pixel saturation within a specified deadtime.
+        Process traced photons to simulate an image intensifier coupled to an event camera.
 
-        This method processes photon data, either from the provided DataFrame or from CSV files in the
-        'TracedPhotons' directory, grouping photons that arrive at the same integer pixel (256x256 grid)
-        within the specified deadtime. It checks if the input data is sorted by toa2 and sorts if necessary
-        to ensure correct grouping. Depending on the output_format, it generates either a TPX3-like output
-        or a photon-averaged output, and saves results to the 'SaturatedPhotons' subfolder as CSV files.
-        For output_format="photons", includes nz and pz columns from the corresponding SimPhotons file
-        or the input DataFrame.
+        Physical model:
+        1. Photon hits image intensifier at position (x, y)
+        2. Intensifier creates a circular blob on the camera with specified radius
+        3. All pixels within blob radius are triggered at the photon's arrival time
+        4. Each pixel has independent deadtime (default 600ns)
+        5. TOT = time from first to last photon within deadtime window for each pixel
 
         Parameters:
         -----------
         data : pd.DataFrame, optional
             DataFrame containing photon data to process. If None, loads from 'TracedPhotons' directory.
-        deadtime : float, default 100.0
-            Deadtime in nanoseconds for pixel saturation.
+        deadtime : float, default 600.0
+            Deadtime in nanoseconds for pixel saturation. During this window after first photon,
+            pixel accumulates additional photons but doesn't reset.
+        blob : float, default 0.0
+            Blob radius in pixels (can be float). Each photon triggers all pixels within this radius.
         output_format : str, default "tpx3"
-            Output format: "tpx3" for pixel-based output with TOA and TOT, or "photons" for averaged photon positions
-            with additional columns for photon count, time difference, nz, and pz.
+            Output format: "tpx3" for pixel-based output (x, y, toa, tot) or 
+            "photons" for photon-averaged output with nz, pz columns.
         min_tot : float, default 20.0
-            Minimum Time-Over-Threshold (TOT) in nanoseconds for TPX3 format.
+            Minimum Time-Over-Threshold in nanoseconds for TPX3 format.
         pixel_size : float, optional
-            Size of each pixel in mm. If None, automatically determined from the data range.
+            Size of each pixel in mm. If None, auto-determined as sensor_range/256.
         verbosity : VerbosityLevel, default VerbosityLevel.BASIC
-            Controls output detail level:
-            - QUIET: Only essential error messages
-            - BASIC: Progress bars + basic file info
-            - DETAILED: All available information including warnings
+            Controls output detail level.
 
         Returns:
         --------
         pd.DataFrame or None
-            Combined DataFrame of all processed results if data is provided or files are processed,
-            otherwise None. For "tpx3" format, columns are: x, y, toa, tot
-            For "photons" format, columns are: x2, y2, z2, id, neutron_id, toa2, photon_count, time_diff, nz, pz
-
-        Raises:
-        -------
-        ValueError
-            If output_format is invalid or required columns are missing
-        FileNotFoundError
-            If no valid traced photon files are found when data is None
+            For "tpx3": columns are x, y, toa, tot (pixel positions in mm, arrival time, time-over-threshold)
+            For "photons": columns are x2, y2, z2, id, neutron_id, toa2, photon_count, time_diff, nz, pz
         """
         if output_format not in ["tpx3", "photons"]:
             raise ValueError(f"Invalid output_format: {output_format}. Must be 'tpx3' or 'photons'")
+        if blob < 0:
+            raise ValueError(f"blob must be non-negative, got {blob}")
+        if deadtime is not None and deadtime <= 0:
+            raise ValueError(f"deadtime must be positive, got {deadtime}")
 
         # Set up input data
         if data is not None:
             dfs = [(data, None)]
             save_results = False
         else:
-            # Set up directories
             traced_photons_dir = self.archive / "TracedPhotons"
             saturated_photons_dir = self.archive / "SaturatedPhotons"
             sim_photons_dir = self.archive / "SimPhotons"
             saturated_photons_dir.mkdir(parents=True, exist_ok=True)
 
-            # Find all non-empty traced_data_*.csv files
             csv_files = sorted(traced_photons_dir.glob("traced_sim_data_*.csv"))
             dfs = []
             for f in csv_files:
                 if f.stat().st_size > 100:
                     sim_file = sim_photons_dir / f.name.replace("traced_", "")
-                    if not sim_file.exists():
-                        if verbosity > VerbosityLevel.QUIET:
-                            print(f"Warning: Corresponding SimPhotons file {sim_file.name} not found for {f.name}")
-                        sim_df = None
-                    else:
+                    sim_df = None
+                    if sim_file.exists():
                         try:
                             sim_df = pd.read_csv(sim_file)
                             if sim_df.empty:
                                 sim_df = None
-                                if verbosity > VerbosityLevel.QUIET:
-                                    print(f"Warning: SimPhotons file {sim_file.name} is empty")
                             else:
-                                # Validate nz and pz in SimPhotons
-                                missing_cols = [col for col in ['nz', 'pz'] if col not in sim_df.columns]
-                                if missing_cols:
-                                    if verbosity > VerbosityLevel.QUIET:
-                                        print(f"Warning: SimPhotons file {sim_file.name} missing columns {missing_cols}. Setting to NaN.")
-                                    for col in missing_cols:
+                                # Ensure nz and pz exist
+                                for col in ['nz', 'pz']:
+                                    if col not in sim_df.columns:
+                                        if verbosity > VerbosityLevel.QUIET:
+                                            print(f"Warning: SimPhotons file {sim_file.name} missing {col}. Setting to NaN.")
                                         sim_df[col] = np.nan
                         except Exception as e:
                             if verbosity > VerbosityLevel.QUIET:
                                 print(f"Error reading SimPhotons file {sim_file.name}: {str(e)}")
                             sim_df = None
+                    
                     try:
                         df = pd.read_csv(f)
                         if not df.empty:
@@ -1406,8 +1430,6 @@ class Lens:
             if not dfs:
                 if verbosity > VerbosityLevel.QUIET:
                     print("No valid traced photon files found in 'TracedPhotons' directory.")
-                    print(f"Searched in: {traced_photons_dir}")
-                    print("Expected files matching pattern: traced_sim_data_*.csv")
                 return None
             save_results = True
 
@@ -1415,15 +1437,15 @@ class Lens:
             print(f"Found {len(dfs)} valid traced photon files to process")
 
         all_results = []
-
-        # Progress bar for file processing
         file_desc = f"Processing {len(dfs)} files" if save_results else "Processing provided data"
-        file_iter = tqdm(dfs, desc=file_desc, disable=not verbosity >= VerbosityLevel.BASIC)
+        file_iter = tqdm(dfs, desc=file_desc, disable=not (verbosity >= VerbosityLevel.BASIC))
 
         for i, (df, sim_df) in enumerate(file_iter):
             file_name = f"provided_data_{i}.csv" if not save_results else Path(df.name).name
+            
             if verbosity >= VerbosityLevel.DETAILED:
                 print(f"\nProcessing: {file_name}")
+                print(f"  Input shape: {df.shape}")
 
             if df.empty:
                 if verbosity >= VerbosityLevel.DETAILED:
@@ -1440,769 +1462,221 @@ class Lens:
                     print(f"Skipping {file_name}: missing columns {missing_cols}")
                 continue
 
-            # Remove rows with NaN in required columns
-            df = df.dropna(subset=required_cols)
-
+            # Clean data
+            df = df.dropna(subset=required_cols).reset_index(drop=True)
             if df.empty:
                 if verbosity >= VerbosityLevel.DETAILED:
                     print(f"Skipping {file_name}: no valid data after removing NaNs")
                 continue
 
-            # Check if data is sorted by toa2
-            is_sorted = (df['toa2'].diff().dropna() >= 0).all()
-            if not is_sorted:
+            # Sort by arrival time
+            if not (df['toa2'].diff().dropna() >= 0).all():
                 if verbosity >= VerbosityLevel.BASIC:
-                    print(f"Warning: Data in {file_name} is not sorted by toa2. Sorting now.")
+                    print(f"Warning: Sorting {file_name} by toa2")
                 df = df.sort_values('toa2').reset_index(drop=True)
 
-            # Map nz and pz if sim_df is available or if columns exist in df
-            neutron_id_to_nz_pz = {}
-            if sim_df is not None and 'neutron_id' in sim_df.columns:
-                # Validate consistency of nz and pz per neutron_id
-                grouped = sim_df.groupby('neutron_id')
-                for neutron_id, group in grouped:
-                    if 'nz' in group.columns:
-                        unique_nz = group['nz'].nunique(dropna=True)
-                        if unique_nz > 1:
-                            if verbosity >= VerbosityLevel.DETAILED:
-                                print(f"Warning: Inconsistent nz values for neutron_id {neutron_id} in SimPhotons file")
-                        neutron_id_to_nz_pz[neutron_id] = {
-                            'nz': group['nz'].iloc[0] if 'nz' in group.columns else np.nan,
-                            'pz': group['pz'].iloc[0] if 'pz' in group.columns else np.nan
-                        }
-            elif 'neutron_id' in df.columns and all(col in df.columns for col in ['nz', 'pz']):
-                # Use nz and pz from input DataFrame if available
-                grouped = df.groupby('neutron_id')
-                for neutron_id, group in grouped:
-                    unique_nz = group['nz'].nunique(dropna=True)
-                    if unique_nz > 1:
-                        if verbosity >= VerbosityLevel.DETAILED:
-                            print(f"Warning: Inconsistent nz values for neutron_id {neutron_id} in input data")
-                    neutron_id_to_nz_pz[neutron_id] = {
-                        'nz': group['nz'].iloc[0],
-                        'pz': group['pz'].iloc[0]
-                    }
-            else:
-                if verbosity >= VerbosityLevel.QUIET:
-                    print(f"Warning: No nz/pz data available for {file_name}. Setting to NaN.")
-                neutron_id_to_nz_pz = {nid: {'nz': np.nan, 'pz': np.nan} for nid in df['neutron_id'].unique()}
+            # Align sim_df if needed
+            if sim_df is not None and len(sim_df) == len(df):
+                # Assume sim_df corresponds to original df order, so no reordering needed
+                pass
 
-            # Determine pixel size if not provided
+            # Determine pixel size
             if pixel_size is None:
-                x_range = df['x2'].max() - df['x2'].min()
-                y_range = df['y2'].max() - df['y2'].min()
-                pixel_size = max(x_range, y_range) / 256.0 if x_range > 0 and y_range > 0 else 1.0
-
-            # Assign pixels (0-based indexing) using vectorized operations
-            df['pixel_x'] = np.clip((df['x2'] / pixel_size + 128).astype(int), 0, 255)
-            df['pixel_y'] = np.clip((df['y2'] / pixel_size + 128).astype(int), 0, 255)
-
-            # Group photons by pixel and deadtime
-            grouped_data = []
-            current_group_id = 0
-
-            # Group by pixel_x and pixel_y
-            grouped_pixels = df.groupby(['pixel_x', 'pixel_y'])
-            
-            for (pixel_x, pixel_y), pixel_df in grouped_pixels:
-                group_indices = []
-                current_time = None
-
-                for idx, row in pixel_df.iterrows():
-                    if current_time is None:
-                        current_time = row['toa2']
-                        group_indices = [idx]
-                    elif row['toa2'] <= current_time + deadtime:
-                        group_indices.append(idx)
-                    else:
-                        if group_indices:
-                            grouped_data.append((pixel_x, pixel_y, group_indices))
-                            for g_idx in group_indices:
-                                df.loc[g_idx, 'group_id'] = current_group_id
-                            current_group_id += 1
-                        current_time = row['toa2']
-                        group_indices = [idx]
-
-                if group_indices:
-                    grouped_data.append((pixel_x, pixel_y, group_indices))
-                    for g_idx in group_indices:
-                        df.loc[g_idx, 'group_id'] = current_group_id
-                    current_group_id += 1
-
-            if not grouped_data:
+                x_range = df['x2'].max() - df['x2'].min() if len(df) > 0 else 20.0
+                y_range = df['y2'].max() - df['y2'].min() if len(df) > 0 else 20.0
+                pixel_size = max(x_range, y_range, 20.0) / 256.0
                 if verbosity >= VerbosityLevel.DETAILED:
-                    print(f"No valid photon groups found in {file_name}")
-                continue
+                    print(f"  Auto-determined pixel_size: {pixel_size:.6f} mm")
 
-            # Process groups based on output format
+            # Extract data arrays
+            x_mm = df['x2'].to_numpy()
+            y_mm = df['y2'].to_numpy()
+            z_mm = df['z2'].to_numpy()
+            toa = df['toa2'].to_numpy()
+            photon_ids = df['id'].to_numpy() if 'id' in df.columns else np.arange(len(df), dtype=np.int64)
+            neutron_ids = df['neutron_id'].to_numpy() if 'neutron_id' in df.columns else np.full(len(df), -1, dtype=np.int64)
+            
+            # Get nz, pz from sim_df or df
+            if sim_df is not None and len(sim_df) == len(df):
+                nz = sim_df['nz'].to_numpy() if 'nz' in sim_df.columns else np.full(len(df), np.nan)
+                pz = sim_df['pz'].to_numpy() if 'pz' in sim_df.columns else np.full(len(df), np.nan)
+            else:
+                nz = df['nz'].to_numpy() if 'nz' in df.columns else np.full(len(df), np.nan)
+                pz = df['pz'].to_numpy() if 'pz' in df.columns else np.full(len(df), np.nan)
+
+            # Convert to pixel coordinates (centered at origin = 128, 128)
+            px_float = (x_mm + 10.0) / pixel_size
+            py_float = (y_mm + 10.0) / pixel_size
+
+            if verbosity >= VerbosityLevel.DETAILED:
+                print(f"  Pixel coordinate range: x=[{px_float.min():.1f}, {px_float.max():.1f}], "
+                    f"y=[{py_float.min():.1f}, {py_float.max():.1f}]")
+
+            # Build pixel event list with blob effect
+            # Structure: pixel_events[pixel_tuple] = list of (toa, original_photon_index)
+            pixel_events = {}
+            
+            if blob > 0:
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"  Applying blob effect with radius {blob} pixels")
+                
+                for idx in range(len(df)):
+                    px_center = px_float[idx]
+                    py_center = py_float[idx]
+                    toa_i = toa[idx]
+                    
+                    # Find all pixels within blob radius
+                    px_min = int(np.floor(px_center - blob))
+                    px_max = int(np.ceil(px_center + blob))
+                    py_min = int(np.floor(py_center - blob))
+                    py_max = int(np.ceil(py_center + blob))
+                    
+                    for px_j in range(px_min, px_max + 1):
+                        for py_j in range(py_min, py_max + 1):
+                            # Check if pixel center is within blob radius
+                            dist = np.sqrt((px_center - (px_j + 0.5))**2 + (py_center - (py_j + 0.5))**2)
+                            if dist <= blob:
+                                pixel_key = (px_j, py_j)
+                                if pixel_key not in pixel_events:
+                                    pixel_events[pixel_key] = []
+                                pixel_events[pixel_key].append((toa_i, idx))
+            else:
+                # No blob: each photon triggers only its pixel
+                for idx in range(len(df)):
+                    px_j = int(np.floor(px_float[idx]))
+                    py_j = int(np.floor(py_float[idx]))
+                    pixel_key = (px_j, py_j)
+                    if pixel_key not in pixel_events:
+                        pixel_events[pixel_key] = []
+                    pixel_events[pixel_key].append((toa[idx], idx))
+
+            if verbosity >= VerbosityLevel.DETAILED:
+                print(f"  Total pixels triggered: {len(pixel_events)}")
+                total_events = sum(len(events) for events in pixel_events.values())
+                print(f"  Total pixel-photon pairs: {total_events}")
+
+            # Process each pixel with deadtime logic
             result_rows = []
-
-            if output_format == "tpx3":
-                for pixel_x, pixel_y, indices in grouped_data:
-                    group_df = df.loc[indices]
-                    if group_df.empty:
-                        continue
-
-                    first_toa = group_df['toa2'].min()
-                    last_toa = group_df['toa2'].max()
-                    toa_bin = int(first_toa / 1.5625)
-                    tot = max(last_toa - first_toa, min_tot)
-
-                    result_rows.append({
-                        'x': pixel_x + 1,
-                        'y': pixel_y + 1,
-                        'toa': toa_bin,
-                        'tot': tot
-                    })
-
-            elif output_format == "photons":
-                for pixel_x, pixel_y, indices in grouped_data:
-                    group_df = df.loc[indices]
-                    if group_df.empty:
-                        continue
-
-                    first_toa = group_df['toa2'].min()
-                    last_toa = group_df['toa2'].max()
-                    time_diff = last_toa - first_toa
-
-                    if time_diff > deadtime + 1e-6:
-                        if verbosity >= VerbosityLevel.DETAILED:
-                            print(f"Warning: time_diff {time_diff:.2f} ns exceeds deadtime {deadtime} ns "
-                                  f"in pixel ({pixel_x}, {pixel_y}) of {file_name}")
-
-                    first_row = group_df.iloc[0]
-                    mean_x2 = group_df['x2'].mean()
-                    mean_y2 = group_df['y2'].mean()
-                    mean_z2 = group_df['z2'].mean()
-                    photon_count = len(group_df)
-                    neutron_id = first_row['neutron_id']
-
-                    # Get nz and pz for this neutron_id
-                    nz_pz = neutron_id_to_nz_pz.get(neutron_id, {'nz': np.nan, 'pz': np.nan})
-
-                    result_rows.append({
-                        'x2': mean_x2,
-                        'y2': mean_y2,
-                        'z2': mean_z2,
-                        'id': first_row['id'],
-                        'neutron_id': neutron_id,
-                        'toa2': first_row['toa2'],
-                        'photon_count': photon_count,
-                        'time_diff': time_diff,
-                        'nz': nz_pz['nz'],
-                        'pz': nz_pz['pz']
-                    })
+            
+            for pixel_key, events in pixel_events.items():
+                px_i, py_i = pixel_key
+                
+                # Sort events by arrival time
+                events.sort(key=lambda x: x[0])
+                
+                if deadtime is not None and deadtime > 0:
+                    # Group events within deadtime windows
+                    current_window_start = None
+                    window_events = []
+                    
+                    for event_toa, photon_idx in events:
+                        if current_window_start is None:
+                            # Start new window
+                            current_window_start = event_toa
+                            window_events = [(event_toa, photon_idx)]
+                        elif event_toa < current_window_start + deadtime:
+                            # Add to current window
+                            window_events.append((event_toa, photon_idx))
+                        else:
+                            # Process completed window
+                            self._add_pixel_event(result_rows, px_i, py_i, window_events, df, 
+                                        photon_ids, neutron_ids, nz, pz,
+                                        pixel_size, min_tot, output_format)
+                            
+                            # Start new window
+                            current_window_start = event_toa
+                            window_events = [(event_toa, photon_idx)]
+                    
+                    # Process final window
+                    if window_events:
+                        self._add_pixel_event(result_rows, px_i, py_i, window_events, df,
+                                    photon_ids, neutron_ids, nz, pz,
+                                    pixel_size, min_tot, output_format)
+                else:
+                    # No deadtime: each event is separate
+                    for event_toa, photon_idx in events:
+                        self._add_pixel_event(result_rows, px_i, py_i, [(event_toa, photon_idx)], df,
+                                    photon_ids, neutron_ids, nz, pz,
+                                    pixel_size, min_tot, output_format)
 
             # Create result DataFrame
-            result_df = pd.DataFrame(result_rows)
+            if not result_rows:
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"  No results after processing {file_name}")
+                continue
 
-            # Save results to file if processing files
+            result_df = pd.DataFrame(result_rows)
+            
+            # Save results if processing files
             if save_results:
                 output_file = saturated_photons_dir / f"saturated_{file_name}"
                 result_df.to_csv(output_file, index=False)
                 if verbosity >= VerbosityLevel.DETAILED:
                     print(f"  Saved results to: {output_file}")
 
+            # Print stats
+            if verbosity >= VerbosityLevel.BASIC:
+                print(f"  Input photons: {len(df)}, Output events: {len(result_df)}")
+                if output_format == "photons" and 'photon_count' in result_df.columns:
+                    total_photons = result_df['photon_count'].sum()
+                    print(f"  Total photons in output: {total_photons}")
+
             all_results.append(result_df)
 
-        # Return combined results if requested
+        # Combine results
         if all_results:
-            combined_df = pd.concat(all_results, ignore_index=True)
-            if verbosity > VerbosityLevel.QUIET:
-                print(f"\nReturning combined DataFrame with {len(combined_df)} rows")
-            return combined_df
+            try:
+                combined_df = pd.concat(all_results, ignore_index=True)
+                if verbosity > VerbosityLevel.QUIET:
+                    print(f"\nReturning combined DataFrame with {len(combined_df)} rows")
+                return combined_df
+            except ValueError as e:
+                if verbosity > VerbosityLevel.QUIET:
+                    print(f"Error combining results: {str(e)}")
+                return None
 
         if verbosity > VerbosityLevel.QUIET:
-            print(f"\nProcessing complete. Results saved to: {saturated_photons_dir}")
+            print("\nNo results to return")
         return None
-    def zscan(self, zfocus_range: Union[np.ndarray, list, float] = 0.,
-            zfine_range: Union[np.ndarray, list, float] = 0.,
-            data: pd.DataFrame = None, opm: "OpticalModel" = None,
-            n_processes: int = None, chunk_size: int = 1000,
-            archive: str = None, verbose: VerbosityLevel = VerbosityLevel.QUIET) -> pd.Series:
-        """
-        Perform a Z-scan to determine the optimal focus by evaluating ray tracing results.
-
-        Parameters:
-        -----------
-        zfocus_range : Union[np.ndarray, list, float], default 0.
-            Range of z-focus positions to scan (scalar or iterable)
-        zfine_range : Union[np.ndarray, list, float], default 0.
-            Range of z-fine positions to scan (scalar or iterable)
-        data : pd.DataFrame, optional
-            Input DataFrame with ray data; overrides archive/class data if provided
-        opm : OpticalModel, optional
-            Custom optical model; uses self.opm0 if None
-        n_processes : int, optional
-            Number of processes for parallel ray tracing (None uses CPU count)
-        chunk_size : int, default 1000
-            Number of rays per processing chunk
-        archive : str, optional
-            Path to archive directory containing 'SimPhotons' with simulation data files
-        verbose : VerbosityLevel, default VerbosityLevel.BASIC
-            Controls output detail: QUIET (0), BASIC (1), DETAILED (2)
-
-        Returns:
-        --------
-        pd.Series
-            Series mapping each scanned z-value to the combined standard deviation of x2 and y2
-        """
-        # Load data from archive if provided
-        if archive is not None:
-            archive_path = Path(archive)
-            sim_photons_dir = archive_path / "SimPhotons"
-            if not sim_photons_dir.exists():
-                raise ValueError(f"SimPhotons directory not found in {archive_path}")
-
-            csv_files = sorted(sim_photons_dir.glob("sim_data_*.csv"))
-            valid_dfs = []
-            for file in tqdm(csv_files, desc="Loading simulation data", disable=verbose == VerbosityLevel.QUIET):
-                try:
-                    if file.stat().st_size > 100:
-                        df = pd.read_csv(file)
-                        if not df.empty:
-                            valid_dfs.append(df)
-                except Exception as e:
-                    if verbose >= VerbosityLevel.DETAILED:
-                        print(f"⚠️ Skipping {file.name} due to error: {e}")
-                    continue
-
-            if valid_dfs:
-                data = pd.concat(valid_dfs, ignore_index=True)
-                if verbose >= VerbosityLevel.DETAILED:
-                    print(f"Loaded {len(valid_dfs)} valid simulation data files with {len(data)} rows.")
-            else:
-                raise ValueError(f"No valid simulation data files found in {sim_photons_dir}")
-
-        # Fallback to provided or class data
-        if data is None:
-            data = getattr(self, 'data', None)
-            if data is None:
-                raise ValueError("No data provided and no class data available.")
-            if verbose >= VerbosityLevel.DETAILED:
-                print(f"Using class data with {len(data)} rows.")
-
-        opm = deepcopy(opm) if opm else deepcopy(self.opm0)
-
-        # Determine scan type
-        zfocus_is_scalar = isinstance(zfocus_range, (float, int))
-        zfine_is_scalar = isinstance(zfine_range, (float, int))
-
-        if not zfocus_is_scalar and not zfine_is_scalar:
-            raise ValueError("Either zfocus_range or zfine_range must be a scalar, not both iterables.")
-
-        if zfocus_is_scalar:
-            scan_range = np.array(zfine_range if isinstance(zfine_range, (np.ndarray, list)) else [zfine_range])
-            fixed_value = zfocus_range
-            scan_type = "zfine"
-        else:
-            scan_range = np.array(zfocus_range if isinstance(zfocus_range, (np.ndarray, list)) else [zfocus_range])
-            fixed_value = zfine_range
-            scan_type = "zfocus"
-
-        results = {}
-        min_std = float('inf')
-        best_focus = None
-
-        # Single progress bar for zscan
-        pbar = tqdm(scan_range, desc=f"Z-scan ({scan_type})", disable=verbose == VerbosityLevel.QUIET)
-
-        for value in pbar:
-            if verbose >= VerbosityLevel.DETAILED:
-                print(f"\n{'='*50}")
-                print(f"Processing {scan_type} = {value:.2f}")
-
-            try:
-                new_opm = self.refocus(opm, zfocus=value if scan_type == "zfocus" else fixed_value,
-                                    zfine=value if scan_type == "zfine" else fixed_value)
-                if verbose >= VerbosityLevel.DETAILED:
-                    print(f"Refocused OPM with {scan_type}={value:.2f}, fixed_value={fixed_value:.2f}")
-            except Exception as e:
-                if verbose >= VerbosityLevel.DETAILED:
-                    print(f"Error refocusing for {scan_type} = {value:.2f}: {str(e)}")
-                results[value] = float('inf')
-                continue
-
-            # Trace rays with progress bar off for BASIC verbosity
-            traced_df = self.trace_rays(opm=new_opm, join=False, print_stats=False,
-                                    n_processes=n_processes, chunk_size=chunk_size,
-                                    progress_bar=False,  # Disable nested bars
-                                    return_df=True, verbosity=verbose)
-
-            if traced_df is None or traced_df.empty:
-                if verbose >= VerbosityLevel.DETAILED:
-                    print(f"Warning: No valid traced data for {scan_type} = {value:.2f}")
-                results[value] = float('inf')
-                continue
-
-            if 'x2' not in traced_df.columns or 'y2' not in traced_df.columns:
-                if verbose >= VerbosityLevel.DETAILED:
-                    print(f"Warning: Missing x2 or y2 columns for {scan_type} = {value:.2f}")
-                results[value] = float('inf')
-                continue
-
-            try:
-                valid_x2 = traced_df['x2'].dropna()
-                valid_y2 = traced_df['y2'].dropna()
-                if len(valid_x2) == 0 or len(valid_y2) == 0:
-                    if verbose >= VerbosityLevel.DETAILED:
-                        print(f"No valid data points for std calculation at {scan_type} = {value:.2f}")
-                    results[value] = float('inf')
-                    continue
-
-                std_value = np.sqrt(valid_x2.std()**2 + valid_y2.std()**2)
-                results[value] = std_value
-
-                if verbose >= VerbosityLevel.DETAILED:
-                    print(f"x2 std: {valid_x2.std():.3f}, y2 std: {valid_y2.std():.3f}, combined std: {std_value:.3f}")
-
-                if std_value < min_std:
-                    min_std = std_value
-                    best_focus = value
-
-                if verbose >= VerbosityLevel.BASIC:
-                    pbar.set_description(
-                        f"Z-scan ({scan_type}) [current: {value:.2f}, std: {std_value:.3f}, best: {min_std:.3f} @ {best_focus:.2f}]"
-                    )
-
-            except Exception as e:
-                if verbose >= VerbosityLevel.DETAILED:
-                    print(f"Error analyzing traced data for {scan_type} = {value:.2f}: {str(e)}")
-                if verbose >= VerbosityLevel.DETAILED:
-                    import traceback
-                    traceback.print_exc()
-                results[value] = float('inf')
-                continue
-
-        pbar.close()
-
-        if verbose >= VerbosityLevel.DETAILED:
-            print("\nFinal results:")
-            for k, v in sorted(results.items()):
-                print(f"{scan_type} = {k:.2f}: std = {v:.3f}")
-
-        if min_std != float('inf') and best_focus is not None:
-            if verbose > VerbosityLevel.BASIC:
-                print(f"Z-scan completed. Best {scan_type}: {best_focus:.2f} with std: {min_std:.3f}")
-        else:
-            if verbose > VerbosityLevel.BASIC:
-                print("Z-scan completed but no valid results were found.")
-
-        return pd.Series(results)
 
 
-
-
-    def zscan_optimize(self, initial_zfocus: float = 0., initial_zfine: float = 0.,
-                    initial_fnumber: float = None,
-                    optimize_param: str = "zfocus", zfocus_min: float = None, zfocus_max: float = None,
-                    zfine_min: float = None, zfine_max: float = None,
-                    fnumber_min: float = None, fnumber_max: float = None,
-                    data: pd.DataFrame = None, opm: "OpticalModel" = None,
-                    n_processes: int = None, chunk_size: int = 1000, archive: str = None,
-                    verbose: VerbosityLevel = VerbosityLevel.BASIC) -> dict:
-        """
-        Optimize z-focus, z-fine positions, and/or f-number using lmfit minimization to minimize ray position spread
-        while maximizing the number of traced photons.
-
-        This method:
-        1. Loads simulation data from archive, provided DataFrame, or class data
-        2. Optimizes zfocus, zfine, fnumber, or combinations sequentially using lmfit
-        3. Balances minimizing std of x2/y2 with maximizing traced photons
-        4. Returns the best parameters and minimum objective value achieved
-
-        Parameters:
-        -----------
-        initial_zfocus : float, default 0.
-            Initial guess for z-focus position
-        initial_zfine : float, default 0.
-            Initial guess for z-fine position
-        initial_fnumber : float, optional
-            Initial guess for f-number (None uses the default lens f-number)
-        optimize_param : str, default "zfocus"
-            Parameter to optimize: "zfocus", "zfine", "fnumber", or combinations like "both", 
-            "zfocus+fnumber", "zfine+fnumber", "all"
-        zfocus_min : float, optional
-            Minimum allowable z-focus value
-        zfocus_max : float, optional
-            Maximum allowable z-focus value
-        zfine_min : float, optional
-            Minimum allowable z-fine value
-        zfine_max : float, optional
-            Maximum allowable z-fine value
-        fnumber_min : float, optional
-            Minimum allowable f-number value
-        fnumber_max : float, optional
-            Maximum allowable f-number value
-        data : pd.DataFrame, optional
-            Input ray data; overrides archive/class data if provided
-        opm : OpticalModel, optional
-            Custom optical model; uses self.opm0 if None
-        n_processes : int, optional
-            Number of processes for parallel ray tracing (None uses CPU count)
-        chunk_size : int, default 1000
-            Number of rays per processing chunk
-        archive : str, optional
-            Path to archive directory with 'SimPhotons' simulation data files
-        verbose : VerbosityLevel, default VerbosityLevel.BASIC
-            Controls output detail: QUIET (0), BASIC (1), DETAILED (2)
-
-        Returns:
-        --------
-        dict
-            Optimization results with keys:
-            - best_zfocus: Optimal z-focus position (if optimized)
-            - best_zfine: Optimal z-fine position (if optimized)
-            - best_fnumber: Optimal f-number (if optimized)
-            - min_std: Minimum standard deviation achieved
-            - traced_fraction: Fraction of photons traced at optimal position
-            - result: lmfit MinimizeResult object from the last optimization
-
-        Raises:
-        -------
-        ValueError
-            If optimize_param is invalid or no valid data is found
-        """
-        # Load data from archive if provided
-        if archive is not None:
-            archive_path = Path(archive)
-            sim_photons_dir = archive_path / "SimPhotons"
-            if not sim_photons_dir.exists():
-                raise ValueError(f"SimPhotons directory not found in {archive_path}")
-
-            csv_files = sorted(sim_photons_dir.glob("sim_data_*.csv"))
-            valid_dfs = []
-            for file in tqdm(csv_files, desc="Loading simulation data", disable=verbose == VerbosityLevel.QUIET):
-                try:
-                    if file.stat().st_size > 100:
-                        df = pd.read_csv(file)
-                        if not df.empty:
-                            valid_dfs.append(df)
-                except Exception as e:
-                    if verbose >= VerbosityLevel.DETAILED:
-                        print(f"⚠️ Skipping {file.name} due to error: {e}")
-                    continue
-
-            if valid_dfs:
-                data = pd.concat(valid_dfs, ignore_index=True)
-                if verbose >= VerbosityLevel.DETAILED:
-                    print(f"Loaded {len(valid_dfs)} valid simulation data files with {len(data)} rows.")
-            else:
-                raise ValueError(f"No valid simulation data files found in {sim_photons_dir}")
-
-        # Fallback to provided or class data
-        if data is None:
-            data = getattr(self, 'data', None)
-            if data is None:
-                raise ValueError("No data provided and no class data available.")
-            if verbose >= VerbosityLevel.DETAILED:
-                print(f"Using class data with {len(data)} rows.")
-
-        # Clean data by dropping rows with NaN in essential columns
-        essential_columns = ['x', 'y', 'z', 'dx', 'dy', 'dz', 'wavelength']
-        if not all(col in data.columns for col in essential_columns):
-            raise ValueError(f"Data missing required columns: {essential_columns}")
-        data = data.dropna(subset=essential_columns)
-        if data.empty:
-            raise ValueError("Data is empty after removing NaN from essential columns.")
-        total_photons = len(data)
-        if verbose >= VerbosityLevel.DETAILED:
-            print(f"Cleaned data to {total_photons} rows after removing NaN from essential columns.")
-        if verbose >= VerbosityLevel.DETAILED:
-            print(f"Data NaN summary:\n{data.isna().sum()}")
-
-        opm = deepcopy(opm) if opm else deepcopy(self.opm0)
+    def _add_pixel_event(self, result_rows, px_i, py_i, window_events, df, 
+                        photon_ids, neutron_ids, nz, pz,
+                        pixel_size, min_tot, output_format):
+        """Helper function to add a pixel event from a deadtime window."""
+        # Extract timing and indices
+        toas = [e[0] for e in window_events]
+        indices = [e[1] for e in window_events]
         
-        # Get default f-number if not provided
-        if initial_fnumber is None:
-            # Extract the default f-number from the optical model
-            try:
-                initial_fnumber = opm.optical_spec.pupil.value
-                if verbose >= VerbosityLevel.DETAILED:
-                    print(f"Using default f-number from optical model: {initial_fnumber}")
-            except:
-                # Default to 0.95 for the Nikkor lens if we can't extract it
-                initial_fnumber = 0.95
-                if verbose >= VerbosityLevel.DETAILED:
-                    print(f"Could not extract f-number from optical model, using default: {initial_fnumber}")
-
-        # Validate optimize_param
-        valid_params = ["zfocus", "zfine", "fnumber", "both", "zfocus+fnumber", "zfine+fnumber", "all"]
-        if optimize_param not in valid_params:
-            raise ValueError(f"optimize_param must be one of {valid_params}")
-
-        # Determine which parameters to optimize
-        optimize_zfocus = optimize_param in ["zfocus", "both", "zfocus+fnumber", "all"]
-        optimize_zfine = optimize_param in ["zfine", "both", "zfine+fnumber", "all"]
-        optimize_fnumber = optimize_param in ["fnumber", "zfocus+fnumber", "zfine+fnumber", "all"]
-
-        # Objective function factory with support for f-number
-        def create_objective(param_name: str, fixed_params: dict):
-            best_result = {
-                'z': fixed_params.get('zfocus', initial_zfocus) if param_name == 'zfocus' else 
-                    fixed_params.get('zfine', initial_zfine) if param_name == 'zfine' else
-                    fixed_params.get('fnumber', initial_fnumber),
-                'std': float('inf'), 
-                'traced_fraction': 0.0
-            }
-            iteration_count = [0]
-
-            def objective(params):
-                z = params['z'].value
-                
-                # Create a dictionary of parameters for refocus method
-                refocus_kwargs = fixed_params.copy()
-                refocus_kwargs[param_name] = z
-                
-                try:
-                    current_opm = self.refocus(opm, **refocus_kwargs)
-                except Exception as e:
-                    if verbose >= VerbosityLevel.DETAILED:
-                        print(f"Iteration {iteration_count[0]}: {param_name}={z:.3f}, refocus failed: {str(e)}")
-                    iteration_count[0] += 1
-                    return float('inf')
-
-                df = self.trace_rays(opm=current_opm, join=False, print_stats=False,
-                                n_processes=n_processes, chunk_size=chunk_size,
-                                progress_bar=False, return_df=True, verbosity=verbose)
-
-                if df is None or df.empty:
-                    if verbose >= VerbosityLevel.DETAILED:
-                        print(f"Iteration {iteration_count[0]}: {param_name}={z:.3f}, trace_rays returned None or empty")
-                    iteration_count[0] += 1
-                    return float('inf')
-
-                if 'x2' not in df.columns or 'y2' not in df.columns:
-                    if verbose >= VerbosityLevel.DETAILED:
-                        print(f"Iteration {iteration_count[0]}: {param_name}={z:.3f}, missing x2/y2 columns")
-                    iteration_count[0] += 1
-                    return float('inf')
-
-                valid_df = df.dropna(subset=['x2', 'y2'])
-                traced_count = len(valid_df)
-                traced_fraction = traced_count / total_photons if total_photons > 0 else 0.0
-
-                if traced_count < 2:
-                    if verbose >= VerbosityLevel.DETAILED:
-                        print(f"Iteration {iteration_count[0]}: {param_name}={z:.3f}, insufficient valid data (traced: {traced_count}/{total_photons})")
-                    iteration_count[0] += 1
-                    return 1e6 + 1000.0 * (1.0 - traced_fraction)  # High base value to avoid NaN issues
-
-                std_x2 = valid_df['x2'].std()
-                std_y2 = valid_df['y2'].std()
-                std_value = np.sqrt(std_x2**2 + std_y2**2) if not (pd.isna(std_x2) or pd.isna(std_y2)) else float('inf')
-
-                # Objective: minimize std, heavily penalize low traced fraction
-                penalty = 1000.0 * (1.0 - traced_fraction)
-                objective_value = std_value + penalty if std_value != float('inf') else 1e6 + penalty
-
-                # Different reporting for fnumber optimization
-                if verbose >= VerbosityLevel.DETAILED:
-                    param_str = f"f/{z:.2f}" if param_name == 'fnumber' else f"{param_name}={z:.3f}"
-                    print(f"Iteration {iteration_count[0]}: {param_str}, std={std_value:.3f}, "
-                        f"traced={traced_count}/{total_photons} ({traced_fraction:.2%}), penalty={penalty:.3f}, objective={objective_value:.3f}")
-
-                if objective_value < (best_result['std'] + 1000.0 * (1.0 - best_result['traced_fraction'])):
-                    best_result['z'] = z
-                    best_result['std'] = std_value
-                    best_result['traced_fraction'] = traced_fraction
-
-                iteration_count[0] += 1
-                return objective_value
-
-            return objective, best_result
-
-        results = {}
-        current_zfocus = initial_zfocus
-        current_zfine = initial_zfine
-        current_fnumber = initial_fnumber
-
-        # Optimize zfocus
-        if optimize_zfocus:
-            if verbose >= VerbosityLevel.BASIC:
-                print(f"Starting optimization for zfocus with initial value {current_zfocus:.3f}")
+        toa_first = toas[0]
+        toa_last = toas[-1]
+        tot_measured = max(toa_last - toa_first, min_tot)
+        photon_count = len(window_events)
+        
+        if output_format == "tpx3":
+            # Convert pixel coordinates back to mm (pixel center)
+            x_mm = (px_i + 0.5) * pixel_size - 10.0
+            y_mm = (py_i + 0.5) * pixel_size - 10.0
             
-            fixed_params = {'zfine': current_zfine, 'fnumber': current_fnumber}
-            objective_func, best_result = create_objective('zfocus', fixed_params)
-
-            params = Parameters()
-            params.add('z', value=current_zfocus, min=zfocus_min, max=zfocus_max)
-
-            try:
-                result = minimize(objective_func, params, method='nelder')  # Nelder-Mead method
-                best_zfocus = float(result.params['z'].value)
-                min_std = best_result['std']
-                traced_fraction = best_result['traced_fraction']
-
-                results['best_zfocus'] = best_zfocus
-                results['min_std'] = min_std
-                results['traced_fraction'] = traced_fraction
-                results['result'] = result
-
-                if verbose >= VerbosityLevel.BASIC:
-                    print(f"Optimized zfocus: {best_zfocus:.3f}, min std: {min_std:.3f}, traced fraction: {traced_fraction:.2%}")
-
-                current_zfocus = best_zfocus
-
-            except MinimizerException as e:
-                if verbose >= VerbosityLevel.BASIC:
-                    print(f"Optimization of zfocus failed: {str(e)}")
-                results['best_zfocus'] = current_zfocus
-                results['min_std'] = float('inf')
-                results['traced_fraction'] = 0.0
-                results['result'] = None
-
-        # Optimize zfine
-        if optimize_zfine:
-            if verbose >= VerbosityLevel.BASIC:
-                print(f"Starting optimization for zfine with initial value {current_zfine:.3f}")
+            result_rows.append({
+                'x': x_mm,
+                'y': y_mm,
+                'toa': toa_first,  # Time of first photon in window
+                'tot': tot_measured
+            })
+        else:  # photons format
+            # Use first photon's properties for the group
+            first_idx = indices[0]
             
-            fixed_params = {'zfocus': current_zfocus, 'fnumber': current_fnumber}
-            objective_func, best_result = create_objective('zfine', fixed_params)
-
-            params = Parameters()
-            params.add('z', value=current_zfine, min=zfine_min, max=zfine_max)
-
-            try:
-                result = minimize(objective_func, params, method='nelder')
-                best_zfine = float(result.params['z'].value)
-                min_std = best_result['std']
-                traced_fraction = best_result['traced_fraction']
-
-                results['best_zfine'] = best_zfine
-                results['min_std'] = min_std
-                results['traced_fraction'] = traced_fraction
-                results['result'] = result
-
-                if verbose >= VerbosityLevel.BASIC:
-                    print(f"Optimized zfine: {best_zfine:.3f}, min std: {min_std:.3f}, traced fraction: {traced_fraction:.2%}")
-
-                current_zfine = best_zfine
-
-            except MinimizerException as e:
-                if verbose >= VerbosityLevel.BASIC:
-                    print(f"Optimization of zfine failed: {str(e)}")
-                results['best_zfine'] = current_zfine
-                results['min_std'] = float('inf')
-                results['traced_fraction'] = 0.0
-                results['result'] = None
-
-        # Optimize fnumber
-        if optimize_fnumber:
-            if verbose >= VerbosityLevel.BASIC:
-                print(f"Starting optimization for f-number with initial value f/{current_fnumber:.2f}")
-            
-            fixed_params = {'zfocus': current_zfocus, 'zfine': current_zfine}
-            objective_func, best_result = create_objective('fnumber', fixed_params)
-
-            params = Parameters()
-            params.add('z', value=current_fnumber, min=fnumber_min, max=fnumber_max)
-
-            try:
-                result = minimize(objective_func, params, method='nelder')
-                best_fnumber = float(result.params['z'].value)
-                min_std = best_result['std']
-                traced_fraction = best_result['traced_fraction']
-
-                results['best_fnumber'] = best_fnumber
-                results['min_std'] = min_std
-                results['traced_fraction'] = traced_fraction
-                results['result'] = result
-
-                if verbose >= VerbosityLevel.BASIC:
-                    print(f"Optimized f-number: f/{best_fnumber:.2f}, min std: {min_std:.3f}, traced fraction: {traced_fraction:.2%}")
-
-            except MinimizerException as e:
-                if verbose >= VerbosityLevel.BASIC:
-                    print(f"Optimization of f-number failed: {str(e)}")
-                results['best_fnumber'] = current_fnumber
-                results['min_std'] = float('inf')
-                results['traced_fraction'] = 0.0
-                results['result'] = None
-
-        return results
-
-
-    def plot(self, opm: "OpticalModel" = None, kind: str = "layout",
-                                scale: float = None, 
-                                is_dark: bool = False, **kwargs) -> None:
-        """
-        Plot the lens layout or aberration diagrams.
-
-        Args:
-            opm (OpticalModel, optional): Optical model to plot. Defaults to self.opm0.
-            kind (str): Type of plot ('layout', 'ray', 'opd', 'spot'). Defaults to 'layout'.
-            scale (float):  Scale factor for the plot. If None, uses Fit.User_Scale or Fit.All_Same.
-            is_dark (bool): Use dark theme for plots. Defaults to False.
-            **kwargs: Additional keyword arguments for the figure.
-                - dpi (int, optional): Figure resolution. Defaults to 120.
-                - figsize (tuple, optional): Figure size as (width, height). Defaults to (8, 2) for layout, (8, 4) for others.
-                - frameon (bool, optional): Whether to draw the frame (for layout only). Defaults to False.
-                - Other keyword arguments are passed to the plot function.
-
-        Returns:
-            None
-
-        Raises:
-            ValueError: If opm is None or kind is unsupported.
-        """
-        opm = opm if opm is not None else self.opm0
-        if opm is None:
-            raise ValueError("No optical model available to plot (self.opm0 is None).")
-
-        # Set default figsize based on plot kind
-        figsize = kwargs.pop("figsize", (8, 2) if kind == "layout" else (8, 4))
-        dpi = kwargs.pop("dpi", 120)
-        frameon = kwargs.pop("frameon", False)
-        # scale = kwargs.pop("scale", 10)
-        scale_type = Fit.User_Scale if scale else Fit.All_Same
-
-        # Ensure model is updated and vignetting is applied
-        # opm.seq_model.do_apertures = False
-        # opm.update_model()
-        # apply_paraxial_vignetting(opm)
-
-        if kind == "layout":
-            plt.figure(
-                FigureClass=InteractiveLayout,
-                opt_model=opm,
-                frameon=frameon,
-                dpi=dpi,
-                figsize=figsize,
-                do_draw_rays=True,
-                do_paraxial_layout=False
-            ).plot(**kwargs)
-        elif kind == "ray":
-            plt.figure(
-                FigureClass=RayFanFigure,
-                opt_model=opm,
-                data_type="Ray",
-                scale_type=scale_type,
-                is_dark=is_dark,
-                dpi=dpi,
-                figsize=figsize
-            ).plot(**kwargs)
-        elif kind == "opd":
-            plt.figure(
-                FigureClass=RayFanFigure,
-                opt_model=opm,
-                data_type="OPD",
-                scale_type=scale_type,
-                is_dark=is_dark,
-                dpi=dpi,
-                figsize=figsize
-            ).plot(**kwargs)
-        elif kind == "spot":
-            # Remove manual ray tracing - let SpotDiagramFigure handle it
-            plt.figure(
-                FigureClass=SpotDiagramFigure,
-                opt_model=opm,
-                scale_type=scale_type,
-                user_scale_value=scale,
-                is_dark=is_dark,
-                frameon=frameon,
-                dpi=dpi,
-                figsize=figsize
-            ).plot(**kwargs)
-        else:
-            raise ValueError(f"Unsupported plot kind: {kind}, supported kinds are ['layout', 'ray', 'opd', 'spot']")
+            result_rows.append({
+                'x2': df['x2'].iloc[first_idx],
+                'y2': df['y2'].iloc[first_idx],
+                'z2': df['z2'].iloc[first_idx],
+                'id': photon_ids[first_idx],
+                'neutron_id': neutron_ids[first_idx],
+                'toa2': toa_first,
+                'photon_count': photon_count,
+                'time_diff': tot_measured,
+                'nz': nz[first_idx],
+                'pz': pz[first_idx]
+            })
