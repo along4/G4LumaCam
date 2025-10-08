@@ -601,6 +601,7 @@ class Lens:
         """
         return [rays[i:i+chunk_size] for i in range(0, len(rays), chunk_size)]
 
+
     def trace_rays(self, opm=None, opm_file=None, zscan=0, zfine=0, fnumber=None,
                 join=False, print_stats=False, n_processes=None, chunk_size=1000, 
                 progress_bar=True, timeout=3600, return_df=False, 
@@ -613,9 +614,9 @@ class Lens:
         a provided optical model, a saved optical model file, or by creating a refocused version
         of the default optical model. If deadtime or blob is provided, it applies the saturate_photons
         method with output_format="photons" and saves the results directly to the 'TracedPhotons'
-        directory, including photon_count, time_diff, nz, and pz columns. It then calls _write_tpx3
+        directory, including photon_count, time_diff, nz, pz, and pulse_id columns. It then calls _write_tpx3
         to generate TPX3 files, reading trigger times from corresponding TriggerTimes CSV files (converting ns to ps).
-        Otherwise, it saves raw traced results to 'TracedPhotons' with nz and pz columns.
+        Otherwise, it saves raw traced results to 'TracedPhotons' with nz, pz, and pulse_id columns.
 
         Parameters:
         -----------
@@ -791,6 +792,11 @@ class Lens:
                         print(f"Skipping {csv_file.name}: missing columns {missing_cols}")
                     continue
 
+                # Check for pulse_id when split_method="event"
+                if split_method == "event" and 'pulse_id' not in df.columns:
+                    if verbosity >= VerbosityLevel.BASIC:
+                        print(f"Warning: {csv_file.name} missing pulse_id column required for split_method='event'")
+
                 # Validate nz and pz columns
                 nz_pz_cols = ['nz', 'pz']
                 missing_nz_pz = [col for col in nz_pz_cols if col not in df.columns]
@@ -881,6 +887,13 @@ class Lens:
                 # Create result DataFrame from processed chunks
                 result_df = self._create_result_dataframe(results_with_indices, df, join, verbosity)
                 result_df["toa2"] = df["toa"] if "toa" in df.columns else np.nan
+                if "pulse_id" in df.columns:
+                    result_df["pulse_id"] = df["pulse_id"]  # Preserve pulse_id
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"  Copied pulse_id column to result_df for {csv_file.name}")
+                else:
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"  No pulse_id column in {csv_file.name}, skipping pulse_id assignment")
 
                 # Apply saturation if deadtime or blob is provided
                 if deadtime is not None or blob > 0:
@@ -894,6 +907,7 @@ class Lens:
                             print(f"Cannot apply saturation to {csv_file.name}: missing columns {missing_cols}")
                         continue
                     # Call saturate_photons with output_format="photons"
+                    pre_saturation_cols = set(result_df.columns)
                     result_df = self.saturate_photons(
                         data=result_df,
                         deadtime=deadtime,
@@ -907,6 +921,11 @@ class Lens:
                         if verbosity >= VerbosityLevel.DETAILED:
                             print(f"  Saturation produced no results for {csv_file.name}")
                         continue
+                    # Ensure pulse_id is preserved after saturation
+                    if "pulse_id" in pre_saturation_cols and "pulse_id" not in result_df.columns:
+                        if verbosity >= VerbosityLevel.DETAILED:
+                            print(f"  Warning: pulse_id column dropped by saturate_photons, restoring it")
+                        result_df["pulse_id"] = df["pulse_id"]
 
                 # Save results to file
                 output_file = traced_photons_dir / f"traced_{csv_file.name}"
@@ -918,14 +937,16 @@ class Lens:
                 if deadtime is not None or blob > 0:
                     trigger_file = trigger_times_dir / f"trigger_{csv_file.name}"
                     trigger_times_ps = None
+                    trigger_pulse_ids = None
                     if trigger_file.exists():
                         try:
                             trigger_df = pd.read_csv(trigger_file)
-                            if 'trigger_time_ns' in trigger_df.columns:
+                            if 'trigger_time_ns' in trigger_df.columns and 'pulse_id' in trigger_df.columns:
                                 trigger_times_ps = (trigger_df['trigger_time_ns'] * 1000).astype(np.int64).values
+                                trigger_pulse_ids = trigger_df['pulse_id'].astype(np.int64).values
                             else:
                                 if verbosity >= VerbosityLevel.DETAILED:
-                                    print(f"Warning: {trigger_file.name} missing 'trigger_time_ns' column")
+                                    print(f"Warning: {trigger_file.name} missing 'trigger_time_ns' or 'pulse_id' column")
                         except Exception as e:
                             if verbosity >= VerbosityLevel.DETAILED:
                                 print(f"Error reading trigger file {trigger_file.name}: {str(e)}")
@@ -935,6 +956,7 @@ class Lens:
                     
                     self._write_tpx3(
                         trigger_times_ps=trigger_times_ps,
+                        trigger_pulse_ids=trigger_pulse_ids,
                         traced_data=result_df,
                         chip_index=0,
                         verbosity=verbosity,
@@ -965,6 +987,306 @@ class Lens:
 
         finally:
             pass
+
+    def _write_tpx3(
+        self,
+        trigger_times_ps: Union[List[int], np.ndarray] = None,
+        trigger_pulse_ids: Union[List[int], np.ndarray] = None,
+        traced_data: pd.DataFrame = None,
+        chip_index: int = 0,
+        verbosity: int = 1,
+        sensor_size: int = 256,
+        split_method: str = "auto",
+        clean: bool = True
+    ):
+        """
+        Convert traced photon data to valid TPX3 binary files.
+        
+        Intelligently splits large datasets with different strategies:
+        - "auto": Groups neutron events together, splits only when file size limit reached
+        - "event": Creates one file per neutron_id with corresponding trigger time based on pulse_id
+        
+        Parameters:
+        -----------
+        traced_data : pd.DataFrame
+            DataFrame with columns: x2, y2, toa2, time_diff (or 'tot'), neutron_id, pulse_id (optional)
+        trigger_times_ps : array-like, optional
+            Trigger times in picoseconds
+        trigger_pulse_ids : array-like, optional
+            Pulse IDs corresponding to trigger_times_ps
+        chip_index : int
+            Chip index for TPX3 header (0-255)
+        verbosity : int
+            0=silent, 1=progress, 2=detailed debug
+        sensor_size : int
+            Sensor dimensions (default 256x256)
+        split_method : str, default "auto"
+            File splitting strategy:
+            - "auto": Optimize file count by grouping neutrons
+            - "event": One file per neutron_id for event-by-event analysis
+        clean : bool
+            If True, clears existing TPX3 files in output directory before writing new ones
+        """
+        # Constants
+        TICK_NS = 1.5625
+        MAX_CHUNK_BYTES = 65535
+        TIMER_TICK_NS = 409.6
+        PACKET_SIZE = 8
+        
+        def encode_gts_pair(timer_value):
+            """Encode a GTS packet pair (LSB + MSB)."""
+            timer_value = int(timer_value) & ((1 << 48) - 1)
+            lsb_timer = timer_value & 0xFFFFFFFF
+            lsb_word = (0x4 << 60) | (0x4 << 56) | (lsb_timer << 16)
+            msb_timer = (timer_value >> 32) & 0xFFFF
+            msb_word = (0x4 << 60) | (0x5 << 56) | (msb_timer << 16)
+            return struct.pack("<Q", lsb_word) + struct.pack("<Q", msb_word)
+        
+        if traced_data is None or len(traced_data) == 0:
+            if verbosity >= 1:
+                print("No traced photon data provided")
+            return
+        
+        df = traced_data.copy()
+        
+        # Sort by neutron_id and toa2 to ensure consistent event ordering
+        if "neutron_id" in df.columns:
+            df = df.sort_values(by=["neutron_id", "toa2"]).reset_index(drop=True)
+        
+        if verbosity >= 2:
+            print(f"\nProcessing {len(df)} events for TPX3 export")
+        
+        # Validate required columns
+        required = ["x2", "y2", "toa2"]
+        missing = [col for col in required if col not in df.columns]
+        if missing:
+            if verbosity >= 1:
+                print(f"Missing required columns: {missing}")
+            return
+        
+        # Check for TOT column
+        if "time_diff" not in df.columns and "tot" not in df.columns:
+            if verbosity >= 1:
+                print("Missing time_diff or tot column")
+            return
+        
+        # Warn if pulse_id is missing for split_method="event"
+        if split_method == "event" and "pulse_id" not in df.columns:
+            if verbosity >= 1:
+                print("Warning: pulse_id column missing for split_method='event', falling back to trigger_times_ps")
+        
+        # Setup output directory and clear existing contents
+        out_dir = self.archive / "tpx3Files"
+        if out_dir.exists() and clean:
+            shutil.rmtree(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Convert positions to pixel coordinates
+        px = ((df["x2"].astype(float) + 10.0) / 20.0 * sensor_size).to_numpy()
+        py = ((df["y2"].astype(float) + 10.0) / 20.0 * sensor_size).to_numpy()
+        px_i = np.clip(np.round(px).astype(np.int64), 0, sensor_size - 1)
+        py_i = np.clip(np.round(py).astype(np.int64), 0, sensor_size - 1)
+        
+        # Extract timing
+        toa_ns = df["toa2"].astype(float).to_numpy()
+        tot_ns = df["time_diff"].to_numpy() if "time_diff" in df.columns else df["tot"].to_numpy()
+        tot_ns = np.maximum(tot_ns.astype(float), 1.0)
+        
+        # Convert to TPX3 ticks
+        toa_ticks = np.round(toa_ns / TICK_NS).astype(np.int64)
+        tot_ticks = np.clip(np.round(tot_ns / TICK_NS).astype(np.int64), 1, 0x3FF)
+        
+        # Decompose ToA
+        spidr_time = ((toa_ticks >> 18) & 0xFFFF).astype(np.int64)
+        coarse_raw = ((toa_ticks >> 4) & 0x3FFF).astype(np.int64)
+        ftoa = (15 - (toa_ticks & 0xF)).astype(np.int64)
+        ftoa = np.clip(ftoa, 0, 15)
+        
+        # Pixel address
+        pixaddr = (py_i * sensor_size + px_i).astype(np.int64)
+        
+        # Timer values for GTS
+        timer_ticks = (toa_ticks / (TIMER_TICK_NS / TICK_NS)).astype(np.int64)
+        
+        if verbosity >= 2:
+            print(f"  ToA range: {toa_ns.min():.2f} - {toa_ns.max():.2f} ns")
+            print(f"  Pixel range: x=[{px_i.min()}, {px_i.max()}], y=[{py_i.min()}, {py_i.max()}]")
+        
+        # Encode all pixel packets first
+        pixel_packets = []
+        for j in range(len(df)):
+            p = int(pixaddr[j]) & 0xFFFF
+            c = int(coarse_raw[j]) & 0x3FFF
+            tot = int(tot_ticks[j]) & 0x3FF
+            ft = int(ftoa[j]) & 0xF
+            sp = int(spidr_time[j]) & 0xFFFF
+            
+            pixel_word = (0xB << 60) | (p << 44) | (c << 30) | (tot << 20) | (ft << 16) | sp
+            pixel_packets.append(struct.pack("<Q", pixel_word))
+        
+        # Determine file groups and associated trigger times
+        file_groups = []
+        trigger_times_per_file = []
+        
+        if split_method == "event" and "neutron_id" in df.columns:
+            neutron_ids = df["neutron_id"].to_numpy()
+            unique_neutron_ids = np.unique(neutron_ids)
+            
+            # Validate neutron_id uniqueness
+            if len(unique_neutron_ids) < len(neutron_ids):
+                if verbosity >= 2:
+                    print(f"  Warning: Found duplicate neutron IDs, ensuring correct separation")
+            
+            pulse_ids = df["pulse_id"].to_numpy() if "pulse_id" in df.columns else None
+            
+            for nid in unique_neutron_ids:
+                indices = np.where(neutron_ids == nid)[0]
+                if len(indices) > 0:
+                    trigger_time_ps = None
+                    
+                    if pulse_ids is not None and trigger_pulse_ids is not None and trigger_times_ps is not None:
+                        # Get pulse_id for this neutron event
+                        pulse_id = pulse_ids[indices[0]]  # Assume all rows for this neutron_id have the same pulse_id
+                        # Validate that all rows for this neutron_id have the same pulse_id
+                        if not (pulse_ids[indices] == pulse_id).all():
+                            if verbosity >= 2:
+                                print(f"  Warning: Multiple pulse_ids found for neutron_id {nid}, using first: {pulse_id}")
+                        
+                        # Look up trigger time using pulse_id
+                        trigger_indices = np.where(trigger_pulse_ids == pulse_id)[0]
+                        if len(trigger_indices) > 0:
+                            trigger_time_ps = trigger_times_ps[trigger_indices[0]]  # Use first match
+                            if len(trigger_indices) > 1 and verbosity >= 2:
+                                print(f"  Warning: Multiple trigger times found for pulse_id {pulse_id}, using first: {trigger_time_ps} ps")
+                            if verbosity >= 2:
+                                print(f"  Found trigger time {trigger_time_ps} ps for neutron_id {nid} (pulse_id {pulse_id})")
+                        else:
+                            if verbosity >= 2:
+                                print(f"  Warning: No trigger time found for neutron_id {nid} (pulse_id {pulse_id})")
+                    
+                    # Fallback to first trigger_times_ps if no pulse_id mapping is available
+                    if trigger_time_ps is None and trigger_times_ps is not None and len(trigger_times_ps) > 0:
+                        trigger_time_ps = trigger_times_ps[0]
+                        if verbosity >= 2:
+                            print(f"  Falling back to first trigger time for neutron_id {nid}: {trigger_time_ps} ps")
+                    
+                    file_groups.append((indices[0], indices[-1] + 1, nid))
+                    trigger_times_per_file.append([trigger_time_ps] if trigger_time_ps is not None else [])
+            
+            if verbosity >= 2:
+                print(f"  Found {len(unique_neutron_ids)} unique neutron events")
+        elif "neutron_id" in df.columns:
+            neutron_ids = df["neutron_id"].to_numpy()
+            neutron_boundaries = [0]
+            for i in range(1, len(neutron_ids)):
+                if neutron_ids[i] != neutron_ids[i-1]:
+                    neutron_boundaries.append(i)
+            neutron_boundaries.append(len(df))
+            
+            if verbosity >= 2:
+                print(f"  Found {len(neutron_boundaries)-1} neutron events")
+            
+            current_group_start = 0
+            current_group_size = 16
+            
+            for i in range(len(neutron_boundaries) - 1):
+                start_idx = neutron_boundaries[i]
+                end_idx = neutron_boundaries[i + 1]
+                neutron_size = (end_idx - start_idx) * PACKET_SIZE
+                
+                if current_group_size + neutron_size > MAX_CHUNK_BYTES:
+                    if start_idx > current_group_start:
+                        file_groups.append((current_group_start, start_idx, None))
+                        trigger_times_per_file.append(list(trigger_times_ps) if trigger_times_ps is not None else [])
+                    current_group_start = start_idx
+                    current_group_size = 16 + neutron_size
+                else:
+                    current_group_size += neutron_size
+            
+            if current_group_start < len(df):
+                file_groups.append((current_group_start, len(df), None))
+                trigger_times_per_file.append(list(trigger_times_ps) if trigger_times_ps is not None else [])
+        else:
+            if verbosity >= 2:
+                print("  No neutron_id column, splitting on packet boundaries")
+            
+            max_events_per_file = (MAX_CHUNK_BYTES - 16) // PACKET_SIZE
+            for start in range(0, len(df), max_events_per_file):
+                end = min(start + max_events_per_file, len(df))
+                file_groups.append((start, end, None))
+                trigger_times_per_file.append(list(trigger_times_ps) if trigger_times_ps is not None else [])
+        
+        if verbosity >= 1:
+            print(f"  Splitting into {len(file_groups)} file(s)")
+        
+        # Determine base filename
+        traced_dir = self.archive / "TracedPhotons"
+        csv_files = sorted(traced_dir.glob("traced_sim_data_*.csv"))
+        
+        base_name = "traced_data"
+        for csv_file in csv_files:
+            try:
+                file_df = pd.read_csv(csv_file)
+                if len(file_df) == len(traced_data):
+                    base_name = csv_file.stem.replace("traced_", "")
+                    break
+            except:
+                continue
+        
+        # Write files
+        files_written = []
+        for file_idx, ((start_idx, end_idx, neutron_id), file_trigger_times) in enumerate(zip(file_groups, trigger_times_per_file)):
+            # Build initial GTS pair
+            initial_timer = timer_ticks[start_idx] if start_idx < len(timer_ticks) else 0
+            file_content = encode_gts_pair(initial_timer)
+            
+            # Add TDC triggers for this file
+            if file_trigger_times is not None and len(file_trigger_times) > 0:
+                trigger_arr = np.asarray(file_trigger_times, dtype=float)
+                trig_ticks = np.round(trigger_arr / (TICK_NS * 1000)).astype(np.int64)
+                
+                for t_idx, tval in enumerate(trig_ticks):
+                    trig_counter = t_idx & 0xFFF
+                    timestamp = tval & ((1 << 35) - 1)
+                    tdc_word = (0x6 << 60) | (trig_counter << 44) | (timestamp << 9)
+                    file_content += struct.pack("<Q", tdc_word)
+            
+            # Add pixel packets for this range
+            for j in range(start_idx, end_idx):
+                file_content += pixel_packets[j]
+            
+            # Determine filename
+            if split_method == "event" and neutron_id is not None:
+                out_path = out_dir / f"{base_name}_neutron{int(neutron_id):06d}.tpx3"
+            elif len(file_groups) > 1:
+                out_path = out_dir / f"{base_name}_part{file_idx + 1:03d}.tpx3"
+            else:
+                out_path = out_dir / f"{base_name}.tpx3"
+            
+            # Write file
+            if out_path.exists():
+                out_path.unlink()
+            
+            with open(out_path, "wb") as fh:
+                file_size = len(file_content)
+                header = struct.pack("<4sBBH", b"TPX3", chip_index & 0xFF, 0, file_size & 0xFFFF)
+                fh.write(header)
+                fh.write(file_content)
+            
+            files_written.append((out_path, end_idx - start_idx))
+            
+            if verbosity >= 2:
+                neutron_info = f"neutron {neutron_id}" if neutron_id is not None else f"part {file_idx + 1}"
+                trigger_info = f", {len(file_trigger_times)} triggers" if file_trigger_times is not None and len(file_trigger_times) > 0 else ", no triggers"
+                print(f"  File {file_idx + 1}: {out_path.name}, {end_idx - start_idx} events, {file_size} bytes ({neutron_info}{trigger_info})")
+        
+        if verbosity >= 1:
+            if len(files_written) == 1:
+                print(f"✅ Wrote {files_written[0][0].name}: {files_written[0][1]} events")
+            else:
+                print(f"✅ Wrote {len(files_written)} files:")
+                for fp, n_events in files_written:
+                    print(f"   - {fp.name} ({n_events} events)")
 
     def _align_chunk_results(self, chunk_result, indices, chunk_idx, verbosity):
         """
@@ -1070,270 +1392,6 @@ class Lens:
 
         return result
 
-
-    def _write_tpx3(
-        self,
-        trigger_times_ps: Union[List[int], np.ndarray] = None,
-        traced_data: pd.DataFrame = None,
-        chip_index: int = 0,
-        verbosity: int = 1,
-        sensor_size: int = 256,
-        split_method: str = "auto",
-        clean: bool = True
-    ):
-        """
-        Convert traced photon data to valid TPX3 binary files.
-        
-        Intelligently splits large datasets with different strategies:
-        - "auto": Groups neutron events together, splits only when file size limit reached
-        - "event": Creates one file per neutron_id (event-by-event export) with corresponding TOF trigger
-        
-        Parameters:
-        -----------
-        traced_data : pd.DataFrame
-            DataFrame with columns: x2, y2, toa2, time_diff (or 'tot'), and optionally neutron_id, tof
-        trigger_times_ps : array-like, optional
-            Trigger times in picoseconds (used if tof not in traced_data)
-        chip_index : int
-            Chip index for TPX3 header (0-255)
-        verbosity : int
-            0=silent, 1=progress, 2=detailed debug
-        sensor_size : int
-            Sensor dimensions (default 256x256)
-        split_method : str, default "auto"
-            File splitting strategy:
-            - "auto": Optimize file count by grouping neutrons
-            - "event": One file per neutron_id for event-by-event analysis
-        clean : bool
-            If True, clears existing TPX3 files in output directory before writing new ones
-        """
-        # Constants
-        TICK_NS = 1.5625
-        MAX_CHUNK_BYTES = 65535
-        TIMER_TICK_NS = 409.6
-        PACKET_SIZE = 8
-        
-        def encode_gts_pair(timer_value):
-            """Encode a GTS packet pair (LSB + MSB)."""
-            timer_value = int(timer_value) & ((1 << 48) - 1)
-            lsb_timer = timer_value & 0xFFFFFFFF
-            lsb_word = (0x4 << 60) | (0x4 << 56) | (lsb_timer << 16)
-            msb_timer = (timer_value >> 32) & 0xFFFF
-            msb_word = (0x4 << 60) | (0x5 << 56) | (msb_timer << 16)
-            return struct.pack("<Q", lsb_word) + struct.pack("<Q", msb_word)
-        
-        if traced_data is None or len(traced_data) == 0:
-            if verbosity >= 1:
-                print("No traced photon data provided")
-            return
-        
-        df = traced_data.copy()
-        
-        # Sort by neutron_id and toa2 to ensure consistent event ordering
-        if "neutron_id" in df.columns:
-            df = df.sort_values(by=["neutron_id", "toa2"]).reset_index(drop=True)
-        
-        if verbosity >= 2:
-            print(f"\nProcessing {len(df)} events for TPX3 export")
-        
-        # Validate required columns
-        required = ["x2", "y2", "toa2"]
-        missing = [col for col in required if col not in df.columns]
-        if missing:
-            if verbosity >= 1:
-                print(f"Missing required columns: {missing}")
-            return
-        
-        # Check for TOT column
-        if "time_diff" not in df.columns and "tot" not in df.columns:
-            if verbosity >= 1:
-                print("Missing time_diff or tot column")
-            return
-        
-        # Setup output directory and clear existing contents
-        out_dir = self.archive / "tpx3Files"
-        if out_dir.exists() and clean:
-            shutil.rmtree(out_dir)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Convert positions to pixel coordinates
-        px = ((df["x2"].astype(float) + 10.0) / 20.0 * sensor_size).to_numpy()
-        py = ((df["y2"].astype(float) + 10.0) / 20.0 * sensor_size).to_numpy()
-        px_i = np.clip(np.round(px).astype(np.int64), 0, sensor_size - 1)
-        py_i = np.clip(np.round(py).astype(np.int64), 0, sensor_size - 1)
-        
-        # Extract timing
-        toa_ns = df["toa2"].astype(float).to_numpy()
-        tot_ns = df["time_diff"].to_numpy() if "time_diff" in df.columns else df["tot"].to_numpy()
-        tot_ns = np.maximum(tot_ns.astype(float), 1.0)
-        
-        # Convert to TPX3 ticks
-        toa_ticks = np.round(toa_ns / TICK_NS).astype(np.int64)
-        tot_ticks = np.clip(np.round(tot_ns / TICK_NS).astype(np.int64), 1, 0x3FF)
-        
-        # Decompose ToA
-        spidr_time = ((toa_ticks >> 18) & 0xFFFF).astype(np.int64)
-        coarse_raw = ((toa_ticks >> 4) & 0x3FFF).astype(np.int64)
-        ftoa = (15 - (toa_ticks & 0xF)).astype(np.int64)
-        ftoa = np.clip(ftoa, 0, 15)
-        
-        # Pixel address
-        pixaddr = (py_i * sensor_size + px_i).astype(np.int64)
-        
-        # Timer values for GTS
-        timer_ticks = (toa_ticks / (TIMER_TICK_NS / TICK_NS)).astype(np.int64)
-        
-        if verbosity >= 2:
-            print(f"  ToA range: {toa_ns.min():.2f} - {toa_ns.max():.2f} ns")
-            print(f"  Pixel range: x=[{px_i.min()}, {px_i.max()}], y=[{py_i.min()}, {py_i.max()}]")
-        
-        # Encode all pixel packets first
-        pixel_packets = []
-        for j in range(len(df)):
-            p = int(pixaddr[j]) & 0xFFFF
-            c = int(coarse_raw[j]) & 0x3FFF
-            tot = int(tot_ticks[j]) & 0x3FF
-            ft = int(ftoa[j]) & 0xF
-            sp = int(spidr_time[j]) & 0xFFFF
-            
-            pixel_word = (0xB << 60) | (p << 44) | (c << 30) | (tot << 20) | (ft << 16) | sp
-            pixel_packets.append(struct.pack("<Q", pixel_word))
-        
-        # Determine file groups and associated trigger times
-        file_groups = []
-        trigger_times_per_file = []
-        
-        if split_method == "event" and "neutron_id" in df.columns:
-            neutron_ids = df["neutron_id"].to_numpy()
-            unique_neutron_ids = np.unique(neutron_ids)
-            
-            # Validate neutron_id uniqueness
-            if len(unique_neutron_ids) < len(neutron_ids):
-                if verbosity >= 2:
-                    print(f"  Warning: Found duplicate neutron IDs, ensuring correct separation")
-            
-            for nid in unique_neutron_ids:
-                indices = np.where(neutron_ids == nid)[0]
-                if len(indices) > 0:
-                    # Get TOF for this neutron event (convert from seconds to picoseconds)
-                    tof = df.loc[indices, "tof"].iloc[0] if "tof" in df.columns else None
-                    trigger_time_ps = tof * 1e12 if tof is not None else None
-                    file_groups.append((indices[0], indices[-1] + 1, nid))
-                    trigger_times_per_file.append([trigger_time_ps] if trigger_time_ps is not None else [])
-            
-            if verbosity >= 2:
-                print(f"  Found {len(unique_neutron_ids)} unique neutron events")
-        elif "neutron_id" in df.columns:
-            neutron_ids = df["neutron_id"].to_numpy()
-            neutron_boundaries = [0]
-            for i in range(1, len(neutron_ids)):
-                if neutron_ids[i] != neutron_ids[i-1]:
-                    neutron_boundaries.append(i)
-            neutron_boundaries.append(len(df))
-            
-            if verbosity >= 2:
-                print(f"  Found {len(neutron_boundaries)-1} neutron events")
-            
-            current_group_start = 0
-            current_group_size = 16
-            
-            for i in range(len(neutron_boundaries) - 1):
-                start_idx = neutron_boundaries[i]
-                end_idx = neutron_boundaries[i + 1]
-                neutron_size = (end_idx - start_idx) * PACKET_SIZE
-                
-                if current_group_size + neutron_size > MAX_CHUNK_BYTES:
-                    if start_idx > current_group_start:
-                        file_groups.append((current_group_start, start_idx, None))
-                        trigger_times_per_file.append(trigger_times_ps if trigger_times_ps is not None else [])
-                    current_group_start = start_idx
-                    current_group_size = 16 + neutron_size
-                else:
-                    current_group_size += neutron_size
-            
-            if current_group_start < len(df):
-                file_groups.append((current_group_start, len(df), None))
-                trigger_times_per_file.append(trigger_times_ps if trigger_times_ps is not None else [])
-        else:
-            if verbosity >= 2:
-                print("  No neutron_id column, splitting on packet boundaries")
-            
-            max_events_per_file = (MAX_CHUNK_BYTES - 16) // PACKET_SIZE
-            for start in range(0, len(df), max_events_per_file):
-                end = min(start + max_events_per_file, len(df))
-                file_groups.append((start, end, None))
-                trigger_times_per_file.append(trigger_times_ps if trigger_times_ps is not None else [])
-        
-        if verbosity >= 1:
-            print(f"  Splitting into {len(file_groups)} file(s)")
-        
-        # Determine base filename
-        traced_dir = self.archive / "TracedPhotons"
-        csv_files = sorted(traced_dir.glob("traced_sim_data_*.csv"))
-        
-        base_name = "traced_data"
-        for csv_file in csv_files:
-            try:
-                file_df = pd.read_csv(csv_file)
-                if len(file_df) == len(traced_data):
-                    base_name = csv_file.stem.replace("traced_", "")
-                    break
-            except:
-                continue
-        
-        # Write files
-        files_written = []
-        for file_idx, ((start_idx, end_idx, neutron_id), file_trigger_times) in enumerate(zip(file_groups, trigger_times_per_file)):
-            # Build initial GTS pair
-            initial_timer = timer_ticks[start_idx] if start_idx < len(timer_ticks) else 0
-            file_content = encode_gts_pair(initial_timer)
-            
-            # Add TDC triggers for this file
-            if file_trigger_times:
-                trigger_arr = np.asarray(file_trigger_times, dtype=float)
-                trig_ticks = np.round(trigger_arr / (TICK_NS * 1000)).astype(np.int64)
-                
-                for t_idx, tval in enumerate(trig_ticks):
-                    trig_counter = t_idx & 0xFFF
-                    timestamp = tval & ((1 << 35) - 1)
-                    tdc_word = (0x6 << 60) | (trig_counter << 44) | (timestamp << 9)
-                    file_content += struct.pack("<Q", tdc_word)
-            
-            # Add pixel packets for this range
-            for j in range(start_idx, end_idx):
-                file_content += pixel_packets[j]
-            
-            # Determine filename
-            if split_method == "event" and neutron_id is not None:
-                out_path = out_dir / f"{base_name}_neutron{int(neutron_id):06d}.tpx3"
-            elif len(file_groups) > 1:
-                out_path = out_dir / f"{base_name}_part{file_idx + 1:03d}.tpx3"
-            else:
-                out_path = out_dir / f"{base_name}.tpx3"
-            
-            # Write file
-            if out_path.exists():
-                out_path.unlink()
-            
-            with open(out_path, "wb") as fh:
-                file_size = len(file_content)
-                header = struct.pack("<4sBBH", b"TPX3", chip_index & 0xFF, 0, file_size & 0xFFFF)
-                fh.write(header)
-                fh.write(file_content)
-            
-            files_written.append((out_path, end_idx - start_idx))
-            
-            if verbosity >= 2:
-                neutron_info = f"neutron {neutron_id}" if neutron_id is not None else f"part {file_idx + 1}"
-                print(f"  File {file_idx + 1}: {out_path.name}, {end_idx - start_idx} events, {file_size} bytes ({neutron_info})")
-        
-        if verbosity >= 2:
-            if len(files_written) == 1:
-                print(f"✅ Wrote {files_written[0][0].name}: {files_written[0][1]} events")
-            else:
-                print(f"✅ Wrote {len(files_written)} files:")
-                for fp, n_events in files_written:
-                    print(f"   - {fp.name} ({n_events} events)")
 
     def saturate_photons(self, data: pd.DataFrame = None, deadtime: float = 600.0, blob: float = 0.0, output_format: str = "tpx3",
                         min_tot: float = 20.0, pixel_size: float = None, verbosity: VerbosityLevel = VerbosityLevel.BASIC
@@ -1635,15 +1693,15 @@ class Lens:
         if all_results:
             try:
                 combined_df = pd.concat(all_results, ignore_index=True)
-                if verbosity > VerbosityLevel.QUIET:
+                if verbosity > VerbosityLevel.BASIC:
                     print(f"\nReturning combined DataFrame with {len(combined_df)} rows")
                 return combined_df
             except ValueError as e:
-                if verbosity > VerbosityLevel.QUIET:
+                if verbosity > VerbosityLevel.BASIC:
                     print(f"Error combining results: {str(e)}")
                 return None
 
-        if verbosity > VerbosityLevel.QUIET:
+        if verbosity > VerbosityLevel.BASIC:
             print("\nNo results to return")
         return None
 
