@@ -252,7 +252,7 @@ void EventProcessor::openTriggerFile() {
                     FatalException, "Cannot create TriggerTimes directory");
     }
 
-    G4String fileName = "trigger_data";
+    G4String fileName = "trigger_sim_data";
     if (Sim::batchSize > 0) {
         fileName += "_" + std::to_string(batchCount) + ".csv";
     } else {

@@ -1082,263 +1082,232 @@ class Lens:
         sensor_size: int = 256,
     ):
         """
-        Convert traced photon data to valid TPX3 binary files and write them to
-        archive/Tpx3Files/*.tpx3
-
-        - traced_data: optional in-memory DataFrame (if provided, only one file is written)
-        - otherwise reads all CSVs from archive/TracedPhotons/*.csv (any name)
-        - expected traced CSV columns: at least x2, y2, toa2, time_diff
-        * `toa2` is interpreted as time in **nanoseconds** (ns).
-        * `time_diff` is used as tot in **nanoseconds** (ns) and clipped to >= 1 ns.
-        - Pixel mapping used:
-            px = (x2 + 10) / 10 * 128
-            py = (y2 + 10) / 10 * 128
-        - Times are converted to TPX3 ticks (1 tick = 1.5625 ns).
-        - Global time packet (type 0x4) is added at start of each chunk and every ~100 ns, split into LSB (0x4) and MSB (0x5) subheaders.
-        - TDC triggers (0x6) are appended after initial global packet (if provided).
-        - Writes one .tpx3 file per traced CSV into archive/Tpx3Files/
-        - verbosity: 0 silent, 1 tqdm + summary, 2 detailed prints
-        """
-        # Helper constants
-        TICK_NS = 1.5625  # ns per Timepix3 tick
-        MAX_CHUNK_BYTES = 0xFFFF  # max bytes per chunk (65535)
-        GTS_INTERVAL_PS = 100e3  # 100 ns in picoseconds
-        GTS_TICK_NS = 409.6  # ns per GTS tick
-        GTS_INTERVAL_TICKS = int(GTS_INTERVAL_PS / (GTS_TICK_NS * 1000))  # GTS interval in 409.6 ns ticks
-
-        def _encode_gts_lsb(global_time_ticks):
-            """Encode GTS LSB packet (subheader 0x4)."""
-            lsb = (global_time_ticks & 0xFFFFFFFF)  # Lower 32 bits
-            word = (0x4 << 60) | (0x4 << 56) | (lsb << 16)
-            return struct.pack("<Q", word)
-
-        def _encode_gts_msb(global_time_ticks):
-            """Encode GTS MSB packet (subheader 0x5)."""
-            msb = (global_time_ticks >> 32) & 0xFFFF  # Upper 16 bits
-            word = (0x4 << 60) | (0x5 << 56) | (msb << 16)
-            return struct.pack("<Q", word)
-
-        # Prepare directories
-        traced_dir = self.archive / "TracedPhotons"
-        out_dir = self.archive / "tpx3Files"
-        out_dir.mkdir(parents=True, exist_ok=True)
-
-        # Gather traced dataframes
-        traced_files = []
-        traced_dfs = []
-
-        if traced_data is not None:
-            if not isinstance(traced_data, pd.DataFrame):
-                raise ValueError("traced_data must be a pandas DataFrame")
-            traced_files = [None]
-            traced_dfs = [traced_data.copy()]
-        else:
-            if not traced_dir.exists():
-                if verbosity >= 1:
-                    print(f"TracedPhotons directory not found: {traced_dir}")
-                return
-            csv_list = sorted(traced_dir.glob("*.csv"))
-            for f in csv_list:
-                try:
-                    df = pd.read_csv(f)
-                except Exception as e:
-                    if verbosity >= 2:
-                        print(f"Failed to read {f.name}: {e}")
-                    continue
-                if not all(col in df.columns for col in ["x2", "y2", "toa2", "time_diff"]):
-                    if verbosity >= 2:
-                        print(f"Skipping {f.name}: missing required columns (need x2,y2,toa2,time_diff)")
-                    continue
-                traced_files.append(f)
-                traced_dfs.append(df.copy())
-
-        if len(traced_dfs) == 0:
-            if verbosity >= 1:
-                print("No traced photon files found or empty traced_data.")
-            return
-
-        # Process each traced dataframe
-        for idx, df in enumerate(traced_dfs):
-            src_name = traced_files[idx].name if traced_files[idx] is not None else "inmemory"
-            if verbosity >= 2:
-                print(f"Processing traced source: {src_name} (rows={len(df)})")
-
-            # Build the x,y,toa,tot columns
-            px = ((df["x2"].astype(float) + 10.0) / 10.0 * 128.0).to_numpy()
-            py = ((df["y2"].astype(float) + 10.0) / 10.0 * 128.0).to_numpy()
-
-            px_i = np.floor(px + 0.5).astype(np.int64)
-            py_i = np.floor(py + 0.5).astype(np.int64)
-            px_i = np.clip(px_i, 0, sensor_size - 1)
-            py_i = np.clip(py_i, 0, sensor_size - 1)
-
-            tot_ns = df["time_diff"].astype(float).to_numpy()
-            tot_ns = np.where(np.isfinite(tot_ns), tot_ns, 1.0)
-            tot_ns = np.maximum(tot_ns, 1.0)
-
-            toa_ns = df["toa2"].astype(float).to_numpy()
-
-            toa_ticks_total = np.rint(toa_ns / TICK_NS).astype(np.int64)
-            tot_ticks = np.rint(tot_ns / TICK_NS).astype(np.int64)
-            tot_ticks = np.maximum(tot_ticks, 1)
-
-            n_hits = len(df)
-
-            spidr_time = (toa_ticks_total >> 18).astype(np.int64)
-            r = toa_ticks_total - (spidr_time << 18)
-            r = r.astype(np.int64)
-            coarse = ((r + 15) // 16).astype(np.int64)
-            fine = (coarse * 16 - r).astype(np.int64)
-
-            overflow_coarse_idx = np.where(coarse > 0x3FFF)[0]
-            if overflow_coarse_idx.size > 0:
-                if verbosity >= 2:
-                    print(f"Warning: {overflow_coarse_idx.size} events have coarse>14bit, clamping them.")
-                for i_over in overflow_coarse_idx:
-                    c = 0x3FFF
-                    f = int(c * 16 - r[i_over])
-                    if f < 0:
-                        f = 0
-                    elif f > 15:
-                        f = 15
-                    coarse[i_over] = c
-                    fine[i_over] = f
-
-            pixaddr = (py_i * sensor_size + px_i).astype(np.int64)
-            pixaddr = pixaddr & 0xFFFF
-            coarse = coarse & 0x3FFF
-            tot_ticks = tot_ticks & 0x3FF
-            fine = fine & 0xF
-            spidr_time = spidr_time & 0xFFFF
-
-            events_bytes: List[bytes] = []
-
-            # --- Initial GTS packet pair ---
-            if n_hits > 0:
-                global_ticks = int(toa_ticks_total[0] * (TICK_NS * 1000) / (GTS_TICK_NS * 1000))
-            else:
-                global_ticks = 0
-            global_ticks &= ((1 << 48) - 1)
-            events_bytes.append(_encode_gts_lsb(global_ticks))
-            events_bytes.append(_encode_gts_msb(global_ticks))
-            if verbosity == 2:
-                print(f"[DEBUG] Initial GTS LSB: ticks={global_ticks & 0xFFFFFFFF}, word=0x{(0x4 << 60) | (0x4 << 56) | ((global_ticks & 0xFFFFFFFF) << 16):016x}")
-                print(f"[DEBUG] Initial GTS MSB: ticks={(global_ticks >> 32) & 0xFFFF}, word=0x{(0x4 << 60) | (0x5 << 56) | (((global_ticks >> 32) & 0xFFFF) << 16):016x}")
-
-            # --- TDC triggers ---
-            if trigger_times_ps is not None and len(trigger_times_ps) > 0:
-                trigger_arr = np.asarray(trigger_times_ps, dtype=float)
-                trig_ticks = np.rint(trigger_arr / (TICK_NS * 1e3)).astype(np.int64)
-                for t_idx, tval in enumerate(trig_ticks):
-                    trig_counter = int(t_idx) & 0xFFF
-                    tmask35 = int(tval & ((1 << 35) - 1))
-                    tdc_word = (0x6 << 60) | (trig_counter << 44) | (tmask35 << 9)
-                    events_bytes.append(struct.pack("<Q", int(tdc_word)))
-                    if verbosity == 2 and t_idx < 3:
-                        print(f"[DEBUG] TDC {t_idx}: ps={trigger_arr[t_idx]}, ticks={tval}, word=0x{tdc_word:016x}")
-
-            # --- Pixel packets with periodic GTS ---
-            it = range(n_hits)
-            if verbosity >= 1:
-                iterator = tqdm(it, desc="Encoding pixels", disable=(verbosity == 0))
-            else:
-                iterator = it
-
-            last_gts = global_ticks
-
-            for j in iterator:
-                current_gts = int(toa_ticks_total[j] * (TICK_NS * 1000) / (GTS_TICK_NS * 1000))
-                if current_gts > last_gts:
-                    events_bytes.append(_encode_gts_lsb(current_gts))
-                    events_bytes.append(_encode_gts_msb(current_gts))
-                    last_gts = current_gts
-                    if verbosity == 2 and j < 5:
-                        print(f"[DEBUG] GTS LSB at event {j}: ticks={current_gts & 0xFFFFFFFF}, word=0x{(0x4 << 60) | (0x4 << 56) | ((current_gts & 0xFFFFFFFF) << 16):016x}")
-                        print(f"[DEBUG] GTS MSB at event {j}: ticks={(current_gts >> 32) & 0xFFFF}, word=0x{(0x4 << 60) | (0x5 << 56) | (((current_gts >> 32) & 0xFFFF) << 16):016x}")
-
-                p = int(pixaddr[j]) & 0xFFFF
-                c = int(coarse[j]) & 0x3FFF
-                to = int(tot_ticks[j]) & 0x3FF
-                ft = int(fine[j]) & 0xF
-                sp = int(spidr_time[j]) & 0xFFFF
-
-                pixel_word = (
-                    (0xB << 60)
-                    | (p << 44)
-                    | (c << 30)
-                    | (to << 20)
-                    | (ft << 16)
-                    | sp
-                )
-                events_bytes.append(struct.pack("<Q", int(pixel_word)))
-
-                if verbosity == 2 and j < 5:
-                    print(f"[DEBUG] Pixel {j}: pix={p}, coarse={c}, tot={to}, ftoa={ft}, spidr={sp}, word=0x{pixel_word:016x}")
-
-            # --- Write chunked with GTS at start of each chunk ---
-            content = b"".join(events_bytes)
-            total_bytes = len(content)
-            offset = 0
-            remaining = total_bytes
-            chunk_index = 0
-
-            base_name = traced_files[idx].stem if traced_files[idx] is not None else "traced_inmemory"
-            out_path = out_dir / f"{base_name}.tpx3"
-
-            if out_path.exists():
-                out_path.unlink()
-
-            with open(out_path, "ab") as fh:
-                while remaining > 0:
-                    chunk_size = min(remaining, MAX_CHUNK_BYTES - 16)  # Reserve space for GTS pair (2 x 8 bytes)
-                    # Add GTS packet pair at start of each chunk
-                    chunk_gts_ticks = int((toa_ticks_total[0] if n_hits > 0 else 0) * (TICK_NS * 1000) / (GTS_TICK_NS * 1000) + chunk_index * GTS_INTERVAL_TICKS)
-                    chunk_gts_ticks &= ((1 << 48) - 1)
-                    chunk_content = _encode_gts_lsb(chunk_gts_ticks) + _encode_gts_msb(chunk_gts_ticks) + content[offset:offset + chunk_size]
-                    header = struct.pack("<4sBBH", b"TPX3", int(chip_index) & 0xFF, 0, len(chunk_content) & 0xFFFF)
-                    fh.write(header)
-                    fh.write(chunk_content)
-                    if verbosity == 2:
-                        print(f"[DEBUG] Chunk {chunk_index}: GTS ticks={chunk_gts_ticks}, chunk_size={len(chunk_content)}")
-                    offset += chunk_size
-                    remaining -= chunk_size
-                    chunk_index += 1
-
-            if verbosity >= 1:
-                print(f"✅ Wrote {out_path} ({n_hits} hits, {total_bytes} bytes total, chunks={chunk_index})")
-
-        if verbosity >= 1:
-            print("All .tpx3 files written to:", str(out_dir))
-
-            
-    def _print_tracing_stats(self, filename, original_df, result_df):
-        """
-        Print statistics about ray tracing results.
+        Convert traced photon data to valid TPX3 binary files.
+        
+        Intelligently splits large datasets by neutron_id to keep related events together.
+        Each file is limited to 65535 bytes (single-chunk) to avoid parser issues.
         
         Parameters:
         -----------
-        filename : str
-            Name of the processed file
-        original_df : pd.DataFrame  
-            Original simulation data
-        result_df : pd.DataFrame
-            Traced results data
+        traced_data : pd.DataFrame
+            DataFrame with columns: x2, y2, toa2, time_diff (or 'tot'), and neutron_id
+        trigger_times_ps : array-like, optional
+            Trigger times in picoseconds
+        chip_index : int
+            Chip index for TPX3 header (0-255)
+        verbosity : int
+            0=silent, 1=progress, 2=detailed debug
+        sensor_size : int
+            Sensor dimensions (default 256x256)
         """
-        total = len(original_df)
-        traced = result_df.dropna(subset=["x2"]).shape[0]
-        failed = total - traced
-        percentage = (traced / total) * 100 if total > 0 else 0
+        import struct
+        from pathlib import Path
         
-        print(f"File: {filename}")
-        print(f" Original rays: {total:,}")
-        print(f" Successfully traced: {traced:,} ({percentage:.1f}%)")
-        print(f" Failed traces: {failed:,} ({100-percentage:.1f}%)")
+        # Constants
+        TICK_NS = 1.5625
+        MAX_CHUNK_BYTES = 65535
+        TIMER_TICK_NS = 409.6
+        PACKET_SIZE = 8
         
-        if traced > 0:
-            x_range = result_df['x2'].max() - result_df['x2'].min()
-            y_range = result_df['y2'].max() - result_df['y2'].min()
-            z_range = result_df['z2'].max() - result_df['z2'].min()
-            print(f"    Position ranges - X: {x_range:.3f}mm, Y: {y_range:.3f}mm, Z: {z_range:.3f}mm")
+        def encode_gts_pair(timer_value):
+            """Encode a GTS packet pair (LSB + MSB)."""
+            timer_value = int(timer_value) & ((1 << 48) - 1)
+            lsb_timer = timer_value & 0xFFFFFFFF
+            lsb_word = (0x4 << 60) | (0x4 << 56) | (lsb_timer << 16)
+            msb_timer = (timer_value >> 32) & 0xFFFF
+            msb_word = (0x4 << 60) | (0x5 << 56) | (msb_timer << 16)
+            return struct.pack("<Q", lsb_word) + struct.pack("<Q", msb_word)
+        
+        if traced_data is None or len(traced_data) == 0:
+            if verbosity >= 1:
+                print("No traced photon data provided")
+            return
+        
+        df = traced_data.copy()
+        
+        if verbosity >= 2:
+            print(f"\nProcessing {len(df)} events for TPX3 export")
+        
+        # Validate required columns
+        required = ["x2", "y2", "toa2"]
+        missing = [col for col in required if col not in df.columns]
+        if missing:
+            if verbosity >= 1:
+                print(f"Missing required columns: {missing}")
+            return
+        
+        # Check for TOT column
+        if "time_diff" not in df.columns and "tot" not in df.columns:
+            if verbosity >= 1:
+                print("Missing time_diff or tot column")
+            return
+        
+        # Setup output directory
+        out_dir = self.archive / "tpx3Files"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Convert positions to pixel coordinates
+        px = ((df["x2"].astype(float) + 10.0) / 20.0 * sensor_size).to_numpy()
+        py = ((df["y2"].astype(float) + 10.0) / 20.0 * sensor_size).to_numpy()
+        px_i = np.clip(np.round(px).astype(np.int64), 0, sensor_size - 1)
+        py_i = np.clip(np.round(py).astype(np.int64), 0, sensor_size - 1)
+        
+        # Extract timing
+        toa_ns = df["toa2"].astype(float).to_numpy()
+        tot_ns = df["time_diff"].to_numpy() if "time_diff" in df.columns else df["tot"].to_numpy()
+        tot_ns = np.maximum(tot_ns.astype(float), 1.0)
+        
+        # Convert to TPX3 ticks
+        toa_ticks = np.round(toa_ns / TICK_NS).astype(np.int64)
+        tot_ticks = np.clip(np.round(tot_ns / TICK_NS).astype(np.int64), 1, 0x3FF)
+        
+        # Decompose ToA
+        spidr_time = ((toa_ticks >> 18) & 0xFFFF).astype(np.int64)
+        coarse_raw = ((toa_ticks >> 4) & 0x3FFF).astype(np.int64)
+        ftoa = (15 - (toa_ticks & 0xF)).astype(np.int64)
+        ftoa = np.clip(ftoa, 0, 15)
+        
+        # Pixel address
+        pixaddr = (py_i * sensor_size + px_i).astype(np.int64)
+        
+        # Timer values for GTS
+        timer_ticks = (toa_ticks / (TIMER_TICK_NS / TICK_NS)).astype(np.int64)
+        
+        if verbosity >= 2:
+            print(f"  ToA range: {toa_ns.min():.2f} - {toa_ns.max():.2f} ns")
+            print(f"  Pixel range: x=[{px_i.min()}, {px_i.max()}], y=[{py_i.min()}, {py_i.max()}]")
+        
+        # Encode all pixel packets first
+        pixel_packets = []
+        for j in range(len(df)):
+            p = int(pixaddr[j]) & 0xFFFF
+            c = int(coarse_raw[j]) & 0x3FFF
+            tot = int(tot_ticks[j]) & 0x3FF
+            ft = int(ftoa[j]) & 0xF
+            sp = int(spidr_time[j]) & 0xFFFF
+            
+            pixel_word = (0xB << 60) | (p << 44) | (c << 30) | (tot << 20) | (ft << 16) | sp
+            pixel_packets.append(struct.pack("<Q", pixel_word))
+        
+        # Split by neutron_id if available
+        if "neutron_id" in df.columns:
+            neutron_ids = df["neutron_id"].to_numpy()
+            
+            # Find boundaries between different neutron events
+            neutron_boundaries = [0]
+            for i in range(1, len(neutron_ids)):
+                if neutron_ids[i] != neutron_ids[i-1]:
+                    neutron_boundaries.append(i)
+            neutron_boundaries.append(len(df))
+            
+            if verbosity >= 2:
+                print(f"  Found {len(neutron_boundaries)-1} neutron events")
+            
+            # Group events into files, respecting neutron boundaries
+            file_groups = []
+            current_group_start = 0
+            current_group_size = 16  # Start with GTS pair size
+            
+            for i in range(len(neutron_boundaries) - 1):
+                start_idx = neutron_boundaries[i]
+                end_idx = neutron_boundaries[i + 1]
+                neutron_size = (end_idx - start_idx) * PACKET_SIZE
+                
+                # Check if adding this neutron would exceed limit
+                if current_group_size + neutron_size > MAX_CHUNK_BYTES:
+                    # Save current group if it has events
+                    if start_idx > current_group_start:
+                        file_groups.append((current_group_start, start_idx))
+                    # Start new group
+                    current_group_start = start_idx
+                    current_group_size = 16 + neutron_size  # GTS + this neutron
+                else:
+                    current_group_size += neutron_size
+            
+            # Add final group
+            if current_group_start < len(df):
+                file_groups.append((current_group_start, len(df)))
+                
+        else:
+            # No neutron_id: split on packet boundaries
+            if verbosity >= 2:
+                print("  No neutron_id column, splitting on packet boundaries")
+            
+            max_events_per_file = (MAX_CHUNK_BYTES - 16) // PACKET_SIZE  # Reserve for GTS
+            file_groups = []
+            for start in range(0, len(df), max_events_per_file):
+                end = min(start + max_events_per_file, len(df))
+                file_groups.append((start, end))
+        
+        if verbosity >= 1:
+            print(f"  Splitting into {len(file_groups)} file(s)")
+        
+        # Determine base filename
+        traced_dir = self.archive / "TracedPhotons"
+        csv_files = sorted(traced_dir.glob("traced_sim_data_*.csv"))
+        
+        # Try to match the dataframe to a source file by size
+        base_name = "traced_data"
+        for csv_file in csv_files:
+            try:
+                file_df = pd.read_csv(csv_file)
+                if len(file_df) == len(traced_data):
+                    base_name = csv_file.stem.replace("traced_", "")
+                    break
+            except:
+                continue
+        
+        # Write files
+        files_written = []
+        for file_idx, (start_idx, end_idx) in enumerate(file_groups):
+            # Build initial GTS pair
+            initial_timer = timer_ticks[start_idx] if start_idx < len(timer_ticks) else 0
+            file_content = encode_gts_pair(initial_timer)
+            
+            # Add TDC triggers only to first file
+            if file_idx == 0 and trigger_times_ps is not None and len(trigger_times_ps) > 0:
+                trigger_arr = np.asarray(trigger_times_ps, dtype=float)
+                trig_ticks = np.round(trigger_arr / (TICK_NS * 1000)).astype(np.int64)
+                
+                for t_idx, tval in enumerate(trig_ticks):
+                    trig_counter = t_idx & 0xFFF
+                    timestamp = tval & ((1 << 35) - 1)
+                    tdc_word = (0x6 << 60) | (trig_counter << 44) | (timestamp << 9)
+                    file_content += struct.pack("<Q", tdc_word)
+            
+            # Add pixel packets for this range
+            for j in range(start_idx, end_idx):
+                file_content += pixel_packets[j]
+            
+            # Determine filename
+            if len(file_groups) > 1:
+                out_path = out_dir / f"{base_name}_part{file_idx + 1:03d}.tpx3"
+            else:
+                out_path = out_dir / f"{base_name}.tpx3"
+            
+            # Write file
+            if out_path.exists():
+                out_path.unlink()
+            
+            with open(out_path, "wb") as fh:
+                file_size = len(file_content)
+                header = struct.pack("<4sBBH", b"TPX3", chip_index & 0xFF, 0, file_size & 0xFFFF)
+                fh.write(header)
+                fh.write(file_content)
+            
+            files_written.append((out_path, end_idx - start_idx))
+            
+            if verbosity >= 2:
+                neutron_range = f"neutrons {neutron_ids[start_idx]}-{neutron_ids[end_idx-1]}" if "neutron_id" in df.columns else ""
+                print(f"  File {file_idx + 1}: {out_path.name}, {end_idx - start_idx} events, {file_size} bytes {neutron_range}")
+        
+        if verbosity >= 1:
+            if len(files_written) == 1:
+                print(f"✅ Wrote {files_written[0][0].name}: {files_written[0][1]} events")
+            else:
+                print(f"✅ Wrote {len(files_written)} files:")
+                for fp, n_events in files_written:
+                    print(f"   - {fp.name} ({n_events} events)")
 
     def saturate_photons(self, data: pd.DataFrame = None, deadtime: float = 600.0, blob: float = 0.0, output_format: str = "tpx3",
                         min_tot: float = 20.0, pixel_size: float = None, verbosity: VerbosityLevel = VerbosityLevel.BASIC
