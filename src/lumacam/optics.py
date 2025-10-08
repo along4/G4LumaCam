@@ -25,6 +25,7 @@ from contextlib import redirect_stdout
 import tempfile
 import os
 import struct
+import shutil
 
 class VerbosityLevel(IntEnum):
     """Verbosity levels for simulation output."""
@@ -601,9 +602,10 @@ class Lens:
         return [rays[i:i+chunk_size] for i in range(0, len(rays), chunk_size)]
 
     def trace_rays(self, opm=None, opm_file=None, zscan=0, zfine=0, fnumber=None,
-                   join=False, print_stats=False, n_processes=None, chunk_size=1000, 
-                   progress_bar=True, timeout=3600, return_df=False, 
-                   verbosity=VerbosityLevel.BASIC, deadtime=None, blob=0.0):
+                join=False, print_stats=False, n_processes=None, chunk_size=1000, 
+                progress_bar=True, timeout=3600, return_df=False, 
+                verbosity=VerbosityLevel.BASIC, deadtime=None, blob=0.0, 
+                split_method="auto"):
         """
         Trace rays from simulation data files and save processed results, optionally applying pixel saturation and blob effect.
 
@@ -614,15 +616,6 @@ class Lens:
         directory, including photon_count, time_diff, nz, and pz columns. It then calls _write_tpx3
         to generate TPX3 files, reading trigger times from corresponding TriggerTimes CSV files (converting ns to ps).
         Otherwise, it saves raw traced results to 'TracedPhotons' with nz and pz columns.
-
-        Processing Pipeline:
-        1. Locates all non-empty 'sim_data_*.csv' files in 'SimPhotons' directory
-        2. Converts ray data to appropriate format for optical tracing
-        3. Processes rays in parallel chunks using multiprocessing
-        4. If deadtime or blob is provided, applies saturation with blob effect to group photons by pixel and deadtime
-        5. Saves results to 'TracedPhotons' directory with nz and pz from SimPhotons
-        6. If deadtime or blob is provided, calls _write_tpx3 for each processed file
-        7. Optionally returns combined results as a DataFrame
 
         Parameters:
         -----------
@@ -672,24 +665,24 @@ class Lens:
             Interaction radius in pixels for photon hits. If > 0, each photon hit affects
             all pixels within this radius. If provided, applies saturate_photons and
             triggers _write_tpx3.
+        split_method : str, default "auto"
+            TPX3 file splitting strategy (only used when deadtime or blob is provided):
+            - "auto": Groups neutron events to minimize file count (default)
+            - "event": Creates one TPX3 file per neutron_id for event-by-event analysis
 
         Returns:
         --------
         pd.DataFrame or None
             Combined DataFrame of all processed results if return_df=True, 
-            otherwise None. Each row represents a traced ray with columns:
-            - Without deadtime/blob: x2, y2, z2, id, neutron_id, toa2, nz, pz (if join=False)
-            - With deadtime/blob: x2, y2, z2, id, neutron_id, toa2, photon_count, time_diff, nz, pz
-            - Additional columns if join=True
-
+            otherwise None. Each row represents a traced ray.
+        
         Raises:
         -------
-        ValueError
-            If both opm and opm_file are provided, or if optical model creation fails
-        FileNotFoundError
-            If opm_file is specified but file does not exist
-        Exception
-            If parallel processing or file operations fail
+        ValueError: If both opm and opm_file are provided, or if parameters are
+                    invalid (e.g., negative deadtime or blob).
+        FileNotFoundError: If opm_file does not exist or if no valid simulation
+                            data files are found.
+        RuntimeError: If tracing fails for a file.
         """
         # Validate input parameters
         if opm is not None and opm_file is not None:
@@ -772,6 +765,7 @@ class Lens:
             file_iter = tqdm(valid_files, desc=file_desc, 
                             disable=not progress_bar or verbosity == VerbosityLevel.QUIET)
             
+            clean = True  # clean flag to erase previous files only once
             for csv_file in file_iter:
                 if verbosity >= VerbosityLevel.DETAILED:
                     print(f"\nProcessing file: {csv_file.name}")
@@ -879,7 +873,7 @@ class Lens:
                             pool.join()
                             
                 except Exception as e:
-                    if verbosity > VerbosityLevel.BASIC:
+                    if verbosity >= VerbosityLevel.DETAILED:
                         print(f"Error in processing {csv_file.name}: {str(e)}")
                         print("Consider using n_processes=1 for debugging")
                     raise
@@ -896,7 +890,7 @@ class Lens:
                     required_cols = ['x2', 'y2', 'z2', 'toa2', 'id', 'neutron_id']
                     missing_cols = [col for col in required_cols if col not in result_df.columns]
                     if missing_cols:
-                        if verbosity > VerbosityLevel.QUIET:
+                        if verbosity >= VerbosityLevel.DETAILED:
                             print(f"Cannot apply saturation to {csv_file.name}: missing columns {missing_cols}")
                         continue
                     # Call saturate_photons with output_format="photons"
@@ -910,7 +904,7 @@ class Lens:
                         verbosity=verbosity
                     )
                     if result_df is None or result_df.empty:
-                        if verbosity > VerbosityLevel.QUIET:
+                        if verbosity >= VerbosityLevel.DETAILED:
                             print(f"  Saturation produced no results for {csv_file.name}")
                         continue
 
@@ -930,13 +924,13 @@ class Lens:
                             if 'trigger_time_ns' in trigger_df.columns:
                                 trigger_times_ps = (trigger_df['trigger_time_ns'] * 1000).astype(np.int64).values
                             else:
-                                if verbosity > VerbosityLevel.QUIET:
+                                if verbosity >= VerbosityLevel.DETAILED:
                                     print(f"Warning: {trigger_file.name} missing 'trigger_time_ns' column")
                         except Exception as e:
-                            if verbosity > VerbosityLevel.QUIET:
+                            if verbosity >= VerbosityLevel.DETAILED:
                                 print(f"Error reading trigger file {trigger_file.name}: {str(e)}")
                     else:
-                        if verbosity > VerbosityLevel.QUIET:
+                        if verbosity >= VerbosityLevel.DETAILED:
                             print(f"Warning: Trigger file {trigger_file.name} not found")
                     
                     self._write_tpx3(
@@ -944,8 +938,11 @@ class Lens:
                         traced_data=result_df,
                         chip_index=0,
                         verbosity=verbosity,
-                        sensor_size=256
+                        sensor_size=256,
+                        split_method=split_method,
+                        clean=clean
                     )
+                    clean = False  # Only clean once
 
                 # Print statistics if requested
                 if print_stats and verbosity >= VerbosityLevel.BASIC:
@@ -957,11 +954,11 @@ class Lens:
             # Return combined results if requested
             if return_df and all_results:
                 combined_df = pd.concat(all_results, ignore_index=True)
-                if verbosity > VerbosityLevel.QUIET:
+                if verbosity >= VerbosityLevel.DETAILED:
                     print(f"\nReturning combined DataFrame with {len(combined_df)} rows")
                 return combined_df
 
-            if verbosity > VerbosityLevel.QUIET:
+            if verbosity >= VerbosityLevel.DETAILED:
                 print(f"\nProcessing complete. Results saved to: {traced_photons_dir}")
             
             return None
@@ -1073,6 +1070,7 @@ class Lens:
 
         return result
 
+
     def _write_tpx3(
         self,
         trigger_times_ps: Union[List[int], np.ndarray] = None,
@@ -1080,29 +1078,35 @@ class Lens:
         chip_index: int = 0,
         verbosity: int = 1,
         sensor_size: int = 256,
+        split_method: str = "auto",
+        clean: bool = True
     ):
         """
         Convert traced photon data to valid TPX3 binary files.
         
-        Intelligently splits large datasets by neutron_id to keep related events together.
-        Each file is limited to 65535 bytes (single-chunk) to avoid parser issues.
+        Intelligently splits large datasets with different strategies:
+        - "auto": Groups neutron events together, splits only when file size limit reached
+        - "event": Creates one file per neutron_id (event-by-event export) with corresponding TOF trigger
         
         Parameters:
         -----------
         traced_data : pd.DataFrame
-            DataFrame with columns: x2, y2, toa2, time_diff (or 'tot'), and neutron_id
+            DataFrame with columns: x2, y2, toa2, time_diff (or 'tot'), and optionally neutron_id, tof
         trigger_times_ps : array-like, optional
-            Trigger times in picoseconds
+            Trigger times in picoseconds (used if tof not in traced_data)
         chip_index : int
             Chip index for TPX3 header (0-255)
         verbosity : int
             0=silent, 1=progress, 2=detailed debug
         sensor_size : int
             Sensor dimensions (default 256x256)
+        split_method : str, default "auto"
+            File splitting strategy:
+            - "auto": Optimize file count by grouping neutrons
+            - "event": One file per neutron_id for event-by-event analysis
+        clean : bool
+            If True, clears existing TPX3 files in output directory before writing new ones
         """
-        import struct
-        from pathlib import Path
-        
         # Constants
         TICK_NS = 1.5625
         MAX_CHUNK_BYTES = 65535
@@ -1125,6 +1129,10 @@ class Lens:
         
         df = traced_data.copy()
         
+        # Sort by neutron_id and toa2 to ensure consistent event ordering
+        if "neutron_id" in df.columns:
+            df = df.sort_values(by=["neutron_id", "toa2"]).reset_index(drop=True)
+        
         if verbosity >= 2:
             print(f"\nProcessing {len(df)} events for TPX3 export")
         
@@ -1142,8 +1150,10 @@ class Lens:
                 print("Missing time_diff or tot column")
             return
         
-        # Setup output directory
+        # Setup output directory and clear existing contents
         out_dir = self.archive / "tpx3Files"
+        if out_dir.exists() and clean:
+            shutil.rmtree(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         
         # Convert positions to pixel coordinates
@@ -1189,11 +1199,32 @@ class Lens:
             pixel_word = (0xB << 60) | (p << 44) | (c << 30) | (tot << 20) | (ft << 16) | sp
             pixel_packets.append(struct.pack("<Q", pixel_word))
         
-        # Split by neutron_id if available
-        if "neutron_id" in df.columns:
+        # Determine file groups and associated trigger times
+        file_groups = []
+        trigger_times_per_file = []
+        
+        if split_method == "event" and "neutron_id" in df.columns:
             neutron_ids = df["neutron_id"].to_numpy()
+            unique_neutron_ids = np.unique(neutron_ids)
             
-            # Find boundaries between different neutron events
+            # Validate neutron_id uniqueness
+            if len(unique_neutron_ids) < len(neutron_ids):
+                if verbosity >= 2:
+                    print(f"  Warning: Found duplicate neutron IDs, ensuring correct separation")
+            
+            for nid in unique_neutron_ids:
+                indices = np.where(neutron_ids == nid)[0]
+                if len(indices) > 0:
+                    # Get TOF for this neutron event (convert from seconds to picoseconds)
+                    tof = df.loc[indices, "tof"].iloc[0] if "tof" in df.columns else None
+                    trigger_time_ps = tof * 1e12 if tof is not None else None
+                    file_groups.append((indices[0], indices[-1] + 1, nid))
+                    trigger_times_per_file.append([trigger_time_ps] if trigger_time_ps is not None else [])
+            
+            if verbosity >= 2:
+                print(f"  Found {len(unique_neutron_ids)} unique neutron events")
+        elif "neutron_id" in df.columns:
+            neutron_ids = df["neutron_id"].to_numpy()
             neutron_boundaries = [0]
             for i in range(1, len(neutron_ids)):
                 if neutron_ids[i] != neutron_ids[i-1]:
@@ -1203,41 +1234,35 @@ class Lens:
             if verbosity >= 2:
                 print(f"  Found {len(neutron_boundaries)-1} neutron events")
             
-            # Group events into files, respecting neutron boundaries
-            file_groups = []
             current_group_start = 0
-            current_group_size = 16  # Start with GTS pair size
+            current_group_size = 16
             
             for i in range(len(neutron_boundaries) - 1):
                 start_idx = neutron_boundaries[i]
                 end_idx = neutron_boundaries[i + 1]
                 neutron_size = (end_idx - start_idx) * PACKET_SIZE
                 
-                # Check if adding this neutron would exceed limit
                 if current_group_size + neutron_size > MAX_CHUNK_BYTES:
-                    # Save current group if it has events
                     if start_idx > current_group_start:
-                        file_groups.append((current_group_start, start_idx))
-                    # Start new group
+                        file_groups.append((current_group_start, start_idx, None))
+                        trigger_times_per_file.append(trigger_times_ps if trigger_times_ps is not None else [])
                     current_group_start = start_idx
-                    current_group_size = 16 + neutron_size  # GTS + this neutron
+                    current_group_size = 16 + neutron_size
                 else:
                     current_group_size += neutron_size
             
-            # Add final group
             if current_group_start < len(df):
-                file_groups.append((current_group_start, len(df)))
-                
+                file_groups.append((current_group_start, len(df), None))
+                trigger_times_per_file.append(trigger_times_ps if trigger_times_ps is not None else [])
         else:
-            # No neutron_id: split on packet boundaries
             if verbosity >= 2:
                 print("  No neutron_id column, splitting on packet boundaries")
             
-            max_events_per_file = (MAX_CHUNK_BYTES - 16) // PACKET_SIZE  # Reserve for GTS
-            file_groups = []
+            max_events_per_file = (MAX_CHUNK_BYTES - 16) // PACKET_SIZE
             for start in range(0, len(df), max_events_per_file):
                 end = min(start + max_events_per_file, len(df))
-                file_groups.append((start, end))
+                file_groups.append((start, end, None))
+                trigger_times_per_file.append(trigger_times_ps if trigger_times_ps is not None else [])
         
         if verbosity >= 1:
             print(f"  Splitting into {len(file_groups)} file(s)")
@@ -1246,7 +1271,6 @@ class Lens:
         traced_dir = self.archive / "TracedPhotons"
         csv_files = sorted(traced_dir.glob("traced_sim_data_*.csv"))
         
-        # Try to match the dataframe to a source file by size
         base_name = "traced_data"
         for csv_file in csv_files:
             try:
@@ -1259,14 +1283,14 @@ class Lens:
         
         # Write files
         files_written = []
-        for file_idx, (start_idx, end_idx) in enumerate(file_groups):
+        for file_idx, ((start_idx, end_idx, neutron_id), file_trigger_times) in enumerate(zip(file_groups, trigger_times_per_file)):
             # Build initial GTS pair
             initial_timer = timer_ticks[start_idx] if start_idx < len(timer_ticks) else 0
             file_content = encode_gts_pair(initial_timer)
             
-            # Add TDC triggers only to first file
-            if file_idx == 0 and trigger_times_ps is not None and len(trigger_times_ps) > 0:
-                trigger_arr = np.asarray(trigger_times_ps, dtype=float)
+            # Add TDC triggers for this file
+            if file_trigger_times:
+                trigger_arr = np.asarray(file_trigger_times, dtype=float)
                 trig_ticks = np.round(trigger_arr / (TICK_NS * 1000)).astype(np.int64)
                 
                 for t_idx, tval in enumerate(trig_ticks):
@@ -1280,7 +1304,9 @@ class Lens:
                 file_content += pixel_packets[j]
             
             # Determine filename
-            if len(file_groups) > 1:
+            if split_method == "event" and neutron_id is not None:
+                out_path = out_dir / f"{base_name}_neutron{int(neutron_id):06d}.tpx3"
+            elif len(file_groups) > 1:
                 out_path = out_dir / f"{base_name}_part{file_idx + 1:03d}.tpx3"
             else:
                 out_path = out_dir / f"{base_name}.tpx3"
@@ -1298,10 +1324,10 @@ class Lens:
             files_written.append((out_path, end_idx - start_idx))
             
             if verbosity >= 2:
-                neutron_range = f"neutrons {neutron_ids[start_idx]}-{neutron_ids[end_idx-1]}" if "neutron_id" in df.columns else ""
-                print(f"  File {file_idx + 1}: {out_path.name}, {end_idx - start_idx} events, {file_size} bytes {neutron_range}")
+                neutron_info = f"neutron {neutron_id}" if neutron_id is not None else f"part {file_idx + 1}"
+                print(f"  File {file_idx + 1}: {out_path.name}, {end_idx - start_idx} events, {file_size} bytes ({neutron_info})")
         
-        if verbosity >= 1:
+        if verbosity >= 2:
             if len(files_written) == 1:
                 print(f"✅ Wrote {files_written[0][0].name}: {files_written[0][1]} events")
             else:
@@ -1442,7 +1468,7 @@ class Lens:
 
             # Sort by arrival time
             if not (df['toa2'].diff().dropna() >= 0).all():
-                if verbosity >= VerbosityLevel.BASIC:
+                if verbosity > VerbosityLevel.BASIC:
                     print(f"Warning: Sorting {file_name} by toa2")
                 df = df.sort_values('toa2').reset_index(drop=True)
 
@@ -1594,7 +1620,7 @@ class Lens:
                     print(f"  Saved results to: {output_file}")
 
             # Print stats
-            if verbosity >= VerbosityLevel.BASIC:
+            if verbosity > VerbosityLevel.BASIC:
                 print(f"  Input photons: {len(df)}, Output events: {len(result_df)}")
                 if blob > 0:
                     ratio = len(result_df) / len(df) if len(df) > 0 else 0

@@ -257,7 +257,7 @@ class Analysis:
                 
         self.traced_dir = self.archive / "TracedPhotons"
         self.sim_dir = self.archive / "SimPhotons"
-        self.photon_files_dir = self.archive / "PhotonFiles"
+        self.photon_files_dir = self.archive / "photonFiles"
         self.photon_files_dir.mkdir(parents=True, exist_ok=True)
 
         self.Photon2EventConfig = Photon2EventConfig
@@ -424,10 +424,10 @@ class Analysis:
         archive = Path(archive)
         
         # Ensure eventFiles directory exists
-        (archive / "EventFiles").mkdir(parents=True, exist_ok=True)
+        (archive / "eventFiles").mkdir(parents=True, exist_ok=True)
         
         # Get all empirphot files
-        input_folder = archive / "PhotonFiles"
+        input_folder = archive / "photonFiles"
         empirphot_files = list(input_folder.glob("*.empirphot"))
         
         if not empirphot_files:
@@ -441,7 +441,7 @@ class Analysis:
         
         # Process each empirphot file
         for empirphot_file in empirphot_files:
-            output_file = archive / "EventFiles" / f"{empirphot_file.stem}.empirevent"
+            output_file = archive / "eventFiles" / f"{empirphot_file.stem}.empirevent"
             process_command = (
                 f"{self.empir_dirpath}/bin/empir_photon2event "
                 f"-i '{empirphot_file}' "
@@ -459,14 +459,14 @@ class Analysis:
 
     def _run_export_events(self, verbosity: VerbosityLevel = VerbosityLevel.QUIET):
         """
-        Exports .empirevent files from EventFiles subfolder to CSV files in ExportedEvents subfolder,
+        Exports .empirevent files from eventFiles subfolder to CSV files in ExportedEvents subfolder,
         with modified headers and type conversions.
         
         Args:
             verbosity: VerbosityLevel - Controls the level of output during processing.
         """
-        # Ensure EventFiles directory exists
-        event_files_dir = self.archive / "EventFiles"
+        # Ensure eventFiles directory exists
+        event_files_dir = self.archive / "eventFiles"
         if not event_files_dir.exists():
             raise FileNotFoundError(f"{event_files_dir} does not exist.")
         
@@ -511,29 +511,29 @@ class Analysis:
                     df["PSD"] = df["PSD"].astype(float)
                     df.to_csv(event_result_csv, index=False)
                     
-                    if verbosity >= VerbosityLevel.BASIC:
+                    if verbosity > VerbosityLevel.BASIC:
                         print(f"✔ Exported and modified {empirevent_file.name} → {event_result_csv.name}")
                         
                 except Exception as e:
-                    if verbosity >= VerbosityLevel.BASIC:
+                    if verbosity > VerbosityLevel.BASIC:
                         print(f"⚠️ Error modifying headers for {event_result_csv.name}: {e}")
                     
             except Exception as e:
-                if verbosity >= VerbosityLevel.BASIC:
+                if verbosity > VerbosityLevel.BASIC:
                     print(f"❌ Error exporting {empirevent_file.name}: {e}")
         
-        if verbosity >= VerbosityLevel.BASIC:
+        if verbosity > VerbosityLevel.BASIC:
             print("✅ Finished exporting and modifying all event files!")
 
     def _run_export_photons(self, verbosity: VerbosityLevel = VerbosityLevel.QUIET):
         """
-        Exports .empirphot files from PhotonFiles subfolder to CSV files in ImportedPhotons subfolder.
+        Exports .empirphot files from photonFiles subfolder to CSV files in ImportedPhotons subfolder.
         
         Args:
             verbosity: VerbosityLevel - Controls the level of output during processing.
         """
-        # Ensure PhotonFiles directory exists
-        photon_files_dir = self.archive / "PhotonFiles"
+        # Ensure photonFiles directory exists
+        photon_files_dir = self.archive / "photonFiles"
         if not photon_files_dir.exists():
             raise FileNotFoundError(f"{photon_files_dir} does not exist.")
         
@@ -580,18 +580,18 @@ class Analysis:
                     df["tof"] = pd.to_numeric(df["tof"], errors="coerce")
                     df.to_csv(photon_result_csv, index=False)
                     
-                    if verbosity >= VerbosityLevel.BASIC:
+                    if verbosity > VerbosityLevel.BASIC:
                         print(f"✔ Exported and modified {empirphot_file.name} → {photon_result_csv.name}")
                         
                 except Exception as e:
-                    if verbosity >= VerbosityLevel.BASIC:
+                    if verbosity >  VerbosityLevel.BASIC:
                         print(f"⚠️ Error modifying headers for {photon_result_csv.name}: {e}")
                     
             except Exception as e:
-                if verbosity >= VerbosityLevel.BASIC:
+                if verbosity >  VerbosityLevel.BASIC:
                     print(f"❌ Error exporting {empirphot_file.name}: {e}")
         
-        if verbosity >= VerbosityLevel.BASIC:
+        if verbosity >  VerbosityLevel.BASIC:
             print("✅ Finished exporting and modifying all photon files!")
 
     def _run_event_binning(self, archive: str = None, 
@@ -606,7 +606,7 @@ class Analysis:
         archive = Path(archive)
         
         # Ensure eventFiles directory exists
-        input_folder = archive / "EventFiles"
+        input_folder = archive / "eventFiles"
         if not input_folder.exists():
             raise FileNotFoundError(f"No eventFiles folder found at {input_folder}")
         
