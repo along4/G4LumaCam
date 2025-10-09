@@ -207,22 +207,23 @@ class Analysis:
         self.default_params = {
             "in_focus": {
                 "pixel2photon": {
-                    "dSpace": 60,
-                    "dTime": 50e-8,
-                    "nPxMin": 1,
-                    "nPxMax": 1,
+                    "dSpace": 2,
+                    "dTime": 5e-8,
+                    "nPxMin": 8,
+                    "nPxMax": 50,
                     "TDC1": True
                 },
                 "photon2event": {
-                    "dSpace_px": 40,
-                    "dTime_s": 50e-8,
-                    "durationMax_s": 500e-8
+                    "dSpace_px": 0.001,
+                    "dTime_s": 0,
+                    "durationMax_s": 0,
+                    "dTime_ext": 5
                 },
                 "event2image": {
                     "size_x": 512,
                     "size_y": 512,
                     "nPhotons_min": 1,
-                    "nPhotons_max": 999,
+                    "nPhotons_max": 1,
                     "time_res_s": 1.5625e-9,
                     "time_limit": 640,
                     "psd_min": 0,
@@ -233,20 +234,46 @@ class Analysis:
                 "pixel2photon": {
                     "dSpace": 2,
                     "dTime": 5e-8,
-                    "nPxMin": 2,
-                    "nPxMax": 999,
+                    "nPxMin": 1,
+                    "nPxMax": 7,
                     "TDC1": True
                 },
                 "photon2event": {
                     "dSpace_px": 40,
-                    "dTime_s": 50e-8,
-                    "durationMax_s": 500e-8
+                    "dTime_s": 5e-8,
+                    "durationMax_s": 500e-8,
+                    "dTime_ext": 5
                 },
                 "event2image": {
                     "size_x": 512,
                     "size_y": 512,
                     "nPhotons_min": 2,
                     "nPhotons_max": 999,
+                    "time_res_s": 1.5625e-9,
+                    "time_limit": 640,
+                    "psd_min": 0,
+                    "time_extTrigger": "reference"
+                }
+            }
+            "hitmap": {
+                "pixel2photon": {
+                    "dSpace": 0.001,
+                    "dTime": 1e-9,
+                    "nPxMin": 1,
+                    "nPxMax": 9999,
+                    "TDC1": True
+                },
+                "photon2event": {
+                    "dSpace_px": 0.001,
+                    "dTime_s": 0,
+                    "durationMax_s": 0,
+                    "dTime_ext": 5
+                },
+                "event2image": {
+                    "size_x": 256,
+                    "size_y": 256,
+                    "nPhotons_min": 1,
+                    "nPhotons_max": 9999,
                     "time_res_s": 1.5625e-9,
                     "time_limit": 640,
                     "psd_min": 0,
@@ -622,14 +649,14 @@ class Analysis:
             
             current_dir = os.getcwd()
             try:
-                os.chdir(tpx3_dir)
+                # os.chdir(tpx3_dir)
                 for tpx3_file in orig_tpx3_dir.glob("*.tpx3"):
-                    dest_file = tpx3_file.name
-                    rel_path = os.path.relpath(tpx3_file, tpx3_dir)
-                    if not os.path.exists(dest_file):
-                        os.symlink(rel_path, dest_file)
-                        if verbosity >= VerbosityLevel.DETAILED:
-                            print(f"Created symlink: {tpx3_dir / dest_file} -> {rel_path}")
+                    dest_file = tpx3_dir / tpx3_file.name
+                    if not dest_file.exists():
+                        # Create absolute symlink for reliability
+                        os.symlink(tpx3_file.absolute(), dest_file)
+                        if verbosity > VerbosityLevel.DETAILED:
+                            print(f"Created symlink: {dest_file} -> {tpx3_file.absolute()}")
             finally:
                 os.chdir(current_dir)
         else:
