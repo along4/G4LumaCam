@@ -885,29 +885,36 @@ class Lens:
                     raise
 
                 # Create result DataFrame from processed chunks
+                # This preserves exact row-to-row correspondence with original df
                 result_df = self._create_result_dataframe(results_with_indices, df, join, verbosity)
-
-                # Preserve original timing and IDs
-                result_df["toa2"] = df["toa"].values if "toa" in df.columns else np.nan
-
-                # Explicitly copy ID columns to ensure alignment
-                for id_col in ["id", "neutron_id", "nz", "pz", "pulse_id"]:  # Added pulse_id here
-                    if id_col in df.columns:
-                        result_df[id_col] = df[id_col].values
 
                 # Verify alignment by checking row count
                 if len(result_df) != len(df):
-                    if verbosity > VerbosityLevel.BASIC:
-                        print(f"  ERROR: Row count mismatch after tracing. Expected {len(df)}, got {len(result_df)}")
+                    if verbosity > VerbosityLevel.QUIET:
+                        print(f"  ERROR: Row count mismatch. Expected {len(df)}, got {len(result_df)}")
                     continue
+
+                # Verify ID alignment (IDs already copied in _create_result_dataframe)
+                if verbosity >= VerbosityLevel.DETAILED:
+                    if 'id' in result_df.columns and 'id' in df.columns:
+                        id_matches = (result_df['id'].values == df['id'].values).sum()
+                        neutron_matches = (result_df['neutron_id'].values == df['neutron_id'].values).sum() if 'neutron_id' in result_df.columns else 0
+                        pulse_matches = (result_df['pulse_id'].values == df['pulse_id'].values).sum() if 'pulse_id' in result_df.columns else 0
+                        
+                        if id_matches != len(df):
+                            print(f"  WARNING: ID alignment check: {id_matches}/{len(df)} match")
+                        if neutron_matches != len(df):
+                            print(f"  WARNING: neutron_id alignment: {neutron_matches}/{len(df)} match")
+                        if pulse_matches != len(df):
+                            print(f"  WARNING: pulse_id alignment: {pulse_matches}/{len(df)} match")
+                        
+                        if id_matches == len(df) and neutron_matches == len(df) and pulse_matches == len(df):
+                            print(f"  ✓ Perfect ID alignment verified: all {len(df)} rows match")
 
                 # Apply saturation if deadtime or blob is provided
                 if deadtime is not None or blob > 0:
                     if verbosity >= VerbosityLevel.DETAILED:
                         print(f"  Applying saturation with deadtime={deadtime} ns, blob={blob} pixels, decay_time=100ns")
-                    
-                    # Save important columns before saturation
-                    pre_saturation_df = result_df.copy()
                     
                     # Ensure required columns for saturation
                     required_cols = ['x2', 'y2', 'z2', 'toa2', 'id', 'neutron_id']
@@ -917,7 +924,7 @@ class Lens:
                             print(f"Cannot apply saturation to {csv_file.name}: missing columns {missing_cols}")
                         continue
                     
-                    # Call saturate_photons with output_format="photons" and decay_time
+                    # Call saturate_photons
                     result_df = self.saturate_photons(
                         data=result_df,
                         deadtime=deadtime,
@@ -934,19 +941,6 @@ class Lens:
                             print(f"  Saturation produced no results for {csv_file.name}")
                         continue
                     
-                    # Add pulse_id by matching on original photon id
-                    if "pulse_id" in pre_saturation_df.columns:
-                        # Create mapping from photon id to pulse_id
-                        id_to_pulse = pre_saturation_df.set_index('id')['pulse_id'].to_dict()
-                        # Map pulse_id using the photon id column
-                        result_df['pulse_id'] = result_df['id'].map(id_to_pulse)
-                        
-                        # Verify mapping worked
-                        if result_df['pulse_id'].isna().any():
-                            if verbosity >= VerbosityLevel.DETAILED:
-                                n_missing = result_df['pulse_id'].isna().sum()
-                                print(f"  Warning: {n_missing} rows missing pulse_id after mapping")
-                    
                     # Sort by time to restore chronological order
                     result_df = result_df.sort_values('toa2').reset_index(drop=True)
                     
@@ -956,8 +950,6 @@ class Lens:
                 # Save results to file
                 output_file = traced_photons_dir / f"traced_{csv_file.name}"
                 result_df.to_csv(output_file, index=False)
-                if verbosity >= VerbosityLevel.DETAILED:
-                    print(f"  Saved results to: {output_file}")
 
                 # Call _write_tpx3 if deadtime or blob is provided
                 if deadtime is not None or blob > 0:
@@ -1306,7 +1298,7 @@ class Lens:
                 trigger_info = f", {len(file_trigger_times)} triggers" if file_trigger_times is not None and len(file_trigger_times) > 0 else ", no triggers"
                 print(f"  File {file_idx + 1}: {out_path.name}, {end_idx - start_idx} events, {file_size} bytes ({neutron_info}{trigger_info})")
         
-        if verbosity >= 1:
+        if verbosity >= 2:
             if len(files_written) == 1:
                 print(f"✅ Wrote {files_written[0][0].name}: {files_written[0][1]} events")
             else:
@@ -1349,74 +1341,115 @@ class Lens:
 
     def _create_result_dataframe(self, results_with_indices, original_df, join, verbosity):
         """
-        Create a DataFrame from traced ray results, including nz and pz from original data.
+        Create a DataFrame from traced ray results with 1:1 row correspondence to original data.
+        
+        CRITICAL: Maintains exact row order and count. Row i in output = Row i in input.
+        If a photon fails to trace, that row will have NaN for x2, y2, z2 but keep original IDs.
         
         Parameters:
         -----------
         results_with_indices : list
-            List of (result, original_index) tuples
+            List of (trace_result, original_row_index) tuples
         original_df : pd.DataFrame
-            Original simulation data containing nz and pz
+            Original simulation data
         join : bool
-            Whether to join with original data
+            If True, include original ray definition columns (x, y, z, dx, dy, dz, wavelength)
         verbosity : VerbosityLevel
-            Current verbosity level
+            Logging verbosity
             
         Returns:
         --------
         pd.DataFrame
-            DataFrame with traced ray results, including nz and pz
+            Result DataFrame with same length and order as original_df
         """
+        # Sort by original index to maintain input order
         results_with_indices.sort(key=lambda x: x[1])
+        
+        # Verify we have exactly one result per input row
+        expected_indices = set(range(len(original_df)))
+        actual_indices = {idx for _, idx in results_with_indices}
         
         if len(results_with_indices) != len(original_df):
             if verbosity > VerbosityLevel.BASIC:
-                print(f"    Warning: Result count mismatch. Expected {len(original_df)}, "
-                    f"got {len(results_with_indices)}")
+                print(f"    WARNING: Result count mismatch. Expected {len(original_df)}, got {len(results_with_indices)}")
             
-            if len(results_with_indices) < len(original_df):
-                missing_indices = set(range(len(original_df))) - set(idx for _, idx in results_with_indices)
-                for idx in sorted(missing_indices):
+            # Find and fill missing indices
+            missing_indices = expected_indices - actual_indices
+            if missing_indices:
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"    Filling {len(missing_indices)} missing results with NaN")
+                for idx in missing_indices:
                     results_with_indices.append((None, idx))
-                results_with_indices.sort(key=lambda x: x[1])
-            else:
-                results_with_indices = results_with_indices[:len(original_df)]
+            
+            # Remove extra indices
+            extra_indices = actual_indices - expected_indices
+            if extra_indices:
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"    Removing {len(extra_indices)} extra results")
+                results_with_indices = [(res, idx) for res, idx in results_with_indices if idx in expected_indices]
+            
+            # Re-sort after additions/removals
+            results_with_indices.sort(key=lambda x: x[1])
         
-        processed_results = []
-        for entry, row_idx in results_with_indices:
-            row_data = {
-                "x2": np.nan, "y2": np.nan, "z2": np.nan
-            }
-            if entry is not None:
+        # Sanity check: verify we now have the right indices
+        final_indices = [idx for _, idx in results_with_indices]
+        if final_indices != list(range(len(original_df))):
+            if verbosity > VerbosityLevel.QUIET:
+                print(f"    ERROR: Index mismatch after alignment! Expected 0..{len(original_df)-1}")
+            # Force correct order by rebuilding
+            index_to_result = {idx: res for res, idx in results_with_indices}
+            results_with_indices = [(index_to_result.get(i), i) for i in range(len(original_df))]
+        
+        # Build output DataFrame row by row
+        result_rows = []
+        
+        for trace_result, orig_idx in results_with_indices:
+            # Extract traced position (or NaN if failed)
+            if trace_result is not None:
                 try:
-                    ray, path_length, wvl = entry
+                    ray, path_length, wvl = trace_result
                     position = ray[0]
-                    row_data.update({
-                        "x2": position[0], "y2": position[1], "z2": position[2]
-                    })
+                    x2, y2, z2 = float(position[0]), float(position[1]), float(position[2])
                 except Exception as e:
                     if verbosity >= VerbosityLevel.DETAILED:
-                        print(f"    Error extracting result: {str(e)}")
+                        print(f"    Error extracting trace result for row {orig_idx}: {str(e)}")
+                    x2, y2, z2 = np.nan, np.nan, np.nan
+            else:
+                x2, y2, z2 = np.nan, np.nan, np.nan
             
-            processed_results.append(row_data)
-
-        result_df = pd.DataFrame(processed_results, index=[idx for _, idx in results_with_indices])
-        result_df = result_df.sort_index()
-
-        if join:
-            result = pd.merge(original_df, result_df, 
-                            left_index=True, right_index=True, how="left")
-        else:
-            result = result_df.copy()
-            id_cols = ["id", "neutron_id", "nz", "pz"]
-            for col in id_cols:
+            # Start with traced coordinates
+            row = {'x2': x2, 'y2': y2, 'z2': z2}
+            
+            # Copy ID and metadata columns from original data for THIS specific row
+            orig_row = original_df.iloc[orig_idx]
+            
+            for col in ['id', 'neutron_id', 'pulse_id', 'parent_id', 'nz', 'pz']:
                 if col in original_df.columns:
-                    result[col] = original_df[col].values
-                    
-            if "toa" in original_df.columns:
-                result["toa2"] = original_df["toa"].values
-
-        return result
+                    row[col] = orig_row[col]
+            
+            # Copy timing
+            if 'toa' in original_df.columns:
+                row['toa2'] = orig_row['toa']
+            
+            # If join=True, also copy ray definition columns
+            if join:
+                for col in ['x', 'y', 'z', 'dx', 'dy', 'dz', 'wavelength']:
+                    if col in original_df.columns:
+                        row[col] = orig_row[col]
+            
+            result_rows.append(row)
+        
+        # Create DataFrame - row i corresponds to original_df.iloc[i]
+        result_df = pd.DataFrame(result_rows)
+        
+        # Verify final alignment
+        if verbosity >= VerbosityLevel.DETAILED:
+            if 'id' in result_df.columns and 'id' in original_df.columns:
+                matches = (result_df['id'].values == original_df['id'].values).sum()
+                if matches != len(result_df):
+                    print(f"    ERROR: Only {matches}/{len(result_df)} IDs match after _create_result_dataframe!")
+        
+        return result_df
 
 
     def saturate_photons(self, data: pd.DataFrame = None, deadtime: float = 600.0, blob: float = 0.0, 
