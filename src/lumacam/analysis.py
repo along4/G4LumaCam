@@ -325,7 +325,10 @@ class Analysis:
             "empir_bin_events": "empir_bin_events",
             "process_photon2event": "process_photon2event.sh",
             "empir_export_events": "empir_export_events",
-            "empir_export_photons": "empir_export_photons"  # Added for nea compatibility
+            "empir_export_photons": "empir_export_photons",
+            "empir_pixel2photon_tpx3spidr": "bin/empir_pixel2photon_tpx3spidr",
+            "empir_photon2event": "bin/empir_photon2event",
+            "empir_event2image": "bin/empir_event2image"
         }
         
         self.executables = {}
@@ -341,6 +344,58 @@ class Analysis:
         self.photons_df = None
         self.associated_df = None
 
+        # Default parameter settings
+        self.default_params = {
+            "in_focus": {
+                "pixel2photon": {
+                    "dSpace": 60,
+                    "dTime": 50e-8,
+                    "nPxMin": 1,
+                    "nPxMax": 1,
+                    "TDC1": True
+                },
+                "photon2event": {
+                    "dSpace_px": 40,
+                    "dTime_s": 50e-8,
+                    "durationMax_s": 500e-8
+                },
+                "event2image": {
+                    "size_x": 512,
+                    "size_y": 512,
+                    "nPhotons_min": 1,
+                    "nPhotons_max": 999,
+                    "time_res_s": 1.5625e-9,
+                    "time_limit": 640,
+                    "psd_min": 0,
+                    "time_extTrigger": "reference"
+                }
+            },
+            "out_of_focus": {
+                "pixel2photon": {
+                    "dSpace": 2,
+                    "dTime": 5e-8,
+                    "nPxMin": 2,
+                    "nPxMax": 999,
+                    "TDC1": True
+                },
+                "photon2event": {
+                    "dSpace_px": 40,
+                    "dTime_s": 50e-8,
+                    "durationMax_s": 500e-8
+                },
+                "event2image": {
+                    "size_x": 512,
+                    "size_y": 512,
+                    "nPhotons_min": 2,
+                    "nPhotons_max": 999,
+                    "time_res_s": 1.5625e-9,
+                    "time_limit": 640,
+                    "psd_min": 0,
+                    "time_extTrigger": "reference"
+                }
+            }
+        }
+
     def _process_single_file(self, file, verbosity: VerbosityLevel = VerbosityLevel.QUIET):
         """
         Processes a single traced photon file and runs the empir_import_photons script.
@@ -348,7 +403,7 @@ class Analysis:
         try:
             df = pd.read_csv(file)
             if df.empty:
-                if verbosity >= VerbosityLevel.BASIC:
+                if verbosity > VerbosityLevel.BASIC:
                     print(f"⚠️ Skipping empty file: {file.name}")
                 return
             
@@ -372,11 +427,11 @@ class Analysis:
             # Output empirphot file
             empir_file = self.photon_files_dir / f"{file.stem}.empirphot"
             os.system(f"{self.empir_import_photons} {output_csv} {empir_file} csv")
-            if verbosity >= VerbosityLevel.BASIC:
+            if verbosity > VerbosityLevel.BASIC:
                 print(f"✔ Processed {file.name} → {empir_file.name}")
 
         except Exception as e:
-            if verbosity >= VerbosityLevel.BASIC: 
+            if verbosity > VerbosityLevel.BASIC: 
                 print(f"❌ Error processing {file.name}: {e}")
 
     def _run_import_photons(self, parallel=True, clean=True, verbosity: VerbosityLevel = VerbosityLevel.QUIET):
@@ -388,19 +443,19 @@ class Analysis:
             verbosity: VerbosityLevel - Controls the level of output during processing.
         """
         traced_files = sorted(self.traced_dir.glob("traced_sim_data_*.csv"))
-        if verbosity >= VerbosityLevel.BASIC:
+        if verbosity > VerbosityLevel.BASIC:
             print(f"Processing {len(traced_files)} traced photon files...")
 
         if clean:
             existing_empir_files = list(self.photon_files_dir.glob("*.empirphot"))
-            for f in existing_empir_files:
+            for file in existing_empir_files:
                 try:
-                    f.unlink()
+                    file.unlink()
                     if verbosity >= VerbosityLevel.DETAILED:
-                        print(f"Deleted existing file: {f.name}")
+                        print(f"Deleted existing file: {file.name}")
                 except Exception as e:
-                    if verbosity >= VerbosityLevel.BASIC:
-                        print(f"⚠️ Could not delete {f.name}: {e}")
+                    if verbosity > VerbosityLevel.BASIC:
+                        print(f"⚠️ Could not delete {file.name}: {e}")
 
         if parallel:
             with Pool() as pool:
@@ -409,7 +464,7 @@ class Analysis:
         else:
             for file in tqdm(traced_files, desc="Processing files"):
                 self._process_single_file(file, verbosity=verbosity)
-        if verbosity >= VerbosityLevel.BASIC:
+        if verbosity > VerbosityLevel.BASIC:
             print("✅ Finished processing all files!")
 
     def _run_photon2event(self, archive: str = None, 
@@ -479,7 +534,7 @@ class Analysis:
         if not empirevent_files:
             raise FileNotFoundError(f"No .empirevent files found in {event_files_dir}")
         
-        if verbosity >= VerbosityLevel.BASIC:
+        if verbosity > VerbosityLevel.BASIC:
             print(f"Exporting {len(empirevent_files)} .empirevent files to CSV...")
         
         # Process each .empirevent file
@@ -546,7 +601,7 @@ class Analysis:
         if not empirphot_files:
             raise FileNotFoundError(f"No .empirphot files found in {photon_files_dir}")
         
-        if verbosity >= VerbosityLevel.BASIC:
+        if verbosity > VerbosityLevel.BASIC:
             print(f"Exporting {len(empirphot_files)} .empirphot files to CSV...")
         
         # Process each .empirphot file
@@ -691,7 +746,7 @@ class Analysis:
             if not event_files:
                 raise FileNotFoundError(f"No CSV files found in {exported_events_dir}")
             
-            if verbosity >= VerbosityLevel.BASIC:
+            if verbosity > VerbosityLevel.BASIC:
                 print(f"Loading {len(photon_files)} photon CSV files and {len(event_files)} event CSV files...")
             
             photon_dfs = []
@@ -704,7 +759,7 @@ class Analysis:
                     if not df.empty:
                         photon_dfs.append(df)
                 except Exception as e:
-                    if verbosity >= VerbosityLevel.BASIC:
+                    if verbosity > VerbosityLevel.BASIC:
                         print(f"⚠️ Skipping {file.name} due to error: {e}")
             
             # Load event CSVs
@@ -714,21 +769,21 @@ class Analysis:
                     if not df.empty:
                         event_dfs.append(df)
                 except Exception as e:
-                    if verbosity >= VerbosityLevel.BASIC:
+                    if verbosity > VerbosityLevel.BASIC:
                         print(f"⚠️ Skipping {file.name} due to error: {e}")
             
             if photon_dfs:
                 self.photons_df = pd.concat(photon_dfs, ignore_index=True)
             else:
                 self.photons_df = pd.DataFrame()
-                if verbosity >= VerbosityLevel.BASIC:
+                if verbosity > VerbosityLevel.BASIC:
                     print("⚠️ No valid photon data loaded from CSV files.")
             
             if event_dfs:
                 self.events_df = pd.concat(event_dfs, ignore_index=True)
             else:
                 self.events_df = pd.DataFrame()
-                if verbosity >= VerbosityLevel.BASIC:
+                if verbosity > VerbosityLevel.BASIC:
                     print("⚠️ No valid event data loaded from CSV files.")
             
         else:
@@ -747,11 +802,11 @@ class Analysis:
                           max_time_ns=max_time_ns, verbosity=verbosity, method=method)
             self.associated_df = nea.get_combined_dataframe()
             
-            if verbosity >= VerbosityLevel.BASIC:
+            if verbosity > VerbosityLevel.BASIC:
                 print(f"✅ Associated {len(self.associated_df)} photons with events.")
         else:
             self.associated_df = pd.DataFrame()
-            if verbosity >= VerbosityLevel.BASIC:
+            if verbosity > VerbosityLevel.BASIC:
                 print("⚠️ No data to associate (empty events_df or photons_df).")
 
     def process_data(self, 
@@ -840,7 +895,7 @@ class Analysis:
             if not self.associated_df.empty:
                 output_csv = prefix_dir / "associated_results.csv"
                 self.associated_df.to_csv(output_csv, index=False)
-                if verbosity >= VerbosityLevel.BASIC:
+                if verbosity > VerbosityLevel.BASIC:
                     print(f"Associated data saved to {output_csv}")
         
         # Setup event binning config
@@ -870,7 +925,7 @@ class Analysis:
         output_csv = suffix_dir / "counts.csv"
         result_df.to_csv(output_csv, index=False)
         
-        if verbosity >= VerbosityLevel.BASIC:
+        if verbosity > VerbosityLevel.BASIC:
             print(f"Processed data saved to {output_csv}")
         
         return result_df
@@ -1386,7 +1441,320 @@ class Analysis:
                                 np.sqrt(df['delta_x']**2 + df['delta_y']**2), np.nan)
         return df
 
-    # # Placeholder for empir paths (adjust as needed)
-    # empir_import_photons = "empir_import_photons"
-    # empir_dirpath = Path("empir")
-        
+    def process(self, 
+                    params: Union[str, Dict[str, Any]] = None,
+                    n_threads: int = 1,
+                    suffix: str = "",
+                    pixel2photon: bool = True,
+                    photon2event: bool = True,
+                    event2image: bool = False,
+                    export_photons: bool = True,
+                    export_events: bool = False,
+                    verbosity: VerbosityLevel = VerbosityLevel.BASIC,
+                    clean: bool = True,
+                    **kwargs) -> None:
+            """
+            Process TPX3 files through the EMPIR pipeline to produce photonFiles and eventFiles.
+            
+            Args:
+                params: Either a path to a parameterSettings.json file, a JSON string, or a dictionary
+                    containing the parameters for pixel2photon, photon2event, and event2image.
+                    If None, uses default parameters based on focus mode.
+                n_threads: Number of threads to use for parallel processing of files.
+                suffix: Optional suffix to create a subfolder and symlink TPX3 files for processing.
+                pixel2photon: If True, runs empir_import_photons on TPX3 files to generate .empirphot files.
+                photon2event: If True, runs empir_photon2event on generated .empirphot files.
+                event2image: If True, runs empir_event2image on generated .empirevent files.
+                export_photons: If True, runs empir_export_photons on generated .empirphot files.
+                export_events: If True, runs empir_export_events on generated .empirevent files.
+                verbosity: Controls the level of output (QUIET=0, BASIC=1, DETAILED=2).
+                clean: If True, deletes existing .empirphot and .empirevent files before processing.
+                **kwargs: Additional parameters to update specific fields in the configuration
+                        (e.g., dTime_s, dSpace_px for photon2event).
+            """
+            import time
+            start_time = time.time()
+
+            # Set up processing directory
+            base_dir = self.archive
+            if suffix:
+                process_dir = base_dir / suffix.strip("_")
+                process_dir.mkdir(parents=True, exist_ok=True)
+                tpx3_dir = process_dir / "tpx3Files"
+                tpx3_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Symlink TPX3 files by changing to tpx3_dir and creating relative links
+                orig_tpx3_dir = base_dir / "tpx3Files"
+                if not orig_tpx3_dir.exists():
+                    raise FileNotFoundError(f"Original tpx3Files directory not found at {orig_tpx3_dir}")
+                
+                current_dir = os.getcwd()
+                try:
+                    os.chdir(tpx3_dir)
+                    for tpx3_file in orig_tpx3_dir.glob("*.tpx3"):
+                        dest_file = tpx3_file.name
+                        rel_path = os.path.relpath(tpx3_file, tpx3_dir)
+                        if not os.path.exists(dest_file):
+                            os.symlink(rel_path, dest_file)
+                            if verbosity >= VerbosityLevel.DETAILED:
+                                print(f"Created symlink: {tpx3_dir / dest_file} -> {rel_path}")
+                finally:
+                    os.chdir(current_dir)
+            else:
+                process_dir = base_dir
+                tpx3_dir = base_dir / "tpx3Files"
+
+            # Ensure output directories exist
+            photon_files_dir = process_dir / "photonFiles"
+            event_files_dir = process_dir / "eventFiles"
+            final_dir = process_dir / "final"
+            photon_files_dir.mkdir(parents=True, exist_ok=True)
+            event_files_dir.mkdir(parents=True, exist_ok=True)
+            final_dir.mkdir(parents=True, exist_ok=True)
+
+            # Clean existing files if requested
+            if clean:
+                for file in photon_files_dir.glob("*.empirphot"):
+                    file.unlink(missing_ok=True)
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"Deleted existing file: {file.name}")
+                for file in event_files_dir.glob("*.empirevent"):
+                    file.unlink(missing_ok=True)
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"Deleted existing file: {file.name}")
+                for file in final_dir.glob("*"):
+                    file.unlink(missing_ok=True)
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"Deleted existing file: {file.name}")
+
+            # Load or set parameters
+            if params is None:
+                # Use default parameters (in_focus or out_of_focus based on context)
+                parameters = self.default_params.get("in_focus", {})
+            elif isinstance(params, str):
+                if params in ["in_focus", "out_of_focus"]:
+                    parameters = self.default_params.get(params, {})
+                elif params.endswith('.json'):
+                    if not os.path.exists(params):
+                        raise FileNotFoundError(f"Parameter file {params} not found")
+                    with open(params, 'r') as f:
+                        parameters = json.load(f)
+                else:
+                    try:
+                        parameters = json.loads(params)
+                    except json.JSONDecodeError:
+                        raise ValueError("Invalid JSON string provided for parameters")
+            elif isinstance(params, dict):
+                parameters = params
+            else:
+                raise ValueError("params must be 'in_focus', 'out_of_focus', a JSON file path, JSON string, or dictionary")
+
+            # Update parameters with kwargs (e.g., for photon2event settings)
+            if kwargs:
+                if "pixel2photon" in parameters:
+                    parameters["pixel2photon"].update({k: v for k, v in kwargs.items() if k in ["dSpace", "dTime", "nPxMin", "nPxMax", "TDC1"]})
+                if "photon2event" in parameters:
+                    parameters["photon2event"].update({k: v for k, v in kwargs.items() if k in ["dSpace_px", "dTime_s", "durationMax_s", "dTime_ext"]})
+                if "event2image" in parameters:
+                    parameters["event2image"].update({k: v for k, v in kwargs.items() if k in ["size_x", "size_y", "nPhotons_min", "nPhotons_max", "time_res_s", "time_limit", "psd_min", "time_extTrigger"]})
+
+            # Write parameters to hidden file
+            params_file = process_dir / ".parameterSettings.json"
+            with open(params_file, 'w') as f:
+                json.dump(parameters, f, indent=4)
+            if verbosity >= VerbosityLevel.DETAILED:
+                print(f"Parameters written to {params_file}")
+
+            if pixel2photon:
+                if verbosity > VerbosityLevel.BASIC:
+                    print("Starting pixel2photon processing...")
+                # Process pixel2photon
+                tpx3_files = sorted(tpx3_dir.glob("*.tpx3"))
+                if not tpx3_files:
+                    raise FileNotFoundError(f"No .tpx3 files found in {tpx3_dir}")
+
+                if verbosity > VerbosityLevel.BASIC:
+                    print(f"Processing {len(tpx3_files)} .tpx3 files to photon files...")
+
+                pids = []
+                file_cnt = 0
+                result_all = 0
+
+                for tpx3_file in tqdm(tpx3_files, desc="Processing pixel2photon", disable=(verbosity == VerbosityLevel.QUIET)):
+                    file_base = tpx3_file.stem
+                    file_cnt += 1
+                    output_file = photon_files_dir / f"{file_base}.empirphot"
+                    cmd = [
+                        str(self.empir_dirpath / "bin/empir_pixel2photon_tpx3spidr"),
+                        "-i", str(tpx3_file),
+                        "-o", str(output_file),
+                        "--paramsFile", str(params_file)
+                    ]
+                    if parameters.get("pixel2photon", {}).get("TDC1", False):
+                        cmd.append("-T")
+                    
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"Running: {' '.join(cmd)}")
+                        process = subprocess.Popen(cmd)
+                    else:
+                        process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    
+                    pids.append(process)
+                    
+                    if len(pids) >= n_threads:
+                        if verbosity > VerbosityLevel.BASIC:
+                            print(f"Reached {n_threads} files, waiting for processing...")
+                        for process in pids:
+                            result = process.wait()
+                            if result != 0:
+                                result_all = 1
+                                if verbosity > VerbosityLevel.BASIC:
+                                    print(f"Error occurred while processing a file!")
+                        pids = []
+                        if verbosity > VerbosityLevel.BASIC:
+                            print("Processed files, continuing...")
+
+                # Wait for remaining processes
+                for process in pids:
+                    result = process.wait()
+                    if result != 0:
+                        result_all = 1
+                        if verbosity > VerbosityLevel.BASIC:
+                            print(f"Error occurred while processing a file!")
+
+                if result_all != 0:
+                    raise RuntimeError("Errors occurred during pixel2photon processing")
+
+                if verbosity > VerbosityLevel.BASIC:
+                    print(f"Finished processing {file_cnt} .tpx3 files")
+
+            if photon2event:
+                if verbosity > VerbosityLevel.BASIC:
+                    print("Starting photon2event processing...")
+                # Process photon2event
+                empirphot_files = sorted(photon_files_dir.glob("*.empirphot"))
+                if not empirphot_files:
+                    raise FileNotFoundError(f"No .empirphot files found in {photon_files_dir}")
+
+                if verbosity > VerbosityLevel.BASIC:
+                    print(f"Processing {len(empirphot_files)} .empirphot files to event files...")
+
+                pids = []
+                file_cnt = 0
+                result_all = 0
+
+                for empirphot_file in tqdm(empirphot_files, desc="Processing photon2event", disable=(verbosity == VerbosityLevel.QUIET)):
+                    file_base = empirphot_file.stem
+                    file_cnt += 1
+                    output_file = event_files_dir / f"{file_base}.empirevent"
+                    cmd = [
+                        str(self.empir_dirpath / "bin/empir_photon2event"),
+                        "-i", str(empirphot_file),
+                        "-o", str(output_file),
+                        "--paramsFile", str(params_file)
+                    ]
+                    
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"Running: {' '.join(cmd)}")
+                        process = subprocess.Popen(cmd)
+                    else:
+                        process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    
+                    pids.append(process)
+                    
+                    if len(pids) >= n_threads:
+                        if verbosity > VerbosityLevel.BASIC:
+                            print(f"Reached {n_threads} files, waiting for processing...")
+                        for process in pids:
+                            result = process.wait()
+                            if result != 0:
+                                result_all = 1
+                                if verbosity > VerbosityLevel.BASIC:
+                                    print(f"Error occurred while processing a file!")
+                        pids = []
+                        if verbosity > VerbosityLevel.BASIC:
+                            print("Processed files, continuing...")
+
+                # Wait for remaining processes
+                for process in pids:
+                    result = process.wait()
+                    if result != 0:
+                        result_all = 1
+                        if verbosity > VerbosityLevel.BASIC:
+                            print(f"Error occurred while processing a file!")
+
+                if result_all != 0:
+                    raise RuntimeError("Errors occurred during photon2event processing")
+
+                if verbosity > VerbosityLevel.BASIC:
+                    print(f"Finished processing {file_cnt} .empirphot files")
+
+            # Export photons if requested
+            if export_photons:
+                self._run_export_photons(verbosity=verbosity)
+
+            # Export events if requested
+            if export_events:
+                self._run_export_events(verbosity=verbosity)
+
+            if event2image:
+                if verbosity > VerbosityLevel.BASIC:
+                    print("Starting event2image processing...")
+                # Process event2image
+                empirevent_files = sorted(event_files_dir.glob("*.empirevent"))
+                if not empirevent_files:
+                    raise FileNotFoundError(f"No .empirevent files found in {event_files_dir}")
+
+                if verbosity > VerbosityLevel.BASIC:
+                    print(f"Processing {len(empirevent_files)} .empirevent files to final images...")
+
+                pids = []
+                file_cnt = 0
+                result_all = 0
+
+                for empirevent_file in tqdm(empirevent_files, desc="Processing event2image", disable=(verbosity == VerbosityLevel.QUIET)):
+                    file_base = empirevent_file.stem
+                    file_cnt += 1
+                    output_file = final_dir / f"{file_base}.empirimage"
+                    cmd = [
+                        str(self.empir_dirpath / "bin/empir_event2image"),
+                        "-i", str(empirevent_file),
+                        "-o", str(output_file),
+                        "--paramsFile", str(params_file)
+                    ]
+                    
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"Running: {' '.join(cmd)}")
+                        process = subprocess.Popen(cmd)
+                    else:
+                        process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    
+                    pids.append(process)
+                    
+                    if len(pids) >= n_threads:
+                        if verbosity > VerbosityLevel.BASIC:
+                            print(f"Reached {n_threads} files, waiting for processing...")
+                        for process in pids:
+                            result = process.wait()
+                            if result != 0:
+                                result_all = 1
+                                if verbosity > VerbosityLevel.BASIC:
+                                    print(f"Error occurred while processing a file!")
+                        pids = []
+                        if verbosity > VerbosityLevel.BASIC:
+                            print("Processed files, continuing...")
+
+                # Wait for remaining processes
+                for process in pids:
+                    result = process.wait()
+                    if result != 0:
+                        result_all = 1
+                        if verbosity > VerbosityLevel.BASIC:
+                            print(f"Error occurred while processing a file!")
+
+                if result_all != 0:
+                    raise RuntimeError("Errors occurred during event2image processing")
+
+                if verbosity > VerbosityLevel.BASIC:
+                    print(f"Finished processing {file_cnt} .empirevent files")
+                    print(f"Total processing time: {time.time() - start_time:.2f} seconds")
