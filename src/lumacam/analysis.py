@@ -254,7 +254,7 @@ class Analysis:
                     "psd_min": 0,
                     "time_extTrigger": "reference"
                 }
-            }
+            },
             "hitmap": {
                 "pixel2photon": {
                     "dSpace": 0.001,
@@ -687,7 +687,7 @@ class Analysis:
         if params is None:
             parameters = self.default_params.get("in_focus", {})
         elif isinstance(params, str):
-            if params in ["in_focus", "out_of_focus"]:
+            if params in ["in_focus", "out_of_focus","hitmap"]:
                 parameters = self.default_params.get(params, {})
             elif params.endswith('.json'):
                 if not os.path.exists(params):
