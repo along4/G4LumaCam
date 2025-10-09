@@ -416,69 +416,42 @@ class Analysis:
             print(f"Finished processing {file_cnt} .empirphot files")
 
     def _run_event2image(self, event_files_dir: Path, final_dir: Path, params_file: Path, n_threads: int, verbosity: VerbosityLevel) -> None:
-        """Run event2image processing on .empirevent files.
-            args:
-                event_files_dir: Directory containing .empirevent files.
-                final_dir: Directory to save final .empirimage files.
-                params_file: Path to the parameter settings JSON file.
-                n_threads: Number of threads to use for parallel processing.
-                verbosity: Controls the level of output during processing.
+        """Run event2image processing on all .empirevent files to produce a single image.
+        
+        Args:
+            event_files_dir: Directory containing .empirevent files.
+            final_dir: Directory to save the final .empirimage file.
+            params_file: Path to the parameter settings JSON file.
+            n_threads: Number of threads to use for parallel processing (not used in this implementation).
+            verbosity: Controls the level of output during processing.
         """
         empirevent_files = sorted(event_files_dir.glob("*.empirevent"))
         if not empirevent_files:
             raise FileNotFoundError(f"No .empirevent files found in {event_files_dir}")
 
         if verbosity > VerbosityLevel.BASIC:
-            print(f"Processing {len(empirevent_files)} .empirevent files to final images...")
+            print(f"Processing {len(empirevent_files)} .empirevent files into a single image...")
 
-        pids = []
-        file_cnt = 0
-        result_all = 0
-
-        for empirevent_file in tqdm(empirevent_files, desc="Processing event2image", disable=(verbosity == VerbosityLevel.QUIET)):
-            file_base = empirevent_file.stem
-            file_cnt += 1
-            output_file = final_dir / f"{file_base}.empirimage"
-            cmd = [
-                str(self.empir_dirpath / "bin/empir_event2image"),
-                "-i", str(empirevent_file),
-                "-o", str(output_file),
-                "--paramsFile", str(params_file)
-            ]
-            
-            if verbosity >= VerbosityLevel.DETAILED:
-                print(f"Running: {' '.join(cmd)}")
-                process = subprocess.Popen(cmd)
-            else:
-                process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            
-            pids.append(process)
-            
-            if len(pids) >= n_threads:
-                if verbosity > VerbosityLevel.BASIC:
-                    print(f"Reached {n_threads} files, waiting for processing...")
-                for process in pids:
-                    result = process.wait()
-                    if result != 0:
-                        result_all = 1
-                        if verbosity > VerbosityLevel.BASIC:
-                            print(f"Error occurred while processing a file!")
-                pids = []
-                if verbosity > VerbosityLevel.BASIC:
-                    print("Processed files, continuing...")
-
-        for process in pids:
-            result = process.wait()
-            if result != 0:
-                result_all = 1
-                if verbosity > VerbosityLevel.BASIC:
-                    print(f"Error occurred while processing a file!")
-
-        if result_all != 0:
-            raise RuntimeError("Errors occurred during event2image processing")
+        output_file = final_dir / "combined.empirimage"
+        cmd = [
+            str(self.empir_dirpath / "bin/empir_event2image"),
+            "-I", str(event_files_dir),
+            "-o", str(output_file),
+            "--paramsFile", str(params_file),
+            # "--fileFormat", "empirimage"
+        ]
+        
+        if verbosity >= VerbosityLevel.DETAILED:
+            print(f"Running: {' '.join(cmd)}")
+            process = subprocess.run(cmd, check=True)
+        else:
+            process = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        
+        if process.returncode != 0:
+            raise RuntimeError("Error occurred during event2image processing")
 
         if verbosity > VerbosityLevel.BASIC:
-            print(f"Finished processing {file_cnt} .empirevent files")
+            print(f"Finished producing combined image: {output_file}")
 
     def _run_export_photons(self, process_dir: Path, verbosity: VerbosityLevel = VerbosityLevel.QUIET):
         """
@@ -649,13 +622,11 @@ class Analysis:
             
             current_dir = os.getcwd()
             try:
-                # os.chdir(tpx3_dir)
                 for tpx3_file in orig_tpx3_dir.glob("*.tpx3"):
                     dest_file = tpx3_dir / tpx3_file.name
                     if not dest_file.exists():
-                        # Create absolute symlink for reliability
                         os.symlink(tpx3_file.absolute(), dest_file)
-                        if verbosity > VerbosityLevel.DETAILED:
+                        if verbosity >= VerbosityLevel.DETAILED:
                             print(f"Created symlink: {dest_file} -> {tpx3_file.absolute()}")
             finally:
                 os.chdir(current_dir)
@@ -687,7 +658,7 @@ class Analysis:
         if params is None:
             parameters = self.default_params.get("in_focus", {})
         elif isinstance(params, str):
-            if params in ["in_focus", "out_of_focus","hitmap"]:
+            if params in ["in_focus", "out_of_focus", "hitmap"]:
                 parameters = self.default_params.get(params, {})
             elif params.endswith('.json'):
                 if not os.path.exists(params):
@@ -702,7 +673,7 @@ class Analysis:
         elif isinstance(params, dict):
             parameters = params
         else:
-            raise ValueError("params must be 'in_focus', 'out_of_focus', a JSON file path, JSON string, or dictionary")
+            raise ValueError("params must be 'in_focus', 'out_of_focus', 'hitmap', a JSON file path, JSON string, or dictionary")
 
         if kwargs:
             if "pixel2photon" in parameters:
