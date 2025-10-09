@@ -105,9 +105,10 @@ class Lens:
     Lens defining object with integrated data management.
     """
     def __init__(self, archive: str = None, data: "pd.DataFrame" = None,
-                 kind: str = "nikkor_58mm", focus: float = None, zmx_file: str = None,
-                 focus_gaps: List[Tuple[int, float]] = None, dist_from_obj: float = None,
-                 gap_between_lenses: float = 15.0, dist_to_screen: float = 20.0, fnumber: float = 8.0):
+                kind: str = "nikkor_58mm", focus: float = None, zmx_file: str = None,
+                focus_gaps: List[Tuple[int, float]] = None, dist_from_obj: float = None,
+                gap_between_lenses: float = 15.0, dist_to_screen: float = 20.0, fnumber: float = 8.0,
+                load_triggers: bool = True):
         """
         Initialize a Lens object with optical model and data management.
 
@@ -122,6 +123,7 @@ class Lens:
             gap_between_lenses (float, optional): Gap between lenses in mm. Defaults to 15.0.
             dist_to_screen (float, optional): Distance from last lens to screen in mm. Defaults to 20.0.
             fnumber (float, optional): F-number of the optical system. Defaults to 8.0.
+            load_triggers (bool, optional): Whether to load trigger times from TriggerTimes directory. Defaults to True.
 
         Raises:
             ValueError: If invalid lens kind, missing zmx_file for 'zmx_file', or invalid parameters.
@@ -133,17 +135,17 @@ class Lens:
 
         # Set default parameters based on lens kind
         if kind == "nikkor_58mm":
-            self.dist_from_obj = dist_from_obj if dist_from_obj else 461.535  # Match imported model
+            self.dist_from_obj = dist_from_obj if dist_from_obj else 461.535
             self.gap_between_lenses = 0.0
             self.dist_to_screen = 0.0
             self.fnumber = fnumber if fnumber != 8.0 else 0.98
-            self.default_focus_gaps = [(22, 2.68)]  # Default thickness for gap 22
+            self.default_focus_gaps = [(22, 2.68)]
         elif kind == "microscope":
-            self.dist_from_obj = dist_from_obj if dist_from_obj else 41.0  # Default distance for microscope
+            self.dist_from_obj = dist_from_obj if dist_from_obj else 41.0
             self.gap_between_lenses = gap_between_lenses
             self.dist_to_screen = dist_to_screen
             self.fnumber = fnumber
-            self.default_focus_gaps = [(24, None), (31, None)]  # Will be set after loading
+            self.default_focus_gaps = [(24, None), (31, None)]
         elif kind == "zmx_file":
             self.dist_from_obj = dist_from_obj
             self.gap_between_lenses = gap_between_lenses
@@ -182,10 +184,39 @@ class Lens:
             else:
                 print("No valid simulation data files found, initializing empty DataFrame.")
                 self.data = pd.DataFrame()
+            
+            # Load trigger times if requested
+            self.trigger_data = None
+            if load_triggers:
+                trigger_dir = self.archive / "TriggerTimes"
+                if trigger_dir.exists():
+                    trigger_files = sorted(trigger_dir.glob("trigger_*.csv"))
+                    valid_trigger_dfs = []
+                    
+                    for file in tqdm(trigger_files, desc="Loading trigger times"):
+                        try:
+                            if file.stat().st_size > 100:
+                                df = pd.read_csv(file)
+                                if not df.empty and 'pulse_id' in df.columns and 'trigger_time_ns' in df.columns:
+                                    valid_trigger_dfs.append(df)
+                        except Exception as e:
+                            print(f"⚠️ Skipping {file.name} due to error: {e}")
+                            pass
+                    
+                    if valid_trigger_dfs:
+                        self.trigger_data = pd.concat(valid_trigger_dfs, ignore_index=True)
+                        # Remove duplicates, keeping first occurrence
+                        self.trigger_data = self.trigger_data.drop_duplicates(subset=['pulse_id'], keep='first')
+                        print(f"✓ Loaded {len(self.trigger_data)} unique trigger times")
+                    else:
+                        print("No valid trigger time files found.")
+                else:
+                    print(f"TriggerTimes directory not found: {trigger_dir}")
 
         elif data is not None:
             self.data = data
             self.archive = Path("archive/test")
+            self.trigger_data = None
         else:
             raise ValueError("Either archive or data must be provided")
 
@@ -953,28 +984,7 @@ class Lens:
 
                 # Call _write_tpx3 if deadtime or blob is provided
                 if deadtime is not None or blob > 0:
-                    trigger_file = trigger_times_dir / f"trigger_{csv_file.name}"
-                    trigger_times_ps = None
-                    trigger_pulse_ids = None
-                    if trigger_file.exists():
-                        try:
-                            trigger_df = pd.read_csv(trigger_file)
-                            if 'trigger_time_ns' in trigger_df.columns and 'pulse_id' in trigger_df.columns:
-                                trigger_times_ps = (trigger_df['trigger_time_ns'] * 1000).astype(np.int64).values
-                                trigger_pulse_ids = trigger_df['pulse_id'].astype(np.int64).values
-                            else:
-                                if verbosity >= VerbosityLevel.DETAILED:
-                                    print(f"Warning: {trigger_file.name} missing 'trigger_time_ns' or 'pulse_id' column")
-                        except Exception as e:
-                            if verbosity >= VerbosityLevel.DETAILED:
-                                print(f"Error reading trigger file {trigger_file.name}: {str(e)}")
-                    else:
-                        if verbosity >= VerbosityLevel.DETAILED:
-                            print(f"Warning: Trigger file {trigger_file.name} not found")
-                    
                     self._write_tpx3(
-                        trigger_times_ps=trigger_times_ps,
-                        trigger_pulse_ids=trigger_pulse_ids,
                         traced_data=result_df,
                         chip_index=0,
                         verbosity=verbosity,
@@ -1008,8 +1018,6 @@ class Lens:
 
     def _write_tpx3(
         self,
-        trigger_times_ps: Union[List[int], np.ndarray] = None,
-        trigger_pulse_ids: Union[List[int], np.ndarray] = None,
         traced_data: pd.DataFrame = None,
         chip_index: int = 0,
         verbosity: int = 1,
@@ -1020,30 +1028,7 @@ class Lens:
         """
         Convert traced photon data to valid TPX3 binary files.
         
-        Intelligently splits large datasets with different strategies:
-        - "auto": Groups neutron events together, splits only when file size limit reached
-        - "event": Creates one file per neutron_id with corresponding trigger time based on pulse_id
-        
-        Parameters:
-        -----------
-        traced_data : pd.DataFrame
-            DataFrame with columns: x2, y2, toa2, time_diff (or 'tot'), neutron_id, pulse_id (optional)
-        trigger_times_ps : array-like, optional
-            Trigger times in picoseconds
-        trigger_pulse_ids : array-like, optional
-            Pulse IDs corresponding to trigger_times_ps
-        chip_index : int
-            Chip index for TPX3 header (0-255)
-        verbosity : int
-            0=silent, 1=progress, 2=detailed debug
-        sensor_size : int
-            Sensor dimensions (default 256x256)
-        split_method : str, default "auto"
-            File splitting strategy:
-            - "auto": Optimize file count by grouping neutrons
-            - "event": One file per neutron_id for event-by-event analysis
-        clean : bool
-            If True, clears existing TPX3 files in output directory before writing new ones
+        Reads trigger times from TriggerTimes directory and writes TDC packets.
         """
         # Constants
         TICK_NS = 1.5625
@@ -1067,7 +1052,7 @@ class Lens:
         
         df = traced_data.copy()
         
-        # Sort by neutron_id and toa2 to ensure consistent event ordering
+        # Sort by neutron_id and toa2
         if "neutron_id" in df.columns:
             df = df.sort_values(by=["neutron_id", "toa2"]).reset_index(drop=True)
         
@@ -1088,17 +1073,42 @@ class Lens:
                 print("Missing time_diff or tot column")
             return
         
-        # Warn if pulse_id is missing for split_method="event"
-        if split_method == "event" and "pulse_id" not in df.columns:
-            if verbosity >= 1:
-                print("Warning: pulse_id column missing for split_method='event', falling back to trigger_times_ps")
-        
-        # Setup output directory and clear existing contents
+        # Setup output directory
         out_dir = self.archive / "tpx3Files"
         if out_dir.exists() and clean:
             shutil.rmtree(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         
+        # Determine base filename for trigger lookup
+        traced_dir = self.archive / "TracedPhotons"
+        csv_files = sorted(traced_dir.glob("traced_sim_data_*.csv"))
+        
+        base_name = "traced_data"
+        for csv_file in csv_files:
+            try:
+                file_df = pd.read_csv(csv_file)
+                if len(file_df) == len(traced_data):
+                    base_name = csv_file.stem.replace("traced_", "")
+                    break
+            except:
+                continue
+        
+        # Load trigger times from self.trigger_data
+        trigger_time_dict = {}  # Maps pulse_id -> trigger_time_ps
+
+        if self.trigger_data is not None and not self.trigger_data.empty:
+            for _, row in self.trigger_data.iterrows():
+                pulse_id = int(row['pulse_id'])
+                trigger_time_ps = int(row['trigger_time_ns'] * 1000)  # ns to ps
+                trigger_time_dict[pulse_id] = trigger_time_ps
+            
+            if verbosity >= 2:
+                print(f"  Using {len(trigger_time_dict)} trigger times from memory")
+                print(f"  Pulse IDs available: {sorted(trigger_time_dict.keys())[:10]}...")
+        else:
+            if verbosity >= 1:
+                print(f"  Warning: No trigger data available")
+
         # Convert positions to pixel coordinates
         px = ((df["x2"].astype(float) + 10.0) / 20.0 * sensor_size).to_numpy()
         py = ((df["y2"].astype(float) + 10.0) / 20.0 * sensor_size).to_numpy()
@@ -1142,138 +1152,180 @@ class Lens:
             pixel_word = (0xB << 60) | (p << 44) | (c << 30) | (tot << 20) | (ft << 16) | sp
             pixel_packets.append(struct.pack("<Q", pixel_word))
         
-        # Determine file groups and associated trigger times
+        # Determine file groups based on split_method
         file_groups = []
-        trigger_times_per_file = []
         
         if split_method == "event" and "neutron_id" in df.columns:
+            # One file per neutron_id
             neutron_ids = df["neutron_id"].to_numpy()
-            unique_neutron_ids = np.unique(neutron_ids)
-            
-            # Validate neutron_id uniqueness
-            if len(unique_neutron_ids) < len(neutron_ids):
-                if verbosity >= 2:
-                    print(f"  Warning: Found duplicate neutron IDs, ensuring correct separation")
-            
             pulse_ids = df["pulse_id"].to_numpy() if "pulse_id" in df.columns else None
+            unique_neutron_ids = np.unique(neutron_ids)
             
             for nid in unique_neutron_ids:
                 indices = np.where(neutron_ids == nid)[0]
                 if len(indices) > 0:
-                    trigger_time_ps = None
+                    # Get pulse_id for this neutron (should all be the same now)
+                    pulse_id = pulse_ids[indices[0]] if pulse_ids is not None else None
                     
-                    if pulse_ids is not None and trigger_pulse_ids is not None and trigger_times_ps is not None:
-                        # Get pulse_id for this neutron event
-                        pulse_id = pulse_ids[indices[0]]  # Assume all rows for this neutron_id have the same pulse_id
-                        # Validate that all rows for this neutron_id have the same pulse_id
-                        if not (pulse_ids[indices] == pulse_id).all():
+                    # Verify all events for this neutron have the same pulse_id
+                    if pulse_ids is not None:
+                        unique_pulse_ids = np.unique(pulse_ids[indices])
+                        if len(unique_pulse_ids) > 1:
                             if verbosity >= 2:
-                                print(f"  Warning: Multiple pulse_ids found for neutron_id {nid}, using first: {pulse_id}")
-                        
-                        # Look up trigger time using pulse_id
-                        trigger_indices = np.where(trigger_pulse_ids == pulse_id)[0]
-                        if len(trigger_indices) > 0:
-                            trigger_time_ps = trigger_times_ps[trigger_indices[0]]  # Use first match
-                            if len(trigger_indices) > 1 and verbosity >= 2:
-                                print(f"  Warning: Multiple trigger times found for pulse_id {pulse_id}, using first: {trigger_time_ps} ps")
-                            if verbosity >= 2:
-                                print(f"  Found trigger time {trigger_time_ps} ps for neutron_id {nid} (pulse_id {pulse_id})")
-                        else:
-                            if verbosity >= 2:
-                                print(f"  Warning: No trigger time found for neutron_id {nid} (pulse_id {pulse_id})")
+                                print(f"  Warning: neutron_id {nid} has multiple pulse_ids: {unique_pulse_ids}, using first: {pulse_id}")
                     
-                    # Fallback to first trigger_times_ps if no pulse_id mapping is available
-                    if trigger_time_ps is None and trigger_times_ps is not None and len(trigger_times_ps) > 0:
-                        trigger_time_ps = trigger_times_ps[0]
-                        if verbosity >= 2:
-                            print(f"  Falling back to first trigger time for neutron_id {nid}: {trigger_time_ps} ps")
+                    # Look up trigger time
+                    trigger_time_ps = trigger_time_dict.get(pulse_id) if pulse_id is not None else None
                     
-                    file_groups.append((indices[0], indices[-1] + 1, nid))
-                    trigger_times_per_file.append([trigger_time_ps] if trigger_time_ps is not None else [])
+                    file_groups.append({
+                        'start_idx': int(indices[0]),
+                        'end_idx': int(indices[-1] + 1),
+                        'neutron_id': int(nid),
+                        'pulse_id': int(pulse_id) if pulse_id is not None else None,
+                        'trigger_time_ps': trigger_time_ps
+                    })
             
             if verbosity >= 2:
-                print(f"  Found {len(unique_neutron_ids)} unique neutron events")
+                print(f"  Split into {len(unique_neutron_ids)} files (one per neutron)")
+                
         elif "neutron_id" in df.columns:
+            # Auto mode: group neutrons respecting file size limit
             neutron_ids = df["neutron_id"].to_numpy()
+            pulse_ids = df["pulse_id"].to_numpy() if "pulse_id" in df.columns else None
+            
+            # Find neutron boundaries
             neutron_boundaries = [0]
             for i in range(1, len(neutron_ids)):
                 if neutron_ids[i] != neutron_ids[i-1]:
                     neutron_boundaries.append(i)
             neutron_boundaries.append(len(df))
             
-            if verbosity >= 2:
-                print(f"  Found {len(neutron_boundaries)-1} neutron events")
-            
             current_group_start = 0
-            current_group_size = 16
+            current_group_size = 16  # GTS pair
+            current_triggers = set()
             
             for i in range(len(neutron_boundaries) - 1):
                 start_idx = neutron_boundaries[i]
                 end_idx = neutron_boundaries[i + 1]
+                
+                # Calculate size including TDC trigger (8 bytes per unique pulse_id)
                 neutron_size = (end_idx - start_idx) * PACKET_SIZE
                 
+                # Get pulse_ids for this neutron
+                neutron_pulse_ids = set()
+                if pulse_ids is not None:
+                    neutron_pulse_ids = set(pulse_ids[start_idx:end_idx])
+                
+                # Add TDC packet size for new pulse_ids
+                new_triggers = neutron_pulse_ids - current_triggers
+                neutron_size += len(new_triggers) * 8
+                
                 if current_group_size + neutron_size > MAX_CHUNK_BYTES:
+                    # Finish current group
                     if start_idx > current_group_start:
-                        file_groups.append((current_group_start, start_idx, None))
-                        trigger_times_per_file.append(list(trigger_times_ps) if trigger_times_ps is not None else [])
+                        # Get all pulse_ids in this group
+                        group_pulse_ids = set(pulse_ids[current_group_start:start_idx]) if pulse_ids is not None else set()
+                        # Get trigger times for this group
+                        group_triggers = {pid: trigger_time_dict.get(pid) for pid in group_pulse_ids if pid in trigger_time_dict}
+                        
+                        file_groups.append({
+                            'start_idx': current_group_start,
+                            'end_idx': start_idx,
+                            'neutron_id': None,
+                            'pulse_ids': group_pulse_ids,
+                            'trigger_times': group_triggers
+                        })
+                    
+                    # Start new group
                     current_group_start = start_idx
                     current_group_size = 16 + neutron_size
+                    current_triggers = neutron_pulse_ids.copy()
                 else:
                     current_group_size += neutron_size
+                    current_triggers.update(neutron_pulse_ids)
             
+            # Add final group
             if current_group_start < len(df):
-                file_groups.append((current_group_start, len(df), None))
-                trigger_times_per_file.append(list(trigger_times_ps) if trigger_times_ps is not None else [])
-        else:
-            if verbosity >= 2:
-                print("  No neutron_id column, splitting on packet boundaries")
+                group_pulse_ids = set(pulse_ids[current_group_start:]) if pulse_ids is not None else set()
+                group_triggers = {pid: trigger_time_dict.get(pid) for pid in group_pulse_ids if pid in trigger_time_dict}
+                
+                file_groups.append({
+                    'start_idx': current_group_start,
+                    'end_idx': len(df),
+                    'neutron_id': None,
+                    'pulse_ids': group_pulse_ids,
+                    'trigger_times': group_triggers
+                })
             
-            max_events_per_file = (MAX_CHUNK_BYTES - 16) // PACKET_SIZE
-            for start in range(0, len(df), max_events_per_file):
-                end = min(start + max_events_per_file, len(df))
-                file_groups.append((start, end, None))
-                trigger_times_per_file.append(list(trigger_times_ps) if trigger_times_ps is not None else [])
+            if verbosity >= 2:
+                print(f"  Split into {len(file_groups)} files (auto grouping)")
+        else:
+            # No neutron_id: single file
+            file_groups.append({
+                'start_idx': 0,
+                'end_idx': len(df),
+                'neutron_id': None,
+                'pulse_id': None,
+                'trigger_time_ps': None
+            })
         
         if verbosity >= 1:
-            print(f"  Splitting into {len(file_groups)} file(s)")
-        
-        # Determine base filename
-        traced_dir = self.archive / "TracedPhotons"
-        csv_files = sorted(traced_dir.glob("traced_sim_data_*.csv"))
-        
-        base_name = "traced_data"
-        for csv_file in csv_files:
-            try:
-                file_df = pd.read_csv(csv_file)
-                if len(file_df) == len(traced_data):
-                    base_name = csv_file.stem.replace("traced_", "")
-                    break
-            except:
-                continue
+            print(f"  Writing {len(file_groups)} TPX3 file(s)")
         
         # Write files
         files_written = []
-        for file_idx, ((start_idx, end_idx, neutron_id), file_trigger_times) in enumerate(zip(file_groups, trigger_times_per_file)):
+        for file_idx, group in enumerate(file_groups):
+            start_idx = group['start_idx']
+            end_idx = group['end_idx']
+            
             # Build initial GTS pair
             initial_timer = timer_ticks[start_idx] if start_idx < len(timer_ticks) else 0
             file_content = encode_gts_pair(initial_timer)
             
-            # Add TDC triggers for this file
-            if file_trigger_times is not None and len(file_trigger_times) > 0:
-                trigger_arr = np.asarray(file_trigger_times, dtype=float)
-                trig_ticks = np.round(trigger_arr / (TICK_NS * 1000)).astype(np.int64)
+            # Add TDC trigger(s)
+            triggers_written = 0
+            
+            if split_method == "event":
+                # Single trigger per file
+                trigger_time_ps = group.get('trigger_time_ps')
+                pulse_id = group.get('pulse_id')
                 
-                for t_idx, tval in enumerate(trig_ticks):
-                    trig_counter = t_idx & 0xFFF
-                    timestamp = tval & ((1 << 35) - 1)
+                if trigger_time_ps is not None:
+                    trig_ticks = int(trigger_time_ps / (TICK_NS * 1000))
+                    trig_counter = file_idx & 0xFFF
+                    timestamp = trig_ticks & ((1 << 35) - 1)
                     tdc_word = (0x6 << 60) | (trig_counter << 44) | (timestamp << 9)
                     file_content += struct.pack("<Q", tdc_word)
+                    triggers_written = 1
+                    
+                    if verbosity >= 2:
+                        print(f"  File {file_idx + 1}: Added TDC trigger for pulse_id {pulse_id} at {trigger_time_ps} ps")
+                else:
+                    if verbosity >= 2:
+                        pulse_info = f"pulse_id {pulse_id}" if pulse_id is not None else "no pulse_id"
+                        print(f"  File {file_idx + 1}: No trigger time found ({pulse_info})")
+            else:
+                # Multiple triggers per file (auto mode)
+                trigger_times = group.get('trigger_times', {})
+                
+                for trig_idx, (pulse_id, trigger_time_ps) in enumerate(sorted(trigger_times.items())):
+                    if trigger_time_ps is not None:
+                        trig_ticks = int(trigger_time_ps / (TICK_NS * 1000))
+                        trig_counter = (file_idx * 100 + trig_idx) & 0xFFF
+                        timestamp = trig_ticks & ((1 << 35) - 1)
+                        tdc_word = (0x6 << 60) | (trig_counter << 44) | (timestamp << 9)
+                        file_content += struct.pack("<Q", tdc_word)
+                        triggers_written += 1
+                
+                if verbosity >= 2 and triggers_written > 0:
+                    print(f"  File {file_idx + 1}: Added {triggers_written} TDC trigger(s)")
             
-            # Add pixel packets for this range
+            # Add pixel packets
             for j in range(start_idx, end_idx):
                 file_content += pixel_packets[j]
             
             # Determine filename
+            neutron_id = group.get('neutron_id')
             if split_method == "event" and neutron_id is not None:
                 out_path = out_dir / f"{base_name}_neutron{int(neutron_id):06d}.tpx3"
             elif len(file_groups) > 1:
@@ -1282,29 +1334,25 @@ class Lens:
                 out_path = out_dir / f"{base_name}.tpx3"
             
             # Write file
-            if out_path.exists():
-                out_path.unlink()
-            
             with open(out_path, "wb") as fh:
                 file_size = len(file_content)
                 header = struct.pack("<4sBBH", b"TPX3", chip_index & 0xFF, 0, file_size & 0xFFFF)
                 fh.write(header)
                 fh.write(file_content)
             
-            files_written.append((out_path, end_idx - start_idx))
+            files_written.append((out_path, end_idx - start_idx, triggers_written))
             
             if verbosity >= 2:
                 neutron_info = f"neutron {neutron_id}" if neutron_id is not None else f"part {file_idx + 1}"
-                trigger_info = f", {len(file_trigger_times)} triggers" if file_trigger_times is not None and len(file_trigger_times) > 0 else ", no triggers"
-                print(f"  File {file_idx + 1}: {out_path.name}, {end_idx - start_idx} events, {file_size} bytes ({neutron_info}{trigger_info})")
+                trigger_info = f", {triggers_written} trigger(s)" if triggers_written > 0 else ", no triggers"
+                print(f"  Wrote: {out_path.name}, {end_idx - start_idx} events, {file_size} bytes ({neutron_info}{trigger_info})")
         
-        if verbosity >= 2:
+        if verbosity >= 1:
+            total_triggers = sum(t for _, _, t in files_written)
             if len(files_written) == 1:
-                print(f"✅ Wrote {files_written[0][0].name}: {files_written[0][1]} events")
+                print(f"✅ Wrote {files_written[0][0].name}: {files_written[0][1]} events, {files_written[0][2]} trigger(s)")
             else:
-                print(f"✅ Wrote {len(files_written)} files:")
-                for fp, n_events in files_written:
-                    print(f"   - {fp.name} ({n_events} events)")
+                print(f"✅ Wrote {len(files_written)} files, {total_triggers} total trigger(s)")
 
     def _align_chunk_results(self, chunk_result, indices, chunk_idx, verbosity):
         """
