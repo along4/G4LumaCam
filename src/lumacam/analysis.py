@@ -282,18 +282,22 @@ class Analysis:
             }
         }
 
-    def _run_pixel2photon(self, tpx3_dir: Path, photon_files_dir: Path, params_file: Path, n_threads: int, parameters: Dict[str, Any], verbosity: VerbosityLevel) -> None:
+    def _run_pixel2photon(self, tpx3_dir: Path, photon_files_dir: Path, 
+                                params_file: Path, n_threads: int, 
+                                parameters: Dict[str, Any], 
+                                verbosity: VerbosityLevel) -> None:
         """Run pixel2photon processing on TPX3 files.
-            args:
-                tpx3_dir: Directory containing .tpx3 files.
-                photon_files_dir: Directory to save .empirphot files.
-                params_file: Path to the parameter settings JSON file.
-                n_threads: Number of threads to use for parallel processing.
-                parameters: Dictionary of parameters for pixel2photon.
-                verbosity: Controls the level of output during processing."""
-        tpx3_files = sorted(tpx3_dir.glob("*.tpx3"))
+        Args:
+            tpx3_dir: Directory containing .tpx3 files.
+            photon_files_dir: Directory to save .empirphot files.
+            params_file: Path to the parameter settings JSON file.
+            n_threads: Number of threads to use for parallel processing.
+            parameters: Dictionary of parameters for pixel2photon.
+            verbosity: Controls the level of output during processing.
+        """
+        tpx3_files = sorted([f for f in tpx3_dir.glob("*.tpx3")])
         if not tpx3_files:
-            raise FileNotFoundError(f"No .tpx3 files found in {tpx3_dir}")
+            raise FileNotFoundError(f"No .tpx3 files with '_part' found in {tpx3_dir}")
 
         if verbosity > VerbosityLevel.BASIC:
             print(f"Processing {len(tpx3_files)} .tpx3 files to photon files...")
@@ -494,10 +498,10 @@ class Analysis:
                 try:
                     import pandas as pd
                     df = pd.read_csv(photon_result_csv)
-                    df.columns = ["x", "y", "t", "tof"]
+                    df.columns = ["x", "y", "toa", "tof"]
                     df["x"] = df["x"].astype(float)
                     df["y"] = df["y"].astype(float)
-                    df["t"] = df["t"].astype(float)
+                    df["toa"] = df["toa"].astype(float)
                     df["tof"] = pd.to_numeric(df["tof"], errors="coerce")
                     df.to_csv(photon_result_csv, index=False)
                     
@@ -592,8 +596,8 @@ class Analysis:
         
         Args:
             params: Either a path to a parameterSettings.json file, a JSON string, or a dictionary
-                   containing the parameters for pixel2photon, photon2event, and event2image.
-                   If None, uses default parameters based on focus mode.
+                containing the parameters for pixel2photon, photon2event, and event2image.
+                If None, uses default parameters based on focus mode.
             n_threads: Number of threads to use for parallel processing of files.
             suffix: Optional suffix to create a subfolder and symlink TPX3 files for processing.
             pixel2photon: If True, runs empir_pixel2photon_tpx3spidr on TPX3 files.
@@ -604,7 +608,7 @@ class Analysis:
             verbosity: Controls the level of output (QUIET=0, BASIC=1, DETAILED=2).
             clean: If True, deletes existing .empirphot and .empirevent files before processing.
             **kwargs: Additional parameters to update specific fields in the configuration
-                     (e.g., dTime_s, dSpace_px for photon2event).
+                    (e.g., dTime_s, dSpace_px for photon2event).
         """
         import time
         start_time = time.time()
@@ -620,14 +624,28 @@ class Analysis:
             if not orig_tpx3_dir.exists():
                 raise FileNotFoundError(f"Original tpx3Files directory not found at {orig_tpx3_dir}")
             
+            # Get list of existing .tpx3 files in the original directory
+            existing_tpx3_files = sorted(orig_tpx3_dir.glob("*.tpx3"))
+            if not existing_tpx3_files:
+                raise FileNotFoundError(f"No .tpx3 files found in {orig_tpx3_dir}")
+            
             current_dir = os.getcwd()
             try:
-                for tpx3_file in orig_tpx3_dir.glob("*.tpx3"):
+                for tpx3_file in existing_tpx3_files:
                     dest_file = tpx3_dir / tpx3_file.name
-                    if not dest_file.exists():
+                    if not dest_file.exists() and tpx3_file.is_file():
                         os.symlink(tpx3_file.absolute(), dest_file)
                         if verbosity >= VerbosityLevel.DETAILED:
                             print(f"Created symlink: {dest_file} -> {tpx3_file.absolute()}")
+                    elif not tpx3_file.is_file():
+                        if verbosity >= VerbosityLevel.DETAILED:
+                            print(f"Skipped invalid file: {tpx3_file} (not a regular file)")
+                    elif dest_file.exists():
+                        if verbosity >= VerbosityLevel.DETAILED:
+                            print(f"Symlink already exists: {dest_file}")
+            except OSError as e:
+                if verbosity >= VerbosityLevel.BASIC:
+                    print(f"Error creating symlink for {tpx3_file}: {e}")
             finally:
                 os.chdir(current_dir)
         else:
