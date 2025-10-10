@@ -982,7 +982,7 @@ class Lens:
                         blob=blob,
                         output_format="photons",
                         min_tot=20.0,
-                        pixel_size=None,
+                        # pixel_size=None,
                         decay_time=100.0,
                         verbosity=verbosity
                     )
@@ -1048,10 +1048,12 @@ class Lens:
         """
         Convert traced photon data to valid TPX3 binary files.
         
-        Reads trigger times from TriggerTimes directory and writes TDC packets.
+        Writes x,y in pixel units (integers), toa in units of 1.256 ns (integers),
+        and tot in nanoseconds (integers). Reads trigger times from TriggerTimes directory
+        and writes TDC packets.
         """
         # Constants
-        TICK_NS = 1.5625
+        TICK_NS = 1.256  # ToA tick size in nanoseconds
         MAX_CHUNK_BYTES = 65535
         TIMER_TICK_NS = 409.6
         PACKET_SIZE = 8
@@ -1066,7 +1068,7 @@ class Lens:
             return struct.pack("<Q", lsb_word) + struct.pack("<Q", msb_word)
         
         if traced_data is None or len(traced_data) == 0:
-            if verbosity >= 1:
+            if verbosity >= 2:
                 print("No traced photon data provided")
             return
         
@@ -1080,17 +1082,11 @@ class Lens:
             print(f"\nProcessing {len(df)} events for TPX3 export")
         
         # Validate required columns
-        required = ["x2", "y2", "toa2"]
+        required = ["pixel_x", "pixel_y", "toa2", "time_diff"]
         missing = [col for col in required if col not in df.columns]
         if missing:
-            if verbosity >= 1:
+            if verbosity >= 2:
                 print(f"Missing required columns: {missing}")
-            return
-        
-        # Check for TOT column
-        if "time_diff" not in df.columns and "tot" not in df.columns:
-            if verbosity >= 1:
-                print("Missing time_diff or tot column")
             return
         
         # Setup output directory
@@ -1115,7 +1111,6 @@ class Lens:
         
         # Load trigger times from self.trigger_data
         trigger_time_dict = {}  # Maps pulse_id -> trigger_time_ps
-
         if self.trigger_data is not None and not self.trigger_data.empty:
             for _, row in self.trigger_data.iterrows():
                 pulse_id = int(row['pulse_id'])
@@ -1126,23 +1121,20 @@ class Lens:
                 print(f"  Using {len(trigger_time_dict)} trigger times from memory")
                 print(f"  Pulse IDs available: {sorted(trigger_time_dict.keys())[:10]}...")
         else:
-            if verbosity >= 1:
+            if verbosity >= 2:
                 print(f"  Warning: No trigger data available")
 
-        # Convert positions to pixel coordinates
-        px = ((df["x2"].astype(float) + 10.0) / 20.0 * sensor_size).to_numpy()
-        py = ((df["y2"].astype(float) + 10.0) / 20.0 * sensor_size).to_numpy()
-        px_i = np.clip(np.round(px).astype(np.int64), 0, sensor_size - 1)
-        py_i = np.clip(np.round(py).astype(np.int64), 0, sensor_size - 1)
-        
-        # Extract timing
+        # Extract data (pixel_x, pixel_y are already integers from saturate_photons)
+        px_i = np.clip(df["pixel_x"].astype(np.int64), 0, sensor_size - 1)
+        py_i = np.clip(df["pixel_y"].astype(np.int64), 0, sensor_size - 1)
         toa_ns = df["toa2"].astype(float).to_numpy()
-        tot_ns = df["time_diff"].to_numpy() if "time_diff" in df.columns else df["tot"].to_numpy()
-        tot_ns = np.maximum(tot_ns.astype(float), 1.0)
+        tot_ns = np.maximum(df["time_diff"].astype(float).to_numpy(), 1.0).astype(np.int64)
         
-        # Convert to TPX3 ticks
+        # Convert ToA to ticks (1.256 ns)
         toa_ticks = np.round(toa_ns / TICK_NS).astype(np.int64)
-        tot_ticks = np.clip(np.round(tot_ns / TICK_NS).astype(np.int64), 1, 0x3FF)
+        
+        # Convert TOT to ticks (1 ns resolution, as specified)
+        tot_ticks = np.clip(tot_ns, 1, 0x3FF)
         
         # Decompose ToA
         spidr_time = ((toa_ticks >> 18) & 0xFFFF).astype(np.int64)
@@ -1158,9 +1150,10 @@ class Lens:
         
         if verbosity >= 2:
             print(f"  ToA range: {toa_ns.min():.2f} - {toa_ns.max():.2f} ns")
+            print(f"  TOT range: {tot_ns.min():.2f} - {tot_ns.max():.2f} ns")
             print(f"  Pixel range: x=[{px_i.min()}, {px_i.max()}], y=[{py_i.min()}, {py_i.max()}]")
         
-        # Encode all pixel packets first
+        # Encode all pixel packets
         pixel_packets = []
         for j in range(len(df)):
             p = int(pixaddr[j]) & 0xFFFF
@@ -1176,7 +1169,6 @@ class Lens:
         file_groups = []
         
         if split_method == "event" and "neutron_id" in df.columns:
-            # One file per neutron_id
             neutron_ids = df["neutron_id"].to_numpy()
             pulse_ids = df["pulse_id"].to_numpy() if "pulse_id" in df.columns else None
             unique_neutron_ids = np.unique(neutron_ids)
@@ -1184,17 +1176,13 @@ class Lens:
             for nid in unique_neutron_ids:
                 indices = np.where(neutron_ids == nid)[0]
                 if len(indices) > 0:
-                    # Get pulse_id for this neutron (should all be the same now)
                     pulse_id = pulse_ids[indices[0]] if pulse_ids is not None else None
-                    
-                    # Verify all events for this neutron have the same pulse_id
                     if pulse_ids is not None:
                         unique_pulse_ids = np.unique(pulse_ids[indices])
                         if len(unique_pulse_ids) > 1:
                             if verbosity >= 2:
                                 print(f"  Warning: neutron_id {nid} has multiple pulse_ids: {unique_pulse_ids}, using first: {pulse_id}")
                     
-                    # Look up trigger time
                     trigger_time_ps = trigger_time_dict.get(pulse_id) if pulse_id is not None else None
                     
                     file_groups.append({
@@ -1209,11 +1197,9 @@ class Lens:
                 print(f"  Split into {len(unique_neutron_ids)} files (one per neutron)")
                 
         elif "neutron_id" in df.columns:
-            # Auto mode: group neutrons respecting file size limit
             neutron_ids = df["neutron_id"].to_numpy()
             pulse_ids = df["pulse_id"].to_numpy() if "pulse_id" in df.columns else None
             
-            # Find neutron boundaries
             neutron_boundaries = [0]
             for i in range(1, len(neutron_ids)):
                 if neutron_ids[i] != neutron_ids[i-1]:
@@ -1228,24 +1214,14 @@ class Lens:
                 start_idx = neutron_boundaries[i]
                 end_idx = neutron_boundaries[i + 1]
                 
-                # Calculate size including TDC trigger (8 bytes per unique pulse_id)
                 neutron_size = (end_idx - start_idx) * PACKET_SIZE
-                
-                # Get pulse_ids for this neutron
-                neutron_pulse_ids = set()
-                if pulse_ids is not None:
-                    neutron_pulse_ids = set(pulse_ids[start_idx:end_idx])
-                
-                # Add TDC packet size for new pulse_ids
+                neutron_pulse_ids = set(pulse_ids[start_idx:end_idx]) if pulse_ids is not None else set()
                 new_triggers = neutron_pulse_ids - current_triggers
                 neutron_size += len(new_triggers) * 8
                 
                 if current_group_size + neutron_size > MAX_CHUNK_BYTES:
-                    # Finish current group
                     if start_idx > current_group_start:
-                        # Get all pulse_ids in this group
                         group_pulse_ids = set(pulse_ids[current_group_start:start_idx]) if pulse_ids is not None else set()
-                        # Get trigger times for this group
                         group_triggers = {pid: trigger_time_dict.get(pid) for pid in group_pulse_ids if pid in trigger_time_dict}
                         
                         file_groups.append({
@@ -1256,7 +1232,6 @@ class Lens:
                             'trigger_times': group_triggers
                         })
                     
-                    # Start new group
                     current_group_start = start_idx
                     current_group_size = 16 + neutron_size
                     current_triggers = neutron_pulse_ids.copy()
@@ -1264,7 +1239,6 @@ class Lens:
                     current_group_size += neutron_size
                     current_triggers.update(neutron_pulse_ids)
             
-            # Add final group
             if current_group_start < len(df):
                 group_pulse_ids = set(pulse_ids[current_group_start:]) if pulse_ids is not None else set()
                 group_triggers = {pid: trigger_time_dict.get(pid) for pid in group_pulse_ids if pid in trigger_time_dict}
@@ -1280,7 +1254,6 @@ class Lens:
             if verbosity >= 2:
                 print(f"  Split into {len(file_groups)} files (auto grouping)")
         else:
-            # No neutron_id: single file
             file_groups.append({
                 'start_idx': 0,
                 'end_idx': len(df),
@@ -1289,7 +1262,7 @@ class Lens:
                 'trigger_time_ps': None
             })
         
-        if verbosity >= 1:
+        if verbosity >= 2:
             print(f"  Writing {len(file_groups)} TPX3 file(s)")
         
         # Write files
@@ -1306,7 +1279,6 @@ class Lens:
             triggers_written = 0
             
             if split_method == "event":
-                # Single trigger per file
                 trigger_time_ps = group.get('trigger_time_ps')
                 pulse_id = group.get('pulse_id')
                 
@@ -1325,7 +1297,6 @@ class Lens:
                         pulse_info = f"pulse_id {pulse_id}" if pulse_id is not None else "no pulse_id"
                         print(f"  File {file_idx + 1}: No trigger time found ({pulse_info})")
             else:
-                # Multiple triggers per file (auto mode)
                 trigger_times = group.get('trigger_times', {})
                 
                 for trig_idx, (pulse_id, trigger_time_ps) in enumerate(sorted(trigger_times.items())):
@@ -1367,7 +1338,7 @@ class Lens:
                 trigger_info = f", {triggers_written} trigger(s)" if triggers_written > 0 else ", no triggers"
                 print(f"  Wrote: {out_path.name}, {end_idx - start_idx} events, {file_size} bytes ({neutron_info}{trigger_info})")
         
-        if verbosity >= 1:
+        if verbosity >= 2:
             total_triggers = sum(t for _, _, t in files_written)
             if len(files_written) == 1:
                 print(f"✅ Wrote {files_written[0][0].name}: {files_written[0][1]} events, {files_written[0][2]} trigger(s)")
@@ -1669,7 +1640,7 @@ class Lens:
                     print(f"Warning: Sorting {file_name} by toa2")
                 df = df.sort_values('toa2').reset_index(drop=True)
 
-            # Extract data arrays
+            # Extract data arrays (pixel_x, pixel_y are already in integer pixel units)
             px_float = df['pixel_x'].to_numpy()
             py_float = df['pixel_y'].to_numpy()
             toa = df['toa2'].to_numpy()
