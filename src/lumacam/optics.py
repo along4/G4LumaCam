@@ -656,7 +656,7 @@ class Lens:
     def trace_rays(self, opm=None, opm_file=None, zscan=0, zfine=0, fnumber=None,
                 join=False, print_stats=False, n_processes=None, chunk_size=1000, 
                 progress_bar=True, timeout=3600, return_df=False, 
-                verbosity=VerbosityLevel.BASIC, deadtime=None, blob=0.0, 
+                verbosity=VerbosityLevel.BASIC, deadtime=None, blob=0.0, decay_time= 100, 
                 split_method="auto"):
         """
         Trace rays from simulation data files and save processed results, optionally applying pixel saturation and blob effect.
@@ -717,6 +717,8 @@ class Lens:
             Interaction radius in pixels for photon hits. If > 0, each photon hit affects
             all pixels within this radius. If provided, applies saturate_photons and
             triggers _write_tpx3.
+        decay_time : float, default 100
+            Decay time in nanoseconds for blob effect. Only used if blob > 0.
         split_method : str, default "auto"
             TPX3 file splitting strategy (only used when deadtime or blob is provided):
             - "auto": Groups neutron events to minimize file count (default)
@@ -760,13 +762,13 @@ class Lens:
         valid_files = [f for f in csv_files if f.stat().st_size > 100]
 
         if not valid_files:
-            if verbosity > VerbosityLevel.QUIET:
+            if verbosity > VerbosityLevel.BASIC:
                 print("No valid simulation data files found in 'SimPhotons' directory.")
                 print(f"Searched in: {sim_photons_dir}")
                 print("Expected files matching pattern: sim_data_*.csv")
             return None
 
-        if verbosity > VerbosityLevel.QUIET:
+        if verbosity > VerbosityLevel.BASIC:
             print(f"Found {len(valid_files)} valid simulation files to process")
 
         # Handle optical model setup
@@ -826,7 +828,7 @@ class Lens:
                 try:
                     df = pd.read_csv(csv_file)
                 except Exception as e:
-                    if verbosity > VerbosityLevel.QUIET:
+                    if verbosity > VerbosityLevel.BASIC:
                         print(f"Error reading {csv_file.name}: {str(e)}")
                     continue
                     
@@ -839,20 +841,20 @@ class Lens:
                 required_cols = ['x', 'y', 'z', 'dx', 'dy', 'dz', 'wavelength']
                 missing_cols = [col for col in required_cols if col not in df.columns]
                 if missing_cols:
-                    if verbosity > VerbosityLevel.QUIET:
+                    if verbosity > VerbosityLevel.BASIC:
                         print(f"Skipping {csv_file.name}: missing columns {missing_cols}")
                     continue
 
                 # Check for pulse_id when split_method="event"
                 if split_method == "event" and 'pulse_id' not in df.columns:
-                    if verbosity >= VerbosityLevel.BASIC:
+                    if verbosity > VerbosityLevel.BASIC:
                         print(f"Warning: {csv_file.name} missing pulse_id column required for split_method='event'")
 
                 # Validate nz and pz columns
                 nz_pz_cols = ['nz', 'pz']
                 missing_nz_pz = [col for col in nz_pz_cols if col not in df.columns]
                 if missing_nz_pz:
-                    if verbosity > VerbosityLevel.QUIET:
+                    if verbosity > VerbosityLevel.BASIC:
                         print(f"Warning: {csv_file.name} missing columns {missing_nz_pz}. Setting nz and pz to NaN.")
                     for col in missing_nz_pz:
                         df[col] = np.nan
@@ -983,7 +985,7 @@ class Lens:
                         output_format="photons",
                         min_tot=20.0,
                         # pixel_size=None,
-                        decay_time=100.0,
+                        decay_time=decay_time,
                         verbosity=verbosity
                     )
                     
@@ -1636,7 +1638,7 @@ class Lens:
 
             # Sort by arrival time
             if not (df['toa2'].diff().dropna() >= 0).all():
-                if verbosity >= VerbosityLevel.BASIC:
+                if verbosity > VerbosityLevel.BASIC:
                     print(f"Warning: Sorting {file_name} by toa2")
                 df = df.sort_values('toa2').reset_index(drop=True)
 
@@ -1758,7 +1760,7 @@ class Lens:
                     print(f"  Saved results to: {output_file}")
 
             # Print stats
-            if verbosity >= VerbosityLevel.BASIC:
+            if verbosity > VerbosityLevel.BASIC:
                 print(f"  Input photons: {len(df)}, Output events: {len(result_df)}")
                 if blob > 0:
                     ratio = len(result_df) / len(df) if len(df) > 0 else 0
