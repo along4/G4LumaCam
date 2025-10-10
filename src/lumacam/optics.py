@@ -108,7 +108,9 @@ class Lens:
                 kind: str = "nikkor_58mm", focus: float = None, zmx_file: str = None,
                 focus_gaps: List[Tuple[int, float]] = None, dist_from_obj: float = None,
                 gap_between_lenses: float = 15.0, dist_to_screen: float = 20.0, fnumber: float = 8.0,
-                load_triggers: bool = True):
+                FOV: float = None, magnification: float = None,
+                load_triggers: bool = True,
+                verbosity: VerbosityLevel = VerbosityLevel.BASIC):
         """
         Initialize a Lens object with optical model and data management.
 
@@ -123,8 +125,10 @@ class Lens:
             gap_between_lenses (float, optional): Gap between lenses in mm. Defaults to 15.0.
             dist_to_screen (float, optional): Distance from last lens to screen in mm. Defaults to 20.0.
             fnumber (float, optional): F-number of the optical system. Defaults to 8.0.
+            FOV (float, optional): Field of view in mm. Defaults to None. for 'nikor_58mm', FOV=120mm and for 'microscope', FOV=10mm, for 'zmx_file', FOV=60mm.
+            magnification (float, optional): Manually define magnification. Defaults to None.
             load_triggers (bool, optional): Whether to load trigger times from TriggerTimes directory. Defaults to True.
-
+            verbosity (VerbosityLevel, optional): Verbosity level for logging. Defaults to VerbosityLevel.BASIC.
         Raises:
             ValueError: If invalid lens kind, missing zmx_file for 'zmx_file', or invalid parameters.
         """
@@ -132,6 +136,7 @@ class Lens:
         self.focus = focus
         self.zmx_file = zmx_file
         self.focus_gaps = focus_gaps
+        self.FOV = FOV
 
         # Set default parameters based on lens kind
         if kind == "nikkor_58mm":
@@ -140,18 +145,24 @@ class Lens:
             self.dist_to_screen = 0.0
             self.fnumber = fnumber if fnumber != 8.0 else 0.98
             self.default_focus_gaps = [(22, 2.68)]
+            if self.FOV is None:
+                self.FOV = 120.0
         elif kind == "microscope":
             self.dist_from_obj = dist_from_obj if dist_from_obj else 41.0
             self.gap_between_lenses = gap_between_lenses
             self.dist_to_screen = dist_to_screen
             self.fnumber = fnumber
             self.default_focus_gaps = [(24, None), (31, None)]
+            if self.FOV is None:
+                self.FOV = 10.0
         elif kind == "zmx_file":
             self.dist_from_obj = dist_from_obj
             self.gap_between_lenses = gap_between_lenses
             self.dist_to_screen = dist_to_screen
             self.fnumber = fnumber
             self.default_focus_gaps = focus_gaps or []
+            if self.FOV is None:
+                self.FOV = 120.0
         else:
             raise ValueError(f"Unknown lens kind: {kind}, supported lenses are ['nikkor_58mm', 'microscope', 'zmx_file']")
 
@@ -207,11 +218,14 @@ class Lens:
                         self.trigger_data = pd.concat(valid_trigger_dfs, ignore_index=True)
                         # Remove duplicates, keeping first occurrence
                         self.trigger_data = self.trigger_data.drop_duplicates(subset=['pulse_id'], keep='first')
-                        print(f"✓ Loaded {len(self.trigger_data)} unique trigger times")
+                        if verbosity > 1:
+                            print(f"✓ Loaded {len(self.trigger_data)} unique trigger times")
                     else:
-                        print("No valid trigger time files found.")
+                        if verbosity > 1:
+                            print("No valid trigger time files found.")
                 else:
-                    print(f"TriggerTimes directory not found: {trigger_dir}")
+                    if verbosity > 1:
+                        print(f"TriggerTimes directory not found: {trigger_dir}")
 
         elif data is not None:
             self.data = data
@@ -240,6 +254,12 @@ class Lens:
                 self.opm = self.refocus(zfine=focus, save=False)
         else:
             raise ValueError(f"Unknown lens kind: {self.kind}")
+
+        # get the multiplication value for converting from mm to pixels
+        if magnification is not None:
+            self.reduction_ratio = magnification
+        else:
+            self.reduction_ratio = self.get_first_order_parameters().loc["Reduction Ratio","Value"]
 
     def get_first_order_parameters(self, opm: "OpticalModel" = None) -> pd.DataFrame:
         """
@@ -1496,6 +1516,14 @@ class Lens:
                 matches = (result_df['id'].values == original_df['id'].values).sum()
                 if matches != len(result_df):
                     print(f"    ERROR: Only {matches}/{len(result_df)} IDs match after _create_result_dataframe!")
+
+        # convert position to pixels
+
+        result_df["pixel_x"] = np.ceil((result_df["x2"]*self.reduction_ratio + 0.5*self.FOV)*256/self.FOV)
+        result_df["pixel_y"] = np.ceil((result_df["y2"]*self.reduction_ratio + 0.5*self.FOV)*256/self.FOV)
+
+        # result_df["pixel_x"] = result_df["x2"]*self.reduction_ratio
+        # result_df["pixel_y"] = result_df["y2"]*self.reduction_ratio
         
         return result_df
 
@@ -1844,8 +1872,8 @@ class Lens:
         
         if output_format == "tpx3":
             # Convert pixel coordinates back to mm (pixel center)
-            x_mm = (px_i + 0.5) * pixel_size - 10.0
-            y_mm = (py_i + 0.5) * pixel_size - 10.0
+            x_mm = (px_i + 0.5) * pixel_size + self.reduction_ratio
+            y_mm = (py_i + 0.5) * pixel_size + self.reduction_ratio
             
             result_rows.append({
                 'x': x_mm,
@@ -1855,8 +1883,8 @@ class Lens:
             })
         else:  # photons format
             # Use PIXEL coordinates, not first photon coordinates
-            x_mm = (px_i + 0.5) * pixel_size - 10.0
-            y_mm = (py_i + 0.5) * pixel_size - 10.0
+            x_mm = (px_i + 0.5) * pixel_size + self.reduction_ratio
+            y_mm = (py_i + 0.5) * pixel_size + self.reduction_ratio
             
             result_rows.append({
                 'x2': x_mm,  # Pixel center position
