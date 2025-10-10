@@ -1529,14 +1529,15 @@ class Lens:
 
 
     def saturate_photons(self, data: pd.DataFrame = None, deadtime: float = 600.0, blob: float = 0.0, 
-                        output_format: str = "tpx3", min_tot: float = 20.0, pixel_size: float = None, 
-                        decay_time: float = 100.0, verbosity: VerbosityLevel = VerbosityLevel.BASIC
+                        output_format: str = "photons", min_tot: float = 20.0, 
+                        decay_time: float = 100.0, 
+                        verbosity: VerbosityLevel = VerbosityLevel.BASIC
                         ) -> Union[pd.DataFrame, None]:
         """
         Process traced photons to simulate an image intensifier coupled to an event camera.
 
         Physical model:
-        1. Photon hits image intensifier at position (x, y)
+        1. Photon hits image intensifier at position (pixel_x, pixel_y)
         2. Intensifier creates a circular blob on the camera with specified radius
         3. Each pixel within blob is activated with a time drawn from exponential decay
         4. Each pixel has independent deadtime (default 600ns)
@@ -1548,6 +1549,7 @@ class Lens:
         -----------
         data : pd.DataFrame, optional
             DataFrame containing photon data to process. If None, loads from 'TracedPhotons' directory.
+            Must have columns: pixel_x, pixel_y, toa2, id, neutron_id, pulse_id
         deadtime : float, default 600.0
             Deadtime in nanoseconds for pixel saturation. During this window after first photon,
             pixel accumulates additional photons but doesn't reset.
@@ -1555,13 +1557,11 @@ class Lens:
             Blob radius in pixel units (can be float). Each photon from the intensifier triggers 
             all camera pixels within this radius. A larger blob increases the number of triggered pixels.
             Example: blob=0 → 1 pixel per photon, blob=1 → ~9 pixels, blob=2 → ~25 pixels.
-        output_format : str, default "tpx3"
-            Output format: "tpx3" for pixel-based output (x, y, toa, tot) or 
-            "photons" for photon-averaged output with nz, pz columns.
+        output_format : str, default "photons"
+            Output format: "photons" for photon-averaged output with nz, pz columns.
+            Note: Use trace_rays() -> saturate_photons() -> _write_tpx3() pipeline for TPX3 files.
         min_tot : float, default 20.0
-            Minimum Time-Over-Threshold in nanoseconds for TPX3 format.
-        pixel_size : float, optional
-            Size of each pixel in mm. If None, auto-determined as sensor_range/256.
+            Minimum Time-Over-Threshold in nanoseconds.
         decay_time : float, default 100.0
             Exponential decay time constant in nanoseconds for blob activation timing.
         verbosity : VerbosityLevel, default VerbosityLevel.BASIC
@@ -1570,11 +1570,12 @@ class Lens:
         Returns:
         --------
         pd.DataFrame or None
-            For "tpx3": columns are x, y, toa, tot (pixel positions in mm, arrival time, time-over-threshold)
-            For "photons": columns are x2, y2, z2, id, neutron_id, toa2, photon_count, time_diff, nz, pz
+            Columns: pixel_x, pixel_y, toa2, photon_count, time_diff, id, neutron_id, pulse_id, nz, pz
+            - pixel_x, pixel_y: integer pixel positions
+            - toa2: time of arrival in nanoseconds (first photon to hit pixel)
+            - time_diff: time-over-threshold in nanoseconds (first to last photon)
+            - photon_count: number of photons that hit this pixel during deadtime
         """
-        if output_format not in ["tpx3", "photons"]:
-            raise ValueError(f"Invalid output_format: {output_format}. Must be 'tpx3' or 'photons'")
         if blob < 0:
             raise ValueError(f"blob must be non-negative, got {blob}")
         if deadtime is not None and deadtime <= 0:
@@ -1648,9 +1649,7 @@ class Lens:
                 continue
 
             # Validate required columns
-            required_cols = ['x2', 'y2', 'z2', 'toa2']
-            if output_format == "photons":
-                required_cols += ['id', 'neutron_id']
+            required_cols = ['pixel_x', 'pixel_y', 'toa2', 'id', 'neutron_id', 'pulse_id']
             missing_cols = [col for col in required_cols if col not in df.columns]
             if missing_cols:
                 if verbosity > VerbosityLevel.BASIC:
@@ -1670,27 +1669,13 @@ class Lens:
                     print(f"Warning: Sorting {file_name} by toa2")
                 df = df.sort_values('toa2').reset_index(drop=True)
 
-            # Align sim_df if needed
-            if sim_df is not None and len(sim_df) == len(df):
-                # Assume sim_df corresponds to original df order, so no reordering needed
-                pass
-
-            # Determine pixel size
-            if pixel_size is None:
-                x_range = df['x2'].max() - df['x2'].min() if len(df) > 0 else 20.0
-                y_range = df['y2'].max() - df['y2'].min() if len(df) > 0 else 20.0
-                pixel_size = max(x_range, y_range, 20.0) / 256.0
-                if verbosity >= VerbosityLevel.DETAILED:
-                    print(f"  Auto-determined pixel_size: {pixel_size:.6f} mm")
-
             # Extract data arrays
-            x_mm = df['x2'].to_numpy()
-            y_mm = df['y2'].to_numpy()
-            z_mm = df['z2'].to_numpy()
+            px_float = df['pixel_x'].to_numpy()
+            py_float = df['pixel_y'].to_numpy()
             toa = df['toa2'].to_numpy()
-            photon_ids = df['id'].to_numpy() if 'id' in df.columns else np.arange(len(df), dtype=np.int64)
-            neutron_ids = df['neutron_id'].to_numpy() if 'neutron_id' in df.columns else np.full(len(df), -1, dtype=np.int64)
-            pulse_ids = df['pulse_id'].to_numpy() if 'pulse_id' in df.columns else np.full(len(df), -1, dtype=np.int64)
+            photon_ids = df['id'].to_numpy()
+            neutron_ids = df['neutron_id'].to_numpy()
+            pulse_ids = df['pulse_id'].to_numpy()
 
             # Get nz, pz from sim_df or df
             if sim_df is not None and len(sim_df) == len(df):
@@ -1700,110 +1685,88 @@ class Lens:
                 nz = df['nz'].to_numpy() if 'nz' in df.columns else np.full(len(df), np.nan)
                 pz = df['pz'].to_numpy() if 'pz' in df.columns else np.full(len(df), np.nan)
 
-            # Convert to pixel coordinates (centered at origin = 128, 128)
-            px_float = (x_mm + 10.0) / pixel_size
-            py_float = (y_mm + 10.0) / pixel_size
-
             if verbosity >= VerbosityLevel.DETAILED:
                 print(f"  Pixel coordinate range: x=[{px_float.min():.1f}, {px_float.max():.1f}], "
                     f"y=[{py_float.min():.1f}, {py_float.max():.1f}]")
 
-            # Build pixel event list with blob effect and exponential decay
-            # Structure: pixel_events[pixel_tuple] = list of (activation_time, original_photon_index)
-            pixel_events = {}
-            
-            if blob > 0:
-                if verbosity >= VerbosityLevel.DETAILED:
-                    print(f"  Applying circular blob effect with radius {blob} pixels and {decay_time}ns decay")
-                
-                for idx in range(len(df)):
-                    px_center = px_float[idx]
-                    py_center = py_float[idx]
-                    toa_i = toa[idx]
-                    
-                    # Find all pixels within circular blob radius
-                    px_min = int(np.floor(px_center - blob))
-                    px_max = int(np.ceil(px_center + blob))
-                    py_min = int(np.floor(py_center - blob))
-                    py_max = int(np.ceil(py_center + blob))
-                    
-                    for px_j in range(px_min, px_max + 1):
-                        for py_j in range(py_min, py_max + 1):
-                            # Calculate distance from photon center to pixel center
-                            pixel_center_x = px_j + 0.5
-                            pixel_center_y = py_j + 0.5
-                            dist = np.sqrt((px_center - pixel_center_x)**2 + (py_center - pixel_center_y)**2)
-                            
-                            if dist <= blob:
-                                # Draw activation time from exponential decay
-                                delay = np.random.exponential(decay_time)
-                                activation_time = toa_i + delay
-                                
-                                pixel_key = (px_j, py_j)
-                                if pixel_key not in pixel_events:
-                                    pixel_events[pixel_key] = []
-                                pixel_events[pixel_key].append((activation_time, idx))
-            else:
-                # No blob: each photon triggers only its pixel at original time
-                for idx in range(len(df)):
-                    px_j = int(np.floor(px_float[idx]))
-                    py_j = int(np.floor(py_float[idx]))
-                    pixel_key = (px_j, py_j)
-                    if pixel_key not in pixel_events:
-                        pixel_events[pixel_key] = []
-                    pixel_events[pixel_key].append((toa[idx], idx))
-
-            if verbosity >= VerbosityLevel.DETAILED:
-                print(f"  Total pixels triggered: {len(pixel_events)}")
-                total_events = sum(len(events) for events in pixel_events.values())
-                print(f"  Total pixel-photon pairs: {total_events}")
-                if blob > 0:
-                    avg_pixels_per_photon = total_events / len(df) if len(df) > 0 else 0
-                    print(f"  Average pixels triggered per photon: {avg_pixels_per_photon:.1f}")
-
-            # Process each pixel with deadtime logic
+            # Apply the photon-pixel hit algorithm
             result_rows = []
+            pixel_state = {}  # Key: (px_i, py_i), Value: {'first_toa': float, 'last_toa': float, 'photon_indices': list}
             
-            for pixel_key, events in pixel_events.items():
-                px_i, py_i = pixel_key
+            if verbosity >= VerbosityLevel.DETAILED:
+                print(f"  Applying blob effect with radius {blob} pixels, deadtime {deadtime}ns, decay {decay_time}ns")
+
+            for idx in range(len(df)):
+                cx = px_float[idx]
+                cy = py_float[idx]
+                photon_toa = toa[idx]
                 
-                # Sort events by activation time
-                events.sort(key=lambda x: x[0])
-                
-                if deadtime is not None and deadtime > 0:
-                    # Group events within deadtime windows
-                    current_window_start = None
-                    window_events = []
+                # Find all pixels covered by the circle (partial overlap allowed)
+                if blob > 0:
+                    i_min = int(np.floor(cx - blob - 0.5))
+                    i_max = int(np.ceil(cx + blob + 0.5))
+                    j_min = int(np.floor(cy - blob - 0.5))
+                    j_max = int(np.ceil(cy + blob + 0.5))
                     
-                    for event_toa, photon_idx in events:
-                        if current_window_start is None:
-                            # Start new window
-                            current_window_start = event_toa
-                            window_events = [(event_toa, photon_idx)]
-                        elif event_toa < current_window_start + deadtime:
-                            # Add to current window
-                            window_events.append((event_toa, photon_idx))
-                        else:
-                            # Process completed window
-                            self._add_pixel_event(result_rows, px_i, py_i, window_events, df, 
-                                        photon_ids, neutron_ids, pulse_ids, nz, pz,
-                                        pixel_size, min_tot, output_format)
-                            
-                            # Start new window
-                            current_window_start = event_toa
-                            window_events = [(event_toa, photon_idx)]
+                    # Create grid of pixel centers
+                    x_grid = np.arange(i_min, i_max + 1)
+                    y_grid = np.arange(j_min, j_max + 1)
+                    xx, yy = np.meshgrid(x_grid, y_grid)
+                    xx = xx.flatten()
+                    yy = yy.flatten()
                     
-                    # Process final window
-                    if window_events:
-                        self._add_pixel_event(result_rows, px_i, py_i, window_events, df,
-                                    photon_ids, neutron_ids, pulse_ids, nz, pz,
-                                    pixel_size, min_tot, output_format)
+                    # Find closest point in each pixel to circle center
+                    closest_x = np.clip(cx, xx - 0.5, xx + 0.5)
+                    closest_y = np.clip(cy, yy - 0.5, yy + 0.5)
+                    dist2 = (closest_x - cx) ** 2 + (closest_y - cy) ** 2
+                    mask = dist2 <= blob ** 2
+                    
+                    covered_x = xx[mask]
+                    covered_y = yy[mask]
                 else:
-                    # No deadtime: each event is separate
-                    for event_toa, photon_idx in events:
-                        self._add_pixel_event(result_rows, px_i, py_i, [(event_toa, photon_idx)], df,
-                                    photon_ids, neutron_ids, pulse_ids, nz, pz,
-                                    pixel_size, min_tot, output_format)
+                    # No blob: only the pixel containing the photon center
+                    covered_x = np.array([int(np.floor(cx))])
+                    covered_y = np.array([int(np.floor(cy))])
+                
+                if len(covered_x) == 0:
+                    continue
+                
+                # Process each covered pixel
+                for px_i, py_i in zip(covered_x, covered_y):
+                    pixel_key = (int(px_i), int(py_i))
+                    
+                    # Check if pixel is active (within deadtime)
+                    if pixel_key in pixel_state:
+                        pixel_info = pixel_state[pixel_key]
+                        time_since_first = photon_toa - pixel_info['first_toa']
+                        
+                        if deadtime is not None and time_since_first <= deadtime:
+                            # Pixel still in deadtime - update last_toa and add to photon list
+                            pixel_info['last_toa'] = photon_toa
+                            pixel_info['photon_indices'].append(idx)
+                            continue
+                        else:
+                            # Deadtime expired - finalize previous pixel event
+                            self._finalize_pixel_event(result_rows, pixel_key, pixel_info, 
+                                                    photon_ids, neutron_ids, pulse_ids, nz, pz, min_tot)
+                            # Start new pixel event (will be handled below)
+                            del pixel_state[pixel_key]
+                    
+                    # Start new pixel activation
+                    # Randomize activation time with exponential decay
+                    activation_delay = np.random.exponential(decay_time)
+                    activation_toa = photon_toa + activation_delay
+                    
+                    pixel_state[pixel_key] = {
+                        'first_toa': activation_toa,
+                        'last_toa': activation_toa,
+                        'photon_indices': [idx]
+                    }
+            
+            # Finalize all remaining pixel events
+            for pixel_key, pixel_info in pixel_state.items():
+                self._finalize_pixel_event(result_rows, pixel_key, pixel_info,
+                                        photon_ids, neutron_ids, pulse_ids, nz, pz, min_tot)
 
             # Create result DataFrame
             if not result_rows:
@@ -1812,6 +1775,9 @@ class Lens:
                 continue
 
             result_df = pd.DataFrame(result_rows)
+            
+            # Sort by time to restore chronological order
+            result_df = result_df.sort_values('toa2').reset_index(drop=True)
             
             # Save results if processing files
             if save_results:
@@ -1826,7 +1792,7 @@ class Lens:
                 if blob > 0:
                     ratio = len(result_df) / len(df) if len(df) > 0 else 0
                     print(f"  Expansion ratio (blob effect): {ratio:.2f}x")
-                if output_format == "photons" and 'photon_count' in result_df.columns:
+                if 'photon_count' in result_df.columns:
                     total_photons = result_df['photon_count'].sum()
                     print(f"  Total photons in output: {total_photons}")
 
@@ -1848,6 +1814,42 @@ class Lens:
             print("\nNo results to return")
         return None
 
+
+    def _finalize_pixel_event(self, result_rows, pixel_key, pixel_info,
+                            photon_ids, neutron_ids, pulse_ids, nz, pz, min_tot):
+        """Helper function to finalize and add a pixel event to results.
+        
+        Output format for saturate_photons (photons format):
+        - pixel_x, pixel_y: integer pixel positions
+        - toa2: time of arrival in nanoseconds (first photon)
+        - time_diff: time-over-threshold in nanoseconds (TOT)
+        - photon_count: number of photons
+        - id, neutron_id, pulse_id: from first photon
+        - nz, pz: from first photon
+        """
+        px_i, py_i = pixel_key
+        first_toa = pixel_info['first_toa']
+        last_toa = pixel_info['last_toa']
+        photon_indices = pixel_info['photon_indices']
+        
+        tot_measured = max(last_toa - first_toa, min_tot)
+        photon_count = len(photon_indices)
+        
+        # Use first photon's properties
+        first_idx = photon_indices[0]
+        
+        result_rows.append({
+            'pixel_x': px_i,
+            'pixel_y': py_i,
+            'toa2': first_toa,
+            'photon_count': photon_count,
+            'time_diff': tot_measured,
+            'id': photon_ids[first_idx],
+            'neutron_id': neutron_ids[first_idx],
+            'pulse_id': pulse_ids[first_idx],
+            'nz': nz[first_idx],
+            'pz': pz[first_idx]
+        })
 
     def _add_pixel_event(self, result_rows, px_i, py_i, window_events, df, 
                         photon_ids, neutron_ids, pulse_ids, nz, pz,
