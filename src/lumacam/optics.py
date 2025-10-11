@@ -1002,6 +1002,7 @@ class Lens:
             pass
 
 
+
     def _write_tpx3(
         self,
         traced_data: pd.DataFrame = None,
@@ -1015,9 +1016,9 @@ class Lens:
         """
         Convert traced photon data to valid TPX3 binary files, following the SERVAL TPX3 raw file format.
         
-        Writes x,y in pixel units (integers), toa in units of 1.5625 ns (integers),
-        and tot in nanoseconds (integers). Uses pulse_time_ns from traced_data,
-        converting from nanoseconds to TDC clock ticks for TDC packets.
+        Writes x,y in pixel units (integers), ToA in units of 1.5625 ns (integers),
+        and ToT in nanoseconds (integers). Uses pulse_time_ns from traced_data,
+        converting from nanoseconds to TDC clock ticks (260 ps resolution) for TDC packets.
         
         Parameters:
         -----------
@@ -1038,9 +1039,10 @@ class Lens:
         """
         # Constants
         TICK_NS = 1.5625  # ToA tick size in nanoseconds (1.5625 ns for Timepix3 native resolution)
-        TDC_TICK_NS = 1.5625  # TDC uses same 640 MHz clock as ToA (1.5625 ns period)
+        TDC_TICK_NS = 0.260  # TDC clock resolution in nanoseconds (260 ps)
+        MAX_TDC_TIMESTAMP = 107.3741824  # Maximum TDC timestamp in seconds
         MAX_CHUNK_BYTES = 65535
-        TIMER_TICK_NS = 409.6
+        TIMER_TICK_NS = 409.6  # GTS timer tick size in nanoseconds
         PACKET_SIZE = 8
         
         def encode_gts_pair(timer_value):
@@ -1084,15 +1086,20 @@ class Lens:
         base_name = f"traced_data_{file_index}" if file_index is not None else "traced_data"
         
         # Build trigger time dictionary from pulse_time_ns
-        # Convert to TDC clock ticks (1.5625 ns resolution)
         trigger_time_dict = {}  # Maps pulse_id -> tdc_ticks
         unique_pulse_ids = df['pulse_id'].dropna().unique()
         for pulse_id in unique_pulse_ids:
             pulse_rows = df[df['pulse_id'] == pulse_id]
             if not pulse_rows.empty:
                 trigger_time_ns = pulse_rows['pulse_time_ns'].iloc[0]  # Take first occurrence
-                # Convert ns to TDC ticks (1.5625 ns resolution)
+                # Convert ns to TDC ticks (260 ps resolution)
                 tdc_ticks = int(round(trigger_time_ns / TDC_TICK_NS))
+                # Ensure within maximum TDC timestamp
+                max_ticks = int(MAX_TDC_TIMESTAMP / TDC_TICK_NS)
+                if tdc_ticks > max_ticks:
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"  Warning: pulse_id {pulse_id} trigger time {trigger_time_ns:.1f} ns exceeds max TDC timestamp {MAX_TDC_TIMESTAMP} s")
+                    tdc_ticks = max_ticks
                 trigger_time_dict[int(pulse_id)] = tdc_ticks
         
         if verbosity >= VerbosityLevel.DETAILED:
@@ -1113,7 +1120,7 @@ class Lens:
         # Convert ToA to ticks (1.5625 ns)
         toa_ticks = np.round(toa_ns / TICK_NS).astype(np.int64)
         
-        # Convert TOT to ticks (1 ns resolution)
+        # Convert ToT to ticks (1 ns resolution)
         tot_ticks = np.clip(tot_ns, 1, 0x3FF)
         
         # Decompose ToA
@@ -1130,7 +1137,7 @@ class Lens:
         
         if verbosity >= VerbosityLevel.DETAILED:
             print(f"  ToA range: {toa_ns.min():.2f} - {toa_ns.max():.2f} ns")
-            print(f"  TOT range: {tot_ns.min():.2f} - {tot_ns.max():.2f} ns")
+            print(f"  ToT range: {tot_ns.min():.2f} - {tot_ns.max():.2f} ns")
             print(f"  Pixel range: x=[{px_i.min()}, {px_i.max()}], y=[{py_i.min()}, {py_i.max()}]")
         
         # Encode all pixel packets
@@ -1250,19 +1257,13 @@ class Lens:
             start_idx = group['start_idx']
             end_idx = group['end_idx']
             
-            # Build initial GTS pair - use trigger time if available, otherwise first pixel time
+            # Build initial GTS pair
             if split_method == "event":
                 trigger_ticks = group.get('trigger_time_ticks')
                 initial_timer = trigger_ticks if trigger_ticks is not None else (timer_ticks[start_idx] if start_idx < len(timer_ticks) else 0)
             else:
-                # For auto mode, use earliest trigger time in this group
                 trigger_times = group.get('trigger_times', {})
-                if trigger_times:
-                    min_trigger = min(t for t in trigger_times.values() if t is not None)
-                    initial_timer = int(min_trigger / (TIMER_TICK_NS / TDC_TICK_NS)) if min_trigger is not None else (timer_ticks[start_idx] if start_idx < len(timer_ticks) else 0)
-                else:
-                    initial_timer = timer_ticks[start_idx] if start_idx < len(timer_ticks) else 0
-            
+                initial_timer = min(trigger_times.values()) if trigger_times else (timer_ticks[start_idx] if start_idx < len(timer_ticks) else 0)
             file_content = encode_gts_pair(initial_timer)
             
             # Add TDC trigger(s)
@@ -1273,11 +1274,11 @@ class Lens:
                 pulse_id = group.get('pulse_id')
                 
                 if trigger_ticks is not None:
-                    # TDC timestamp field is 35 bits (bits 43-9)
+                    # TDC timestamp field is 35 bits (bits 43-9) in 260 ps units
                     timestamp = trigger_ticks & ((1 << 35) - 1)
                     trig_counter = pulse_id & 0xFFF  # 12-bit trigger counter
-                    # Stamp field (bits 8-5) set to 0
-                    tdc_word = (0x6 << 60) | (trig_counter << 44) | (timestamp << 9) | (0 << 5)
+                    # Stamp field (bits 8-5) set to 0xF for TDC1 falling edge
+                    tdc_word = (0x6 << 60) | (0xF << 56) | (trig_counter << 44) | (timestamp << 9)
                     file_content += struct.pack("<Q", tdc_word)
                     triggers_written = 1
                     
@@ -1298,11 +1299,11 @@ class Lens:
                 
                 for trig_idx, (pulse_id, trigger_ticks) in enumerate(sorted(trigger_times.items())):
                     if trigger_ticks is not None:
-                        # TDC timestamp field is 35 bits (bits 43-9)
+                        # TDC timestamp field is 35 bits (bits 43-9) in 260 ps units
                         timestamp = trigger_ticks & ((1 << 35) - 1)
                         trig_counter = pulse_id & 0xFFF  # 12-bit trigger counter
-                        # Stamp field (bits 8-5) set to 0
-                        tdc_word = (0x6 << 60) | (trig_counter << 44) | (timestamp << 9) | (0 << 5)
+                        # Stamp field (bits 8-5) set to 0xF for TDC1 falling edge
+                        tdc_word = (0x6 << 60) | (0xF << 56) | (trig_counter << 44) | (timestamp << 9)
                         file_content += struct.pack("<Q", tdc_word)
                         triggers_written += 1
                 
@@ -1348,6 +1349,7 @@ class Lens:
                 print(f"✅ Wrote {files_written[0][0].name}: {files_written[0][1]} events, {files_written[0][2]} trigger(s)")
             else:
                 print(f"✅ Wrote {len(files_written)} files, {total_triggers} total trigger(s)")
+
 
     def _align_chunk_results(self, chunk_result, indices, chunk_idx, verbosity):
         """
