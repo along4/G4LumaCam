@@ -13,6 +13,7 @@ namespace Sim {
     G4double SCINT_THICKNESS = 2.0 * cm;
     G4double SAMPLE_THICKNESS = 7.5 * cm;
     G4double SCINT_SIZE = 12.0 * cm;
+    G4double SAMPLE_WIDTH = 12.0 * cm; // half width
     G4double COATING_THICKNESS = 0.01 * cm;
     G4double TMIN = 0.0 * ns;
     G4double TMAX = 0.0 * ns;
@@ -36,6 +37,15 @@ namespace Sim {
             G4cout << "Sample thickness set to: " << thickness / cm << " cm" << G4endl;
         } else {
             G4cerr << "ERROR: Sample thickness must be positive!" << G4endl;
+        }
+    }
+
+    void SetSampleWidth(G4double width) {
+        if (width > 0) {
+            SAMPLE_WIDTH = width;
+            G4cout << "Sample width set to: " << width / cm << " cm" << G4endl;
+        } else {
+            G4cerr << "ERROR: Sample width must be positive!" << G4endl;
         }
     }
 

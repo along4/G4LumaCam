@@ -77,6 +77,7 @@ int main(int argc, char** argv) {
         // Material and beam setup
         uiMgr->ApplyCommand("/lumacam/sampleMaterial G4_Galactic");
         uiMgr->ApplyCommand("/lumacam/scintMaterial EJ200");
+        uiMgr->ApplyCommand("/lumacam/sampleWidth 12.0");
         uiMgr->ApplyCommand("/lumacam/flux 1e4");
         uiMgr->ApplyCommand("/lumacam/freq 200000");
         

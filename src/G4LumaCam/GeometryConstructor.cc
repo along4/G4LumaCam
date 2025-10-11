@@ -14,6 +14,7 @@
 #include "LumaCamMessenger.hh"
 #include "G4PhysicalVolumeStore.hh"
 #include "G4RunManager.hh"
+#include "SimConfig.hh"
 
 GeometryConstructor::GeometryConstructor(ParticleGenerator* gen) 
     : matBuilder(new MaterialBuilder()), eventProc(nullptr), sampleLog(nullptr), scintLog(nullptr), lumaCamMessenger(nullptr),
@@ -54,7 +55,7 @@ G4VPhysicalVolume* GeometryConstructor::Construct() {
         G4cerr << "ERROR: Sample material " << Sim::sampleMaterial << " not found! Defaulting to G4_GRAPHITE" << G4endl;
         sampleMat = nist->FindOrBuildMaterial("G4_GRAPHITE");
     }
-    G4Box* sampleSolid = new G4Box("SampleSolid", Sim::SCINT_SIZE/2, Sim::SCINT_SIZE/2, Sim::SAMPLE_THICKNESS/2);
+    G4Box* sampleSolid = new G4Box("SampleSolid", Sim::SAMPLE_WIDTH/2, Sim::SCINT_SIZE/2, Sim::SAMPLE_THICKNESS/2);
     sampleLog = new G4LogicalVolume(sampleSolid, sampleMat, "SampleLog");
     if (!sampleLog) {
         G4cerr << "ERROR: sampleLog is nullptr!" << G4endl;
@@ -64,7 +65,7 @@ G4VPhysicalVolume* GeometryConstructor::Construct() {
     G4VisAttributes* sampleVisAttributes = new G4VisAttributes(G4Colour(0.15, 0.2, 0.8, 0.5));
     sampleVisAttributes->SetForceSolid(true);
     sampleVisAttributes->SetVisibility(true);
-    new G4PVPlacement(nullptr, G4ThreeVector(0, 0, -Sim::SCINT_THICKNESS - Sim::COATING_THICKNESS - Sim::SAMPLE_THICKNESS/2), 
+    new G4PVPlacement(nullptr, G4ThreeVector(-Sim::SCINT_SIZE/2 + Sim::SAMPLE_WIDTH/2, 0, -Sim::SCINT_THICKNESS - Sim::COATING_THICKNESS - Sim::SAMPLE_THICKNESS/2), 
                       sampleLog, "SamplePhys", worldLog, false, 0, true);
     sampleLog->SetVisAttributes(sampleVisAttributes);
 
@@ -186,15 +187,17 @@ void GeometryConstructor::UpdateScintillatorGeometry(G4double thickness) {
     G4RunManager::GetRunManager()->GeometryHasBeenModified();
 }
 
-void GeometryConstructor::UpdateSampleGeometry(G4double thickness, G4Material* material) {
+void GeometryConstructor::UpdateSampleGeometry(G4double thickness, G4Material* material, G4double width) {
     G4cout << "GeometryConstructor: Updating sample geometry with thickness: " 
-           << thickness/cm << " cm, material: " << (material ? material->GetName() : "null") << G4endl;
+           << thickness/cm << " cm, width: " << width/cm << " cm, material: " 
+           << (material ? material->GetName() : "null") << G4endl;
     
     G4PhysicalVolumeStore* physVolStore = G4PhysicalVolumeStore::GetInstance();
     
     if (sampleLog) {
         G4Box* sampleSolid = dynamic_cast<G4Box*>(sampleLog->GetSolid());
         if (sampleSolid) {
+            sampleSolid->SetXHalfLength(width/2); // Update sample width
             sampleSolid->SetZHalfLength(thickness/2); // Update sample thickness
             sampleLog->SetMaterial(material);
             G4cout << "GeometryConstructor: Sample solid and material updated" << G4endl;
@@ -207,7 +210,7 @@ void GeometryConstructor::UpdateSampleGeometry(G4double thickness, G4Material* m
 
     G4VPhysicalVolume* samplePhys = physVolStore->GetVolume("SamplePhys", false);
     if (samplePhys) {
-        samplePhys->SetTranslation(G4ThreeVector(0, 0, -Sim::SCINT_THICKNESS - Sim::COATING_THICKNESS - thickness/2));
+        samplePhys->SetTranslation(G4ThreeVector(-Sim::SCINT_SIZE/2 + width/2, 0, -Sim::SCINT_THICKNESS - Sim::COATING_THICKNESS - thickness/2));
         G4cout << "GeometryConstructor: Sample placement updated" << G4endl;
     } else {
         G4cerr << "ERROR: SamplePhys not found in volume store!" << G4endl;

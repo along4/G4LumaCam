@@ -53,6 +53,12 @@ LumaCamMessenger::LumaCamMessenger(G4String* filename, G4LogicalVolume* sampleLo
         .SetParameterName("thickness", false)
         .SetDefaultValue("3.75");
 
+    // Sample width
+    messenger->DeclareMethod("sampleWidth", &LumaCamMessenger::SetSampleWidth)
+        .SetGuidance("Set the sample half-width in cm (for knife edge from left to right)")
+        .SetParameterName("width", false)
+        .SetDefaultValue("12.0");
+
     // Batch size
     messenger->DeclareMethod("batchSize", &LumaCamMessenger::SetBatchSize)
         .SetGuidance("Set the number of events per CSV file (0 for single file)")
@@ -204,6 +210,25 @@ void LumaCamMessenger::SetSampleThickness(G4double thickness) {
     if (geom && sampleLog) {
         G4Material* material = sampleLog->GetMaterial();
         geom->UpdateSampleGeometry(Sim::SAMPLE_THICKNESS, material);
+        G4RunManager::GetRunManager()->GeometryHasBeenModified();
+    } else {
+        G4cerr << "ERROR: Failed to cast to GeometryConstructor or sampleLog is nullptr!" << G4endl;
+    }
+}
+
+void LumaCamMessenger::SetSampleWidth(G4double width) {
+    if (width <= 0) {
+        G4cerr << "ERROR: Sample width must be positive!" << G4endl;
+        return;
+    }
+    G4cout << "Setting sample width to: " << width << " cm" << G4endl;
+    Sim::SetSampleWidth(width * cm);
+    GeometryConstructor* geom = dynamic_cast<GeometryConstructor*>(
+        const_cast<G4VUserDetectorConstruction*>(
+            G4RunManager::GetRunManager()->GetUserDetectorConstruction()));
+    if (geom && sampleLog) {
+        G4Material* material = sampleLog->GetMaterial();
+        geom->UpdateSampleGeometry(Sim::SAMPLE_THICKNESS, material, Sim::SAMPLE_WIDTH);
         G4RunManager::GetRunManager()->GeometryHasBeenModified();
     } else {
         G4cerr << "ERROR: Failed to cast to GeometryConstructor or sampleLog is nullptr!" << G4endl;
