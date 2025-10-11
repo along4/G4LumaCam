@@ -619,10 +619,10 @@ class Lens:
         return [rays[i:i+chunk_size] for i in range(0, len(rays), chunk_size)]
 
     def trace_rays(self, opm=None, opm_file=None, zscan=0, zfine=0, fnumber=None,
-                join=False, print_stats=False, n_processes=None, chunk_size=1000, 
-                progress_bar=True, timeout=3600, return_df=False, 
-                verbosity=VerbosityLevel.BASIC, deadtime=None, blob=0.0, decay_time=100, 
-                split_method="auto"):
+                   join=False, print_stats=False, n_processes=None, chunk_size=1000, 
+                   progress_bar=True, timeout=3600, return_df=False, 
+                   verbosity=VerbosityLevel.BASIC, deadtime=None, blob=0.0, decay_time=100, 
+                   split_method="auto"):
         """
         Trace rays from simulation data files and save processed results, optionally applying pixel saturation and blob effect.
 
@@ -783,8 +783,7 @@ class Lens:
             file_iter = tqdm(valid_files, desc=file_desc, 
                             disable=not progress_bar or verbosity == VerbosityLevel.QUIET)
             
-            clean = True  # clean flag to erase previous files only once
-            for csv_file in file_iter:
+            for file_idx, csv_file in enumerate(file_iter):
                 if verbosity >= VerbosityLevel.DETAILED:
                     print(f"\nProcessing file: {csv_file.name}")
 
@@ -837,8 +836,8 @@ class Lens:
                 # Convert DataFrame to ray format
                 rays = [
                     (np.array([row.x, row.y, row.z], dtype=np.float64),
-                    np.array([row.dx, row.dy, row.dz], dtype=np.float64),
-                    np.array([row.wavelength], dtype=np.float64))
+                     np.array([row.dx, row.dy, row.dz], dtype=np.float64),
+                     np.array([row.wavelength], dtype=np.float64))
                     for row in df.itertuples()
                 ]
 
@@ -866,9 +865,9 @@ class Lens:
                             print("  Using sequential processing")
                         results_with_indices = []
                         chunk_iter = tqdm(enumerate(zip(chunks, index_chunks)), 
-                                        total=len(chunks),
-                                        desc=f"Tracing rays ({csv_file.name})",
-                                        disable=not progress_bar or verbosity == VerbosityLevel.QUIET)
+                                         total=len(chunks),
+                                         desc=f"Tracing rays ({csv_file.name})",
+                                         disable=not progress_bar or verbosity == VerbosityLevel.QUIET)
                         
                         for chunk_idx, (chunk, indices) in chunk_iter:
                             chunk_result = process_chunk(chunk)
@@ -968,15 +967,17 @@ class Lens:
 
                 # Call _write_tpx3 if deadtime or blob is provided
                 if deadtime is not None or blob > 0:
+                    # Extract file index from filename (e.g., sim_data_0.csv -> 0)
+                    file_index = int(csv_file.stem.split('_')[-1])
                     self._write_tpx3(
                         traced_data=result_df,
                         chip_index=0,
                         verbosity=verbosity,
                         sensor_size=256,
                         split_method=split_method,
-                        clean=clean
+                        clean=(file_idx == 0),  # Clean directory only for the first file
+                        file_index=file_index
                     )
-                    clean = False  # Only clean once
 
                 # Print statistics if requested
                 if print_stats and verbosity >= VerbosityLevel.BASIC:
@@ -1000,6 +1001,7 @@ class Lens:
         finally:
             pass
 
+
     def _write_tpx3(
         self,
         traced_data: pd.DataFrame = None,
@@ -1007,17 +1009,36 @@ class Lens:
         verbosity: int = 1,
         sensor_size: int = 256,
         split_method: str = "auto",
-        clean: bool = True
+        clean: bool = True,
+        file_index: int = None
     ):
         """
-        Convert traced photon data to valid TPX3 binary files.
+        Convert traced photon data to valid TPX3 binary files, following the SERVAL TPX3 raw file format.
         
-        Writes x,y in pixel units (integers), toa in units of 1.256 ns (integers),
+        Writes x,y in pixel units (integers), toa in units of 1.5625 ns (integers),
         and tot in nanoseconds (integers). Uses pulse_time_ns from traced_data,
-        converting from nanoseconds to picoseconds for TDC packets.
+        converting from nanoseconds to TDC clock ticks for TDC packets.
+        
+        Parameters:
+        -----------
+        traced_data : pd.DataFrame
+            DataFrame with columns: pixel_x, pixel_y, toa2, time_diff, pulse_id, pulse_time_ns, neutron_id (optional)
+        chip_index : int, default 0
+            Index of the chip (0 for single-chip setups).
+        verbosity : int, default 1
+            Verbosity level (0=QUIET, 1=BASIC, 2=DETAILED).
+        sensor_size : int, default 256
+            Size of the sensor in pixels (256x256).
+        split_method : str, default "auto"
+            Method to split data into files: "auto" or "event".
+        clean : bool, default True
+            If True, remove existing tpx3Files directory before writing (only for file_index=0).
+        file_index : int, optional
+            Index of the input file to include in the output filename (e.g., traced_data_0.tpx3).
         """
         # Constants
-        TICK_NS = 1.256  # ToA tick size in nanoseconds
+        TICK_NS = 1.5625  # ToA tick size in nanoseconds (1.5625 ns for Timepix3 native resolution)
+        TDC_TICK_NS = 1.5625  # TDC uses same 640 MHz clock as ToA (1.5625 ns period)
         MAX_CHUNK_BYTES = 65535
         TIMER_TICK_NS = 409.6
         PACKET_SIZE = 8
@@ -1032,7 +1053,7 @@ class Lens:
             return struct.pack("<Q", lsb_word) + struct.pack("<Q", msb_word)
         
         if traced_data is None or len(traced_data) == 0:
-            if verbosity >= 2:
+            if verbosity >= VerbosityLevel.DETAILED:
                 print("No traced photon data provided")
             return
         
@@ -1042,47 +1063,54 @@ class Lens:
         if "neutron_id" in df.columns:
             df = df.sort_values(by=["neutron_id", "toa2"]).reset_index(drop=True)
         
-        if verbosity >= 2:
+        if verbosity >= VerbosityLevel.DETAILED:
             print(f"\nProcessing {len(df)} events for TPX3 export")
         
         # Validate required columns
         required = ["pixel_x", "pixel_y", "toa2", "time_diff", "pulse_id", "pulse_time_ns"]
         missing = [col for col in required if col not in df.columns]
         if missing:
-            if verbosity >= 2:
+            if verbosity >= VerbosityLevel.DETAILED:
                 print(f"Missing required columns: {missing}")
             return
         
         # Setup output directory
         out_dir = self.archive / "tpx3Files"
-        if out_dir.exists() and clean:
+        if out_dir.exists() and clean and (file_index is None or file_index == 0):
             shutil.rmtree(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         
         # Determine base filename
-        base_name = "traced_data"
+        base_name = f"traced_data_{file_index}" if file_index is not None else "traced_data"
         
         # Build trigger time dictionary from pulse_time_ns
-        trigger_time_dict = {}  # Maps pulse_id -> pulse_time_ps
+        # Convert to TDC clock ticks (1.5625 ns resolution)
+        trigger_time_dict = {}  # Maps pulse_id -> tdc_ticks
         unique_pulse_ids = df['pulse_id'].dropna().unique()
         for pulse_id in unique_pulse_ids:
             pulse_rows = df[df['pulse_id'] == pulse_id]
             if not pulse_rows.empty:
                 trigger_time_ns = pulse_rows['pulse_time_ns'].iloc[0]  # Take first occurrence
-                trigger_time_ps = int(trigger_time_ns * 1000)  # Convert ns to ps
-                trigger_time_dict[int(pulse_id)] = trigger_time_ps
+                # Convert ns to TDC ticks (1.5625 ns resolution)
+                tdc_ticks = int(round(trigger_time_ns / TDC_TICK_NS))
+                trigger_time_dict[int(pulse_id)] = tdc_ticks
         
-        if verbosity >= 2:
+        if verbosity >= VerbosityLevel.DETAILED:
             print(f"  Using {len(trigger_time_dict)} trigger times from pulse_time_ns")
             print(f"  Pulse IDs available: {sorted(trigger_time_dict.keys())[:10]}...")
-
+            if trigger_time_dict:
+                sample_times_ns = [trigger_time_dict[pid] * TDC_TICK_NS for pid in sorted(trigger_time_dict.keys())[:10]]
+                sample_ticks = [trigger_time_dict[pid] for pid in sorted(trigger_time_dict.keys())[:10]]
+                print(f"  Trigger times (ns): {sample_times_ns}...")
+                print(f"  Trigger times (ticks): {sample_ticks}...")
+        
         # Extract data
         px_i = np.clip(df["pixel_x"].astype(np.int64), 0, sensor_size - 1)
         py_i = np.clip(df["pixel_y"].astype(np.int64), 0, sensor_size - 1)
         toa_ns = df["toa2"].astype(float).to_numpy()
         tot_ns = np.maximum(df["time_diff"].astype(float).to_numpy(), 1.0).astype(np.int64)
         
-        # Convert ToA to ticks (1.256 ns)
+        # Convert ToA to ticks (1.5625 ns)
         toa_ticks = np.round(toa_ns / TICK_NS).astype(np.int64)
         
         # Convert TOT to ticks (1 ns resolution)
@@ -1100,7 +1128,7 @@ class Lens:
         # Timer values for GTS
         timer_ticks = (toa_ticks / (TIMER_TICK_NS / TICK_NS)).astype(np.int64)
         
-        if verbosity >= 2:
+        if verbosity >= VerbosityLevel.DETAILED:
             print(f"  ToA range: {toa_ns.min():.2f} - {toa_ns.max():.2f} ns")
             print(f"  TOT range: {tot_ns.min():.2f} - {tot_ns.max():.2f} ns")
             print(f"  Pixel range: x=[{px_i.min()}, {px_i.max()}], y=[{py_i.min()}, {py_i.max()}]")
@@ -1131,20 +1159,20 @@ class Lens:
                     pulse_id = pulse_ids[indices[0]]
                     unique_pulse_ids = np.unique(pulse_ids[indices])
                     if len(unique_pulse_ids) > 1:
-                        if verbosity >= 2:
+                        if verbosity >= VerbosityLevel.DETAILED:
                             print(f"  Warning: neutron_id {nid} has multiple pulse_ids: {unique_pulse_ids}, using first: {pulse_id}")
                     
-                    trigger_time_ps = trigger_time_dict.get(int(pulse_id))
+                    trigger_time_ticks = trigger_time_dict.get(int(pulse_id))
                     
                     file_groups.append({
                         'start_idx': int(indices[0]),
                         'end_idx': int(indices[-1] + 1),
                         'neutron_id': int(nid),
                         'pulse_id': int(pulse_id),
-                        'trigger_time_ps': trigger_time_ps
+                        'trigger_time_ticks': trigger_time_ticks
                     })
             
-            if verbosity >= 2:
+            if verbosity >= VerbosityLevel.DETAILED:
                 print(f"  Split into {len(unique_neutron_ids)} files (one per neutron)")
                 
         elif "neutron_id" in df.columns:
@@ -1202,7 +1230,7 @@ class Lens:
                     'trigger_times': group_triggers
                 })
             
-            if verbosity >= 2:
+            if verbosity >= VerbosityLevel.DETAILED:
                 print(f"  Split into {len(file_groups)} files (auto grouping)")
         else:
             file_groups.append({
@@ -1210,10 +1238,10 @@ class Lens:
                 'end_idx': len(df),
                 'neutron_id': None,
                 'pulse_id': None,
-                'trigger_time_ps': None
+                'trigger_time_ticks': None
             })
         
-        if verbosity >= 2:
+        if verbosity >= VerbosityLevel.DETAILED:
             print(f"  Writing {len(file_groups)} TPX3 file(s)")
         
         # Write files
@@ -1222,45 +1250,70 @@ class Lens:
             start_idx = group['start_idx']
             end_idx = group['end_idx']
             
-            # Build initial GTS pair
-            initial_timer = timer_ticks[start_idx] if start_idx < len(timer_ticks) else 0
+            # Build initial GTS pair - use trigger time if available, otherwise first pixel time
+            if split_method == "event":
+                trigger_ticks = group.get('trigger_time_ticks')
+                initial_timer = trigger_ticks if trigger_ticks is not None else (timer_ticks[start_idx] if start_idx < len(timer_ticks) else 0)
+            else:
+                # For auto mode, use earliest trigger time in this group
+                trigger_times = group.get('trigger_times', {})
+                if trigger_times:
+                    min_trigger = min(t for t in trigger_times.values() if t is not None)
+                    initial_timer = int(min_trigger / (TIMER_TICK_NS / TDC_TICK_NS)) if min_trigger is not None else (timer_ticks[start_idx] if start_idx < len(timer_ticks) else 0)
+                else:
+                    initial_timer = timer_ticks[start_idx] if start_idx < len(timer_ticks) else 0
+            
             file_content = encode_gts_pair(initial_timer)
             
             # Add TDC trigger(s)
             triggers_written = 0
             
             if split_method == "event":
-                trigger_time_ps = group.get('trigger_time_ps')
+                trigger_ticks = group.get('trigger_time_ticks')
                 pulse_id = group.get('pulse_id')
                 
-                if trigger_time_ps is not None:
-                    trig_ticks = int(trigger_time_ps / (TICK_NS * 1000))
-                    trig_counter = file_idx & 0xFFF
-                    timestamp = trig_ticks & ((1 << 35) - 1)
-                    tdc_word = (0x6 << 60) | (trig_counter << 44) | (timestamp << 9)
+                if trigger_ticks is not None:
+                    # TDC timestamp field is 35 bits (bits 43-9)
+                    timestamp = trigger_ticks & ((1 << 35) - 1)
+                    trig_counter = pulse_id & 0xFFF  # 12-bit trigger counter
+                    # Stamp field (bits 8-5) set to 0
+                    tdc_word = (0x6 << 60) | (trig_counter << 44) | (timestamp << 9) | (0 << 5)
                     file_content += struct.pack("<Q", tdc_word)
                     triggers_written = 1
                     
-                    if verbosity >= 2:
-                        print(f"  File {file_idx + 1}: Added TDC trigger for pulse_id {pulse_id} at {trigger_time_ps} ps")
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        trigger_time_ns = trigger_ticks * TDC_TICK_NS
+                        first_pixel_toa = toa_ticks[start_idx] * TICK_NS if start_idx < len(toa_ticks) else 0
+                        print(f"  File {file_idx + 1}: Added TDC trigger for pulse_id {pulse_id}")
+                        print(f"    Trigger time: {trigger_time_ns:.1f} ns ({trigger_ticks} ticks)")
+                        print(f"    First pixel ToA: {first_pixel_toa:.1f} ns")
+                        print(f"    Time difference: {first_pixel_toa - trigger_time_ns:.1f} ns")
+                        print(f"    GTS timer: {initial_timer} ticks ({initial_timer * TIMER_TICK_NS:.1f} ns)")
                 else:
-                    if verbosity >= 2:
+                    if verbosity >= VerbosityLevel.DETAILED:
                         pulse_info = f"pulse_id {pulse_id}" if pulse_id is not None else "no pulse_id"
                         print(f"  File {file_idx + 1}: No trigger time found ({pulse_info})")
             else:
                 trigger_times = group.get('trigger_times', {})
                 
-                for trig_idx, (pulse_id, trigger_time_ps) in enumerate(sorted(trigger_times.items())):
-                    if trigger_time_ps is not None:
-                        trig_ticks = int(trigger_time_ps / (TICK_NS * 1000))
-                        trig_counter = (file_idx * 100 + trig_idx) & 0xFFF
-                        timestamp = trig_ticks & ((1 << 35) - 1)
-                        tdc_word = (0x6 << 60) | (trig_counter << 44) | (timestamp << 9)
+                for trig_idx, (pulse_id, trigger_ticks) in enumerate(sorted(trigger_times.items())):
+                    if trigger_ticks is not None:
+                        # TDC timestamp field is 35 bits (bits 43-9)
+                        timestamp = trigger_ticks & ((1 << 35) - 1)
+                        trig_counter = pulse_id & 0xFFF  # 12-bit trigger counter
+                        # Stamp field (bits 8-5) set to 0
+                        tdc_word = (0x6 << 60) | (trig_counter << 44) | (timestamp << 9) | (0 << 5)
                         file_content += struct.pack("<Q", tdc_word)
                         triggers_written += 1
                 
-                if verbosity >= 2 and triggers_written > 0:
+                if verbosity >= VerbosityLevel.DETAILED and triggers_written > 0:
                     print(f"  File {file_idx + 1}: Added {triggers_written} TDC trigger(s)")
+                    if trigger_times and start_idx < len(toa_ticks):
+                        first_pixel_toa = toa_ticks[start_idx] * TICK_NS
+                        earliest_trigger = min(t * TDC_TICK_NS for t in trigger_times.values() if t is not None)
+                        print(f"    First pixel ToA: {first_pixel_toa:.1f} ns")
+                        print(f"    Earliest trigger: {earliest_trigger:.1f} ns")
+                        print(f"    GTS timer: {initial_timer} ticks ({initial_timer * TIMER_TICK_NS:.1f} ns)")
             
             # Add pixel packets
             for j in range(start_idx, end_idx):
@@ -1284,12 +1337,12 @@ class Lens:
             
             files_written.append((out_path, end_idx - start_idx, triggers_written))
             
-            if verbosity >= 2:
+            if verbosity >= VerbosityLevel.DETAILED:
                 neutron_info = f"neutron {neutron_id}" if neutron_id is not None else f"part {file_idx + 1}"
                 trigger_info = f", {triggers_written} trigger(s)" if triggers_written > 0 else ", no triggers"
                 print(f"  Wrote: {out_path.name}, {end_idx - start_idx} events, {file_size} bytes ({neutron_info}{trigger_info})")
         
-        if verbosity >= 2:
+        if verbosity >= VerbosityLevel.BASIC:
             total_triggers = sum(t for _, _, t in files_written)
             if len(files_written) == 1:
                 print(f"✅ Wrote {files_written[0][0].name}: {files_written[0][1]} events, {files_written[0][2]} trigger(s)")
