@@ -348,7 +348,9 @@ class Analysis:
                     print(f"Error occurred while processing a file!")
 
         if result_all != 0:
-            raise RuntimeError("Errors occurred during pixel2photon processing")
+            # raise RuntimeError("Errors occurred during pixel2photon processing")
+            if verbosity >= VerbosityLevel.BASIC:
+                print("Errors occurred during pixel2photon processing")
 
         if verbosity > VerbosityLevel.BASIC:
             print(f"Finished processing {file_cnt} .tpx3 files")
