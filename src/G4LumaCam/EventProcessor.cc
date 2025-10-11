@@ -6,7 +6,6 @@
 #include "G4SystemOfUnits.hh"
 #include <filesystem>
 #include <cstdlib>
-#include <set>
 
 EventProcessor::EventProcessor(const G4String& name, ParticleGenerator* gen) 
     : G4VSensitiveDetector(name), neutronCount(-1), batchCount(0), eventCount(0), 
@@ -16,15 +15,10 @@ EventProcessor::EventProcessor(const G4String& name, ParticleGenerator* gen)
 
 EventProcessor::~EventProcessor() {
     if (dataFile.is_open()) dataFile.close();
-    if (triggerFile.is_open()) triggerFile.close();
 }
 
 void EventProcessor::Initialize(G4HCofThisEvent*) {
     resetData();
-}
-
-void EventProcessor::ClearRecordedTriggerTimes() {
-    recordedTriggerTimes.clear();
 }
 
 void EventProcessor::resetData() {
@@ -156,6 +150,7 @@ G4bool EventProcessor::ProcessHits(G4Step* step, G4TouchableHistory*) {
             rec.nz = neutronPos[2] / mm;
             rec.neutronEnergy = neutronEnergy;
             rec.pulseId = particleGen ? particleGen->getCurrentPulseIndex() : -1;
+            rec.pulseTime = currentEventTriggerTime;
             photons.push_back(rec);
         }
     }
@@ -166,18 +161,9 @@ void EventProcessor::EndOfEvent(G4HCofThisEvent*) {
     if (eventCount == 0 && batchCount == 0) {
         G4cout << "EventProcessor: Starting new run with batchSize=" << Sim::batchSize << G4endl;
         openOutputFile();
-        openTriggerFile();
     }
     
     if (!photons.empty()) writeData();
-    
-    // Write trigger time only once per pulse
-    if (currentEventTriggerTime >= 0) {
-        if (recordedTriggerTimes.find(currentEventTriggerTime) == recordedTriggerTimes.end()) {
-            writeTriggerData(currentEventTriggerTime, particleGen ? particleGen->getCurrentPulseIndex() : -1);
-            recordedTriggerTimes.insert(currentEventTriggerTime);
-        }
-    }
     
     if (Sim::batchSize > 0) {
         eventCount++;
@@ -185,10 +171,8 @@ void EventProcessor::EndOfEvent(G4HCofThisEvent*) {
         if (eventCount >= Sim::batchSize) {
             batchCount++;
             eventCount = 0;
-            recordedTriggerTimes.clear();
             G4cout << "EventProcessor: Starting new batch " << batchCount << G4endl;
             openOutputFile();
-            openTriggerFile();
         }
     }
     resetData();
@@ -233,50 +217,8 @@ void EventProcessor::openOutputFile() {
                     FatalException, "Cannot open output file");
     }
     
-    dataFile << "id,parent_id,neutron_id,pulse_id,x,y,z,dx,dy,dz,toa,wavelength,"
+    dataFile << "id,parent_id,neutron_id,pulse_id,pulse_time_ns,x,y,z,dx,dy,dz,toa,wavelength,"
              << "parentName,px,py,pz,parentEnergy,nx,ny,nz,neutronEnergy\n";
-}
-
-void EventProcessor::openTriggerFile() {
-    if (triggerFile.is_open()) triggerFile.close();
-
-    std::filesystem::path currentPath = std::filesystem::current_path();
-    std::filesystem::path triggerDir = currentPath / "TriggerTimes";
-    
-    try {
-        std::filesystem::create_directories(triggerDir);
-        G4cout << "Created/verified directory: " << triggerDir << G4endl;
-    } catch (const std::filesystem::filesystem_error& e) {
-        G4cerr << "ERROR: Failed to create directory " << triggerDir << ": " << e.what() << G4endl;
-        G4Exception("EventProcessor::openTriggerFile()", "IO003", 
-                    FatalException, "Cannot create TriggerTimes directory");
-    }
-
-    G4String fileName = "trigger_sim_data";
-    if (Sim::batchSize > 0) {
-        fileName += "_" + std::to_string(batchCount) + ".csv";
-    } else {
-        fileName += ".csv";
-    }
-
-    std::filesystem::path fullPath = triggerDir / std::string(fileName);
-    
-    G4cout << "Opening trigger file: " << fullPath << G4endl;
-    
-    triggerFile.open(fullPath);
-    
-    if (!triggerFile.is_open()) {
-        G4cerr << "ERROR: Failed to open trigger file: " << fullPath << G4endl;
-        G4Exception("EventProcessor::openTriggerFile()", "IO004", 
-                    FatalException, "Cannot open trigger file");
-    }
-    
-    triggerFile << "pulse_id,trigger_time_ns\n";
-}
-
-void EventProcessor::writeTriggerData(G4double triggerTime, G4int pulseId) {
-    triggerFile << pulseId << "," << triggerTime << "\n";
-    triggerFile.flush();
 }
 
 void EventProcessor::writeData() {
@@ -285,6 +227,7 @@ void EventProcessor::writeData() {
                  << p.parentId << "," 
                  << p.neutronId << ","
                  << p.pulseId << "," 
+                 << p.pulseTime << ","
                  << p.x << "," 
                  << p.y << "," 
                  << p.z << ","

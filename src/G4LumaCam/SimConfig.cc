@@ -13,7 +13,7 @@ namespace Sim {
     G4double SCINT_THICKNESS = 2.0 * cm;
     G4double SAMPLE_THICKNESS = 7.5 * cm;
     G4double SCINT_SIZE = 12.0 * cm;
-    G4double SAMPLE_WIDTH = 12.0 * cm; // half width
+    G4double SAMPLE_WIDTH = 12.0 * cm; // Full width
     G4double COATING_THICKNESS = 0.01 * cm;
     G4double TMIN = 0.0 * ns;
     G4double TMAX = 0.0 * ns;
@@ -55,7 +55,7 @@ namespace Sim {
         
         if (FLUX <= 0 || FREQ <= 0 || totalNeutrons <= 0) {
             G4cout << "Pulse structure not computed: FLUX=" << FLUX << ", FREQ=" << FREQ
-                << ", totalNeutrons=" << totalNeutrons << G4endl;
+                   << ", totalNeutrons=" << totalNeutrons << G4endl;
             return;
         }
         

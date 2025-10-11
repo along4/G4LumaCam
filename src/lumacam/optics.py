@@ -109,7 +109,6 @@ class Lens:
                 focus_gaps: List[Tuple[int, float]] = None, dist_from_obj: float = None,
                 gap_between_lenses: float = 15.0, dist_to_screen: float = 20.0, fnumber: float = 8.0,
                 FOV: float = None, magnification: float = None,
-                load_triggers: bool = True,
                 verbosity: VerbosityLevel = VerbosityLevel.BASIC):
         """
         Initialize a Lens object with optical model and data management.
@@ -127,7 +126,6 @@ class Lens:
             fnumber (float, optional): F-number of the optical system. Defaults to 8.0.
             FOV (float, optional): Field of view in mm. Defaults to None. for 'nikor_58mm', FOV=120mm and for 'microscope', FOV=10mm, for 'zmx_file', FOV=60mm.
             magnification (float, optional): Manually define magnification. Defaults to None.
-            load_triggers (bool, optional): Whether to load trigger times from TriggerTimes directory. Defaults to True.
             verbosity (VerbosityLevel, optional): Verbosity level for logging. Defaults to VerbosityLevel.BASIC.
         Raises:
             ValueError: If invalid lens kind, missing zmx_file for 'zmx_file', or invalid parameters.
@@ -195,42 +193,10 @@ class Lens:
             else:
                 print("No valid simulation data files found, initializing empty DataFrame.")
                 self.data = pd.DataFrame()
-            
-            # Load trigger times if requested
-            self.trigger_data = None
-            if load_triggers:
-                trigger_dir = self.archive / "TriggerTimes"
-                if trigger_dir.exists():
-                    trigger_files = sorted(trigger_dir.glob("trigger_*.csv"))
-                    valid_trigger_dfs = []
-                    
-                    for file in tqdm(trigger_files, desc="Loading trigger times"):
-                        try:
-                            if file.stat().st_size > 100:
-                                df = pd.read_csv(file)
-                                if not df.empty and 'pulse_id' in df.columns and 'trigger_time_ns' in df.columns:
-                                    valid_trigger_dfs.append(df)
-                        except Exception as e:
-                            print(f"⚠️ Skipping {file.name} due to error: {e}")
-                            pass
-                    
-                    if valid_trigger_dfs:
-                        self.trigger_data = pd.concat(valid_trigger_dfs, ignore_index=True)
-                        # Remove duplicates, keeping first occurrence
-                        self.trigger_data = self.trigger_data.drop_duplicates(subset=['pulse_id'], keep='first')
-                        if verbosity > 1:
-                            print(f"✓ Loaded {len(self.trigger_data)} unique trigger times")
-                    else:
-                        if verbosity > 1:
-                            print("No valid trigger time files found.")
-                else:
-                    if verbosity > 1:
-                        print(f"TriggerTimes directory not found: {trigger_dir}")
 
         elif data is not None:
             self.data = data
             self.archive = Path("archive/test")
-            self.trigger_data = None
         else:
             raise ValueError("Either archive or data must be provided")
 
@@ -652,11 +618,10 @@ class Lens:
         """
         return [rays[i:i+chunk_size] for i in range(0, len(rays), chunk_size)]
 
-
     def trace_rays(self, opm=None, opm_file=None, zscan=0, zfine=0, fnumber=None,
                 join=False, print_stats=False, n_processes=None, chunk_size=1000, 
                 progress_bar=True, timeout=3600, return_df=False, 
-                verbosity=VerbosityLevel.BASIC, deadtime=None, blob=0.0, decay_time= 100, 
+                verbosity=VerbosityLevel.BASIC, deadtime=None, blob=0.0, decay_time=100, 
                 split_method="auto"):
         """
         Trace rays from simulation data files and save processed results, optionally applying pixel saturation and blob effect.
@@ -666,7 +631,7 @@ class Lens:
         of the default optical model. If deadtime or blob is provided, it applies the saturate_photons
         method with output_format="photons" and saves the results directly to the 'TracedPhotons'
         directory, including photon_count, time_diff, nz, pz, and pulse_id columns. It then calls _write_tpx3
-        to generate TPX3 files, reading trigger times from corresponding TriggerTimes CSV files (converting ns to ps).
+        to generate TPX3 files, using pulse_time_ns from the input data (converted to ps).
         Otherwise, it saves raw traced results to 'TracedPhotons' with nz, pz, and pulse_id columns.
 
         Parameters:
@@ -754,7 +719,6 @@ class Lens:
         # Set up directories
         sim_photons_dir = self.archive / "SimPhotons"
         traced_photons_dir = self.archive / "TracedPhotons"
-        trigger_times_dir = self.archive / "TriggerTimes"
         traced_photons_dir.mkdir(parents=True, exist_ok=True)
 
         # Find all non-empty sim_data_*.csv files
@@ -938,7 +902,6 @@ class Lens:
                     raise
 
                 # Create result DataFrame from processed chunks
-                # This preserves exact row-to-row correspondence with original df
                 result_df = self._create_result_dataframe(results_with_indices, df, join, verbosity)
 
                 # Verify alignment by checking row count
@@ -947,7 +910,7 @@ class Lens:
                         print(f"  ERROR: Row count mismatch. Expected {len(df)}, got {len(result_df)}")
                     continue
 
-                # Verify ID alignment (IDs already copied in _create_result_dataframe)
+                # Verify ID alignment
                 if verbosity >= VerbosityLevel.DETAILED:
                     if 'id' in result_df.columns and 'id' in df.columns:
                         id_matches = (result_df['id'].values == df['id'].values).sum()
@@ -967,7 +930,7 @@ class Lens:
                 # Apply saturation if deadtime or blob is provided
                 if deadtime is not None or blob > 0:
                     if verbosity >= VerbosityLevel.DETAILED:
-                        print(f"  Applying saturation with deadtime={deadtime} ns, blob={blob} pixels, decay_time=100ns")
+                        print(f"  Applying saturation with deadtime={deadtime} ns, blob={blob} pixels, decay_time={decay_time}ns")
                     
                     # Ensure required columns for saturation
                     required_cols = ['x2', 'y2', 'z2', 'toa2', 'id', 'neutron_id']
@@ -984,7 +947,6 @@ class Lens:
                         blob=blob,
                         output_format="photons",
                         min_tot=20.0,
-                        # pixel_size=None,
                         decay_time=decay_time,
                         verbosity=verbosity
                     )
@@ -1051,8 +1013,8 @@ class Lens:
         Convert traced photon data to valid TPX3 binary files.
         
         Writes x,y in pixel units (integers), toa in units of 1.256 ns (integers),
-        and tot in nanoseconds (integers). Reads trigger times from TriggerTimes directory
-        and writes TDC packets.
+        and tot in nanoseconds (integers). Uses pulse_time_ns from traced_data,
+        converting from nanoseconds to picoseconds for TDC packets.
         """
         # Constants
         TICK_NS = 1.256  # ToA tick size in nanoseconds
@@ -1084,7 +1046,7 @@ class Lens:
             print(f"\nProcessing {len(df)} events for TPX3 export")
         
         # Validate required columns
-        required = ["pixel_x", "pixel_y", "toa2", "time_diff"]
+        required = ["pixel_x", "pixel_y", "toa2", "time_diff", "pulse_id", "pulse_time_ns"]
         missing = [col for col in required if col not in df.columns]
         if missing:
             if verbosity >= 2:
@@ -1097,36 +1059,24 @@ class Lens:
             shutil.rmtree(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         
-        # Determine base filename for trigger lookup
-        traced_dir = self.archive / "TracedPhotons"
-        csv_files = sorted(traced_dir.glob("traced_sim_data_*.csv"))
-        
+        # Determine base filename
         base_name = "traced_data"
-        for csv_file in csv_files:
-            try:
-                file_df = pd.read_csv(csv_file)
-                if len(file_df) == len(traced_data):
-                    base_name = csv_file.stem.replace("traced_", "")
-                    break
-            except:
-                continue
         
-        # Load trigger times from self.trigger_data
-        trigger_time_dict = {}  # Maps pulse_id -> trigger_time_ps
-        if self.trigger_data is not None and not self.trigger_data.empty:
-            for _, row in self.trigger_data.iterrows():
-                pulse_id = int(row['pulse_id'])
-                trigger_time_ps = int(row['trigger_time_ns'] * 1000)  # ns to ps
-                trigger_time_dict[pulse_id] = trigger_time_ps
-            
-            if verbosity >= 2:
-                print(f"  Using {len(trigger_time_dict)} trigger times from memory")
-                print(f"  Pulse IDs available: {sorted(trigger_time_dict.keys())[:10]}...")
-        else:
-            if verbosity >= 2:
-                print(f"  Warning: No trigger data available")
+        # Build trigger time dictionary from pulse_time_ns
+        trigger_time_dict = {}  # Maps pulse_id -> pulse_time_ps
+        unique_pulse_ids = df['pulse_id'].dropna().unique()
+        for pulse_id in unique_pulse_ids:
+            pulse_rows = df[df['pulse_id'] == pulse_id]
+            if not pulse_rows.empty:
+                trigger_time_ns = pulse_rows['pulse_time_ns'].iloc[0]  # Take first occurrence
+                trigger_time_ps = int(trigger_time_ns * 1000)  # Convert ns to ps
+                trigger_time_dict[int(pulse_id)] = trigger_time_ps
+        
+        if verbosity >= 2:
+            print(f"  Using {len(trigger_time_dict)} trigger times from pulse_time_ns")
+            print(f"  Pulse IDs available: {sorted(trigger_time_dict.keys())[:10]}...")
 
-        # Extract data (pixel_x, pixel_y are already integers from saturate_photons)
+        # Extract data
         px_i = np.clip(df["pixel_x"].astype(np.int64), 0, sensor_size - 1)
         py_i = np.clip(df["pixel_y"].astype(np.int64), 0, sensor_size - 1)
         toa_ns = df["toa2"].astype(float).to_numpy()
@@ -1135,7 +1085,7 @@ class Lens:
         # Convert ToA to ticks (1.256 ns)
         toa_ticks = np.round(toa_ns / TICK_NS).astype(np.int64)
         
-        # Convert TOT to ticks (1 ns resolution, as specified)
+        # Convert TOT to ticks (1 ns resolution)
         tot_ticks = np.clip(tot_ns, 1, 0x3FF)
         
         # Decompose ToA
@@ -1172,26 +1122,25 @@ class Lens:
         
         if split_method == "event" and "neutron_id" in df.columns:
             neutron_ids = df["neutron_id"].to_numpy()
-            pulse_ids = df["pulse_id"].to_numpy() if "pulse_id" in df.columns else None
+            pulse_ids = df["pulse_id"].to_numpy()
             unique_neutron_ids = np.unique(neutron_ids)
             
             for nid in unique_neutron_ids:
                 indices = np.where(neutron_ids == nid)[0]
                 if len(indices) > 0:
-                    pulse_id = pulse_ids[indices[0]] if pulse_ids is not None else None
-                    if pulse_ids is not None:
-                        unique_pulse_ids = np.unique(pulse_ids[indices])
-                        if len(unique_pulse_ids) > 1:
-                            if verbosity >= 2:
-                                print(f"  Warning: neutron_id {nid} has multiple pulse_ids: {unique_pulse_ids}, using first: {pulse_id}")
+                    pulse_id = pulse_ids[indices[0]]
+                    unique_pulse_ids = np.unique(pulse_ids[indices])
+                    if len(unique_pulse_ids) > 1:
+                        if verbosity >= 2:
+                            print(f"  Warning: neutron_id {nid} has multiple pulse_ids: {unique_pulse_ids}, using first: {pulse_id}")
                     
-                    trigger_time_ps = trigger_time_dict.get(pulse_id) if pulse_id is not None else None
+                    trigger_time_ps = trigger_time_dict.get(int(pulse_id))
                     
                     file_groups.append({
                         'start_idx': int(indices[0]),
                         'end_idx': int(indices[-1] + 1),
                         'neutron_id': int(nid),
-                        'pulse_id': int(pulse_id) if pulse_id is not None else None,
+                        'pulse_id': int(pulse_id),
                         'trigger_time_ps': trigger_time_ps
                     })
             
@@ -1200,7 +1149,7 @@ class Lens:
                 
         elif "neutron_id" in df.columns:
             neutron_ids = df["neutron_id"].to_numpy()
-            pulse_ids = df["pulse_id"].to_numpy() if "pulse_id" in df.columns else None
+            pulse_ids = df["pulse_id"].to_numpy()
             
             neutron_boundaries = [0]
             for i in range(1, len(neutron_ids)):
@@ -1217,14 +1166,14 @@ class Lens:
                 end_idx = neutron_boundaries[i + 1]
                 
                 neutron_size = (end_idx - start_idx) * PACKET_SIZE
-                neutron_pulse_ids = set(pulse_ids[start_idx:end_idx]) if pulse_ids is not None else set()
+                neutron_pulse_ids = set(pulse_ids[start_idx:end_idx])
                 new_triggers = neutron_pulse_ids - current_triggers
                 neutron_size += len(new_triggers) * 8
                 
                 if current_group_size + neutron_size > MAX_CHUNK_BYTES:
                     if start_idx > current_group_start:
-                        group_pulse_ids = set(pulse_ids[current_group_start:start_idx]) if pulse_ids is not None else set()
-                        group_triggers = {pid: trigger_time_dict.get(pid) for pid in group_pulse_ids if pid in trigger_time_dict}
+                        group_pulse_ids = set(pulse_ids[current_group_start:start_idx])
+                        group_triggers = {pid: trigger_time_dict.get(int(pid)) for pid in group_pulse_ids if int(pid) in trigger_time_dict}
                         
                         file_groups.append({
                             'start_idx': current_group_start,
@@ -1242,8 +1191,8 @@ class Lens:
                     current_triggers.update(neutron_pulse_ids)
             
             if current_group_start < len(df):
-                group_pulse_ids = set(pulse_ids[current_group_start:]) if pulse_ids is not None else set()
-                group_triggers = {pid: trigger_time_dict.get(pid) for pid in group_pulse_ids if pid in trigger_time_dict}
+                group_pulse_ids = set(pulse_ids[current_group_start:])
+                group_triggers = {pid: trigger_time_dict.get(int(pid)) for pid in group_pulse_ids if int(pid) in trigger_time_dict}
                 
                 file_groups.append({
                     'start_idx': current_group_start,
@@ -1464,7 +1413,7 @@ class Lens:
             # Copy ID and metadata columns from original data for THIS specific row
             orig_row = original_df.iloc[orig_idx]
             
-            for col in ['id', 'neutron_id', 'pulse_id', 'parent_id', 'nz', 'pz']:
+            for col in ['id', 'neutron_id', 'pulse_id', 'parent_id', 'nz', 'pz', 'pulse_time_ns']:
                 if col in original_df.columns:
                     row[col] = orig_row[col]
             
@@ -1490,15 +1439,12 @@ class Lens:
                 if matches != len(result_df):
                     print(f"    ERROR: Only {matches}/{len(result_df)} IDs match after _create_result_dataframe!")
 
-        # convert position to pixels
-
+        # Convert position to pixels
         result_df["pixel_x"] = np.ceil((result_df["x2"]*self.reduction_ratio + 0.5*self.FOV)*256/self.FOV)
         result_df["pixel_y"] = np.ceil((result_df["y2"]*self.reduction_ratio + 0.5*self.FOV)*256/self.FOV)
-
-        # result_df["pixel_x"] = result_df["x2"]*self.reduction_ratio
-        # result_df["pixel_y"] = result_df["y2"]*self.reduction_ratio
         
         return result_df
+
 
 
     def saturate_photons(self, data: pd.DataFrame = None, deadtime: float = 600.0, blob: float = 0.0, 
@@ -1522,7 +1468,7 @@ class Lens:
         -----------
         data : pd.DataFrame, optional
             DataFrame containing photon data to process. If None, loads from 'TracedPhotons' directory.
-            Must have columns: pixel_x, pixel_y, toa2, id, neutron_id, pulse_id
+            Must have columns: pixel_x, pixel_y, toa2, id, neutron_id, pulse_id, pulse_time_ns
         deadtime : float, default 600.0
             Deadtime in nanoseconds for pixel saturation. During this window after first photon,
             pixel accumulates additional photons but doesn't reset.
@@ -1543,7 +1489,7 @@ class Lens:
         Returns:
         --------
         pd.DataFrame or None
-            Columns: pixel_x, pixel_y, toa2, photon_count, time_diff, id, neutron_id, pulse_id, nz, pz
+            Columns: pixel_x, pixel_y, toa2, photon_count, time_diff, id, neutron_id, pulse_id, pulse_time_ns, nz, pz
             - pixel_x, pixel_y: integer pixel positions
             - toa2: time of arrival in nanoseconds (first photon to hit pixel)
             - time_diff: time-over-threshold in nanoseconds (first to last photon)
@@ -1622,7 +1568,7 @@ class Lens:
                 continue
 
             # Validate required columns
-            required_cols = ['pixel_x', 'pixel_y', 'toa2', 'id', 'neutron_id', 'pulse_id']
+            required_cols = ['pixel_x', 'pixel_y', 'toa2', 'id', 'neutron_id', 'pulse_id', 'pulse_time_ns']
             missing_cols = [col for col in required_cols if col not in df.columns]
             if missing_cols:
                 if verbosity > VerbosityLevel.BASIC:
@@ -1649,6 +1595,7 @@ class Lens:
             photon_ids = df['id'].to_numpy()
             neutron_ids = df['neutron_id'].to_numpy()
             pulse_ids = df['pulse_id'].to_numpy()
+            pulse_times = df['pulse_time_ns'].to_numpy()
 
             # Get nz, pz from sim_df or df
             if sim_df is not None and len(sim_df) == len(df):
@@ -1721,7 +1668,7 @@ class Lens:
                         else:
                             # Deadtime expired - finalize previous pixel event
                             self._finalize_pixel_event(result_rows, pixel_key, pixel_info, 
-                                                    photon_ids, neutron_ids, pulse_ids, nz, pz, min_tot)
+                                                    photon_ids, neutron_ids, pulse_ids, pulse_times, nz, pz, min_tot)
                             # Start new pixel event (will be handled below)
                             del pixel_state[pixel_key]
                     
@@ -1739,7 +1686,7 @@ class Lens:
             # Finalize all remaining pixel events
             for pixel_key, pixel_info in pixel_state.items():
                 self._finalize_pixel_event(result_rows, pixel_key, pixel_info,
-                                        photon_ids, neutron_ids, pulse_ids, nz, pz, min_tot)
+                                        photon_ids, neutron_ids, pulse_ids, pulse_times, nz, pz, min_tot)
 
             # Create result DataFrame
             if not result_rows:
@@ -1787,9 +1734,8 @@ class Lens:
             print("\nNo results to return")
         return None
 
-
     def _finalize_pixel_event(self, result_rows, pixel_key, pixel_info,
-                            photon_ids, neutron_ids, pulse_ids, nz, pz, min_tot):
+                            photon_ids, neutron_ids, pulse_ids, pulse_times, nz, pz, min_tot):
         """Helper function to finalize and add a pixel event to results.
         
         Output format for saturate_photons (photons format):
@@ -1797,7 +1743,7 @@ class Lens:
         - toa2: time of arrival in nanoseconds (first photon)
         - time_diff: time-over-threshold in nanoseconds (TOT)
         - photon_count: number of photons
-        - id, neutron_id, pulse_id: from first photon
+        - id, neutron_id, pulse_id, pulse_time_ns: from first photon
         - nz, pz: from first photon
         """
         px_i, py_i = pixel_key
@@ -1820,12 +1766,13 @@ class Lens:
             'id': photon_ids[first_idx],
             'neutron_id': neutron_ids[first_idx],
             'pulse_id': pulse_ids[first_idx],
+            'pulse_time_ns': pulse_times[first_idx],
             'nz': nz[first_idx],
             'pz': pz[first_idx]
         })
 
     def _add_pixel_event(self, result_rows, px_i, py_i, window_events, df, 
-                        photon_ids, neutron_ids, pulse_ids, nz, pz,
+                        photon_ids, neutron_ids, pulse_ids, pulse_times, nz, pz,
                         pixel_size, min_tot, output_format):
         """Helper function to add a pixel event from a deadtime window.
         
@@ -1854,7 +1801,8 @@ class Lens:
                 'x': x_mm,
                 'y': y_mm,
                 'toa': toa_first,
-                'tot': tot_measured
+                'tot': tot_measured,
+                'pulse_time_ns': pulse_times[first_idx]
             })
         else:  # photons format
             # Use PIXEL coordinates, not first photon coordinates
@@ -1870,6 +1818,7 @@ class Lens:
                 'id': photon_ids[first_idx],           # From first photon to hit this pixel
                 'neutron_id': neutron_ids[first_idx],   # From first photon to hit this pixel
                 'pulse_id': pulse_ids[first_idx],       # From first photon to hit this pixel
+                'pulse_time_ns': pulse_times[first_idx], # From first photon to hit this pixel
                 'toa2': toa_first,
                 'photon_count': photon_count,
                 'time_diff': tot_measured,

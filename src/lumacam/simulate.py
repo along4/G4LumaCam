@@ -61,6 +61,7 @@ class Config:
     sample_material: str = "G4_Galactic"  # Material of the sample
     scintillator: str = "EJ200"  # Scintillator type: PVT, EJ-200, GS20
     sample_thickness: float = 0.2  # Sample thickness in cm (default 0.2 cm = 200 microns)
+    sample_width: float = 12.0  # Sample width in cm (default 12 cm)  
     scintillator_thickness: float = 20  # Scintillator thickness in mm (default is 20 mm)
     csv_batch_size: int = 0
     # Ion parameters for radioactive decay
@@ -299,6 +300,7 @@ class Config:
                 sample_material="G4_GRAPHITE",
                 scintillator="EJ200",
                 sample_thickness=7.5,  # 7.5 cm = 75 mm
+                sample_width=12.0,  # 12 cm = 120 mm
                 scintillator_thickness=2,  # 2 cm = 20 mm
                 csv_batch_size=10000,
             )
@@ -389,6 +391,7 @@ class Config:
 /lumacam/sampleMaterial {self.sample_material}
 /lumacam/scintMaterial {self.scintillator}
 /lumacam/sampleThickness {self.sample_thickness} cm
+/lumacam/sampleWidth {self.sample_width} cm
 /lumacam/scintThickness {self.scintillator_thickness} cm
 /lumacam/batchSize {self.csv_batch_size}
 /control/verbose 2
@@ -463,9 +466,6 @@ class Simulate:
         
         self.sim_dir = self.archive / "SimPhotons"
         self.sim_dir.mkdir(exist_ok=True, parents=True)
-        
-        self.trigger_dir = self.archive / "TriggerTimes"
-        self.trigger_dir.mkdir(exist_ok=True, parents=True)
 
         with resources.path('G4LumaCam', 'bin') as bin_path:
             self.lumacam_executable = os.path.join(bin_path, "lumacam")
@@ -503,24 +503,20 @@ class Simulate:
                 elif verbosity >= VerbosityLevel.BASIC and ('starts.' in line or 'Run' in line or 'G4Exception' in line):
                     output_queue.put(('output', line))
 
-    def clear_subfolders(self,verbosity: VerbosityLevel = VerbosityLevel.BASIC):
-        """Remove all contents of SimPhotons and TriggerTimes subfolders if they exist.
+    def clear_subfolders(self, verbosity: VerbosityLevel = VerbosityLevel.BASIC):
+        """Remove all contents of SimPhotons subfolder if it exists.
         This ensures that old simulation data does not interfere with new runs.
         Args:
             verbosity (VerbosityLevel): Level of verbosity for print statements.           
         """
-        for folder in [self.sim_dir, self.trigger_dir]:
-            if folder.exists():
-                for item in folder.iterdir():
-                    if item.is_file():
-                        item.unlink()
-                    elif item.is_dir():
-                        shutil.rmtree(item)
-                if verbosity >= VerbosityLevel.DETAILED:
-                    if folder == self.sim_dir:
-                        print(f"Cleared contents of {folder}")
-                    elif folder == self.trigger_dir:
-                        print(f"Cleared contents of {folder}")
+        if self.sim_dir.exists():
+            for item in self.sim_dir.iterdir():
+                if item.is_file():
+                    item.unlink()
+                elif item.is_dir():
+                    shutil.rmtree(item)
+            if verbosity >= VerbosityLevel.DETAILED:
+                print(f"Cleared contents of {self.sim_dir}")
 
     def run(self, 
             config_or_file: Optional[str | Config] = None, 
@@ -535,7 +531,7 @@ class Simulate:
         if not os.access(self.sim_dir, os.W_OK):
             raise PermissionError(f"No write permission in {self.sim_dir}")
 
-        # Clear SimPhotons and TriggerTimes subfolders
+        # Clear SimPhotons subfolder
         self.clear_subfolders(verbosity=verbosity)
 
         temp_macro = None

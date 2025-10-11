@@ -14,7 +14,7 @@ namespace Sim {
     extern G4double SCINT_THICKNESS;
     extern G4double SAMPLE_THICKNESS;
     extern G4double SCINT_SIZE;
-    extern G4double SAMPLE_WIDTH; // half width
+    extern G4double SAMPLE_WIDTH; // Full width
     extern G4double COATING_THICKNESS;
     static G4String sampleMaterial = "G4_GRAPHITE";
     static G4String scintillatorMaterial = "ScintillatorPVT";
@@ -22,7 +22,7 @@ namespace Sim {
     extern G4double TMAX;
     extern G4double FLUX; // Neutron flux in n/cm²/s
     extern G4double FREQ; // Pulse frequency in Hz
-    extern std::vector<G4double> pulseTimes; // Trigger times for pulses in ps
+    extern std::vector<G4double> pulseTimes; // Trigger times for pulses in ns
     extern std::vector<G4int> neutronsPerPulse; // Neutrons per pulse
 
     void SetScintThickness(G4double thickness);
