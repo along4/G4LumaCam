@@ -1003,6 +1003,7 @@ class Lens:
 
 
 
+
     def _write_tpx3(
         self,
         traced_data: pd.DataFrame = None,
@@ -1016,11 +1017,6 @@ class Lens:
         """
         Convert traced photon data to valid TPX3 binary files, following the SERVAL TPX3 raw file format.
         """
-        import struct
-        import numpy as np
-        import shutil
-        from pathlib import Path
-        
         # Constants
         TICK_NS = 1.5625  # ToA tick size (1.5625 ns)
         MAX_TDC_TIMESTAMP_S = (2**32) * 25e-9  # ~107.37 seconds
@@ -1033,8 +1029,7 @@ class Lens:
             timer_value = int(timer_value) & ((1 << 48) - 1)
             lsb_timer = timer_value & 0xFFFFFFFF
             lsb_word = (0x4 << 60) | (0x4 << 56) | (lsb_timer << 16)
-            msb_timer = (timer_value >> 32) & 0xFFFF
-            msb_word = (0x4 << 60) | (0x5 << 56) | (msb_timer << 16)
+            msb_word = (0x4 << 60) | (0x5 << 56) | ((timer_value >> 32) & 0xFFFF) << 16
             return struct.pack("<Q", lsb_word) + struct.pack("<Q", msb_word)
         
         def encode_tdc_packet(trigger_time_ns, trigger_counter, tdc_channel=1, edge_type='rising'):
@@ -1163,7 +1158,7 @@ class Lens:
         toa_ticks = np.round(toa_ns / TICK_NS).astype(np.int64)
         
         # Decompose ToA into packet fields
-        spidr_time = ((toa_ticks >> 18) & 0xFFFF).astype(np.int64)
+        spidr_time = ((toa_ticks >> 18) & 0xFFFF).astype(np.int64)  # 16 bits
         coarse_toa = ((toa_ticks >> 4) & 0x3FFF).astype(np.int64)
         ftoa = (15 - (toa_ticks & 0xF)).astype(np.int64)
         ftoa = np.clip(ftoa, 0, 15)
@@ -1171,21 +1166,8 @@ class Lens:
         # Convert ToT to ticks (10-bit, ~1ns resolution)
         tot_ticks = np.clip(np.round(tot_ns).astype(np.int64), 1, 0x3FF)
         
-        # Encode pixel address following TPX3 format
-        # From C++ decoder:
-        # dcol = (temp & 0x0FE0000000000000L) >> 52
-        # spix = (temp & 0x001F800000000000L) >> 45
-        # pix  = (temp & 0x0000700000000000L) >> 44
-        # x = dcol + pix / 4
-        # y = spix + (pix & 0x3)
-        #
-        # To encode:
-        # dcol = x - (x % 2) = x & 0xFE (even values: 0, 2, 4, ..., 254)
-        # spix = y - (y % 4) = y & 0xFC (multiples of 4: 0, 4, 8, ..., 252)
-        # pix = (x % 2) * 4 + (y % 4)  (0-7)
-        dcol = (px & 0xFE).astype(np.int64)
-        spix = (py & 0xFC).astype(np.int64)
-        pix = (((px & 1) << 2) | (py & 3)).astype(np.int64)
+        # Encode PixAddr directly (16 bits: 8 bits x, 8 bits y)
+        pix_addr = (px.astype(np.uint16) << 8) | py.astype(np.uint16)
         
         # Timer for GTS
         timer_ticks = (toa_ticks * TICK_NS / TIMER_TICK_NS).astype(np.int64)
@@ -1198,28 +1180,24 @@ class Lens:
             # Verify encoding
             print(f"  Encoding verification:")
             for i in [0, min(5, len(px)-1)]:
-                decoded_x = dcol[i] + pix[i] // 4
-                decoded_y = spix[i] + (pix[i] & 3)
+                decoded_x = (pix_addr[i] >> 8) & 0xFF
+                decoded_y = pix_addr[i] & 0xFF
                 match = "✓" if (decoded_x == px[i] and decoded_y == py[i]) else "✗"
-                print(f"    ({px[i]},{py[i]}) → dcol={dcol[i]}, spix={spix[i]}, pix={pix[i]} → ({decoded_x},{decoded_y}) {match}")
+                print(f"    ({px[i]},{py[i]}) → pix_addr={pix_addr[i]:04x} → ({decoded_x},{decoded_y}) {match}")
         
         # Encode pixel packets
         pixel_packets = []
         for j in range(len(df)):
             # Build 64-bit pixel packet
-            # Bits 60-63: 0xB (pixel data header)
-            # Bits 52-59: dcol (8 bits)
-            # Bits 45-51: spix (7 bits)
-            # Bits 44-46: pix (3 bits)
-            # Bits 30-43: ToA coarse (14 bits)
-            # Bits 20-29: ToT (10 bits)
-            # Bits 16-19: FToA (4 bits)
-            # Bits 0-15: SpidrTime (16 bits)
+            # Bits 63-60: 0xb (header)
+            # Bits 59-44: PixAddr (16 bits: 8 bits x, 8 bits y)
+            # Bits 43-30: ToA coarse (14 bits)
+            # Bits 29-20: ToT (10 bits)
+            # Bits 19-16: FToA (4 bits)
+            # Bits 15-0: SPIDR time (16 bits)
             pixel_word = (
                 (0xB << 60) |
-                ((int(dcol[j]) & 0xFF) << 52) |
-                ((int(spix[j]) & 0x7F) << 45) |
-                ((int(pix[j]) & 0x07) << 44) |
+                ((int(pix_addr[j]) & 0xFFFF) << 44) |
                 ((int(coarse_toa[j]) & 0x3FFF) << 30) |
                 ((int(tot_ticks[j]) & 0x3FF) << 20) |
                 ((int(ftoa[j]) & 0xF) << 16) |
@@ -1405,7 +1383,6 @@ class Lens:
                 print(f"✅ {files_written[0][0].name}: {files_written[0][1]} events, {files_written[0][2]} triggers")
             else:
                 print(f"✅ {len(files_written)} files, {total_trigs} triggers total")
-
                 
     def _align_chunk_results(self, chunk_result, indices, chunk_idx, verbosity):
         """
