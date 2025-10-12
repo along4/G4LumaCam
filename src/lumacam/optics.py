@@ -1015,39 +1015,21 @@ class Lens:
     ):
         """
         Convert traced photon data to valid TPX3 binary files, following the SERVAL TPX3 raw file format.
-        
-        Writes x,y in pixel units (integers), ToA in units of 1.5625 ns (integers),
-        and ToT in nanoseconds (integers). Uses pulse_time_ns from traced_data,
-        converting from nanoseconds to TDC clock ticks (260 ps resolution) for TDC packets.
-        
-        Parameters:
-        -----------
-        traced_data : pd.DataFrame
-            DataFrame with columns: pixel_x, pixel_y, toa2, time_diff, pulse_id, pulse_time_ns, neutron_id (optional)
-        chip_index : int, default 0
-            Index of the chip (0 for single-chip setups).
-        verbosity : int, default 1
-            Verbosity level (0=QUIET, 1=BASIC, 2=DETAILED).
-        sensor_size : int, default 256
-            Size of the sensor in pixels (256x256).
-        split_method : str, default "auto"
-            Method to split data into files: "auto" or "event".
-        clean : bool, default True
-            If True, remove existing tpx3Files directory before writing (only for file_index=0).
-        file_index : int, optional
-            Index of the input file to include in the output filename (e.g., traced_data_0.tpx3).
         """
+        import struct
+        import numpy as np
+        import shutil
+        from pathlib import Path
+        
         # Constants
-        TICK_NS = 1.5625  # ToA tick size in nanoseconds (1.5625 ns for Timepix3 native resolution)
-        TDC_TICK_NS = 0.260416666666667  # TDC clock resolution = 25ns / 4096 / 24 (exact)
-        # Note: From C++ code: time_unit=25./4096; tdc_time = coarsetime*25E-9 + trigtime_fine*time_unit*1E-9
-        MAX_TDC_TIMESTAMP = 107.3741824  # Maximum TDC timestamp in seconds (2^32 * 25e-9)
+        TICK_NS = 1.5625  # ToA tick size (1.5625 ns)
+        MAX_TDC_TIMESTAMP_S = (2**32) * 25e-9  # ~107.37 seconds
         MAX_CHUNK_BYTES = 65535
-        TIMER_TICK_NS = 409.6  # GTS timer tick size in nanoseconds
+        TIMER_TICK_NS = 409.6  # GTS timer tick
         PACKET_SIZE = 8
         
         def encode_gts_pair(timer_value):
-            """Encode a GTS packet pair (LSB + MSB)."""
+            """Encode Global Timestamp (GTS) packet pair."""
             timer_value = int(timer_value) & ((1 << 48) - 1)
             lsb_timer = timer_value & 0xFFFFFFFF
             lsb_word = (0x4 << 60) | (0x4 << 56) | (lsb_timer << 16)
@@ -1057,98 +1039,56 @@ class Lens:
         
         def encode_tdc_packet(trigger_time_ns, trigger_counter, tdc_channel=1, edge_type='rising'):
             """
-            Encode a TDC packet following TPX3 format.
+            Encode TDC trigger packet following TPX3 format.
             
-            From the C++ code analysis:
-            - Header h3 determines TDC channel and edge:
-            0x6f = TDC1 rising (type=0)
-            0x6a = TDC1 falling (type=1)
-            0x6e = TDC2 rising (type=2)
-            0x6b = TDC2 falling (type=3)
-            - Bits 44-55: 12-bit trigger counter (trigcnt)
-            - Bits 12-43: 32-bit coarse timestamp in 25ns units
-            - Bits 5-8: 4-bit tmpfine (12 phases of 320 MHz clock)
-            - Bits 0-11: Combined fine time (3 bits @ 3.125ns + 9 bits from tmpfine)
-            
-            The fine timestamp encoding from C++ code:
-            tmpfine = ((tmpfine-1) << 9) / 12
-            trigtime_fine = (bits 9-11) | (tmpfine & 0x1FF)
-            
-            Parameters:
-            -----------
-            trigger_time_ns : float
-                Trigger time in nanoseconds
-            trigger_counter : int
-                12-bit trigger counter (pulse_id)
-            tdc_channel : int
-                TDC channel (1 or 2)
-            edge_type : str
-                'rising' or 'falling'
+            From C++ decoder:
+            coarsetime = (temp >> 12) & 0xFFFFFFFF  (32 bits in 25ns units)
+            tmpfine = (temp >> 5) & 0xF  (4 bits, clock phase 1-12)
+            trigtime_fine = (temp & 0x0E00) | (((tmpfine-1) << 9) / 12)
+            tdc_time = coarsetime*25e-9 + trigtime_fine*(25/4096)*1e-9
             """
-            # Determine header based on channel and edge
+            # Determine header
             if tdc_channel == 1:
-                header = 0x6f if edge_type == 'rising' else 0x6a
-            else:  # channel 2
-                header = 0x6e if edge_type == 'rising' else 0x6b
+                header = 0x6F if edge_type == 'rising' else 0x6A
+            else:
+                header = 0x6E if edge_type == 'rising' else 0x6B
             
-            # Convert time to TDC units
-            # Coarse time: 25ns resolution (bits 12-43, 32 bits)
-            coarse_time = int(trigger_time_ns / 25.0) & 0xFFFFFFFF
+            # Coarse time: 25ns resolution (32 bits)
+            coarsetime = int(trigger_time_ns / 25.0) & 0xFFFFFFFF
             
-            # Fine time: sub-25ns resolution
-            # Residual in nanoseconds
-            fine_ns = trigger_time_ns - (coarse_time * 25.0)
+            # Fine time: sub-25ns component
+            fine_ns = trigger_time_ns - (coarsetime * 25.0)
             
-            # Convert to fine timestamp units
-            # Total fine time range is 0-4095 (12 bits) representing 0-25ns
-            # So each unit = 25/4096 ns ≈ 6.103515625 ps
-            fine_total = int(round(fine_ns / (25.0 / 4096.0))) & 0xFFF
+            # Convert to 12-bit trigtime_fine (0-4095 representing 0-25ns)
+            trigtime_fine = int(round(fine_ns * 4096.0 / 25.0)) & 0xFFF
             
-            # Split into coarse fine (3 MSB bits) and tmpfine-derived fine (9 LSB bits)
-            # Bits 9-11: coarse fine (3.125 ns per unit)
-            coarse_fine = (fine_total >> 9) & 0x7
+            # Extract upper 3 bits (bits 9-11)
+            fine_upper = (trigtime_fine >> 9) & 0x7
             
-            # Bits 0-8: fine from tmpfine encoding (derived from 12 clock phases)
-            # The C++ code shows: tmpfine = ((tmpfine-1) << 9) / 12
-            # To reverse this approximately: tmpfine ≈ (fine_low * 12 / 512) + 1
-            fine_low = fine_total & 0x1FF
-            # Reconstruct tmpfine (1-12 range based on 320 MHz clock phases)
-            tmpfine_approx = min(12, max(1, int(round((fine_low * 12.0 / 512.0) + 1))))
+            # Extract lower 9 bits
+            fine_lower = trigtime_fine & 0x1FF
             
-            # Re-encode following the C++ logic
-            tmpfine_encoded = ((tmpfine_approx - 1) << 9) // 12
-            trigtime_fine = (coarse_fine << 9) | (tmpfine_encoded & 0x1FF)
+            # Reverse tmpfine encoding: fine_lower ≈ ((tmpfine-1) << 9) / 12
+            # So: tmpfine ≈ (fine_lower * 12 / 512) + 1
+            if fine_lower == 0:
+                tmpfine = 1
+            else:
+                tmpfine = int(round((fine_lower * 12.0 / 512.0) + 1.0))
+                tmpfine = max(1, min(12, tmpfine))
             
-            # For simplicity and accuracy, we can directly use fine_total
-            # since it already represents the correct 12-bit fine time
-            trigtime_fine = fine_total & 0xFFF
-            
-            # Encode tmpfine for bits 5-8 (the raw phase value 1-12)
-            # From the decoder: tmpfine = (temp >> 5) & 0xF
-            tmpfine_raw = tmpfine_approx & 0xF
-            
-            # Build the 64-bit TDC packet
-            # Bits 60-63: 0x6
-            # Bits 56-59: channel/edge specific (F, A, E, or B)
-            # Bits 44-55: 12-bit trigger counter
-            # Bits 12-43: 32-bit coarse time
-            # Bits 9-11: upper 3 bits of fine time (from trigtime_fine)
-            # Bits 5-8: tmpfine (4 bits, clock phase 1-12)
-            # Bits 0-4: lower 5 bits of fine time
-            
+            # Build 64-bit TDC packet
             tdc_word = (
                 (int(header) << 56) |
                 ((trigger_counter & 0xFFF) << 44) |
-                ((coarse_time & 0xFFFFFFFF) << 12) |
-                ((tmpfine_raw & 0xF) << 5) |
-                ((trigtime_fine >> 9) << 9) |  # Bits 9-11
-                (trigtime_fine & 0x1FF)         # Bits 0-8
+                ((coarsetime & 0xFFFFFFFF) << 12) |
+                ((fine_upper & 0x7) << 9) |
+                ((tmpfine & 0xF) << 5)
             )
             
             return struct.pack("<Q", tdc_word)
         
         if traced_data is None or len(traced_data) == 0:
-            if verbosity >= VerbosityLevel.DETAILED:
+            if verbosity >= 2:
                 print("No traced photon data provided")
             return
         
@@ -1158,15 +1098,33 @@ class Lens:
         if "neutron_id" in df.columns:
             df = df.sort_values(by=["neutron_id", "toa2"]).reset_index(drop=True)
         
-        if verbosity >= VerbosityLevel.DETAILED:
+        if verbosity >= 2:
             print(f"\nProcessing {len(df)} events for TPX3 export")
         
         # Validate required columns
         required = ["pixel_x", "pixel_y", "toa2", "time_diff", "pulse_id", "pulse_time_ns"]
         missing = [col for col in required if col not in df.columns]
         if missing:
-            if verbosity >= VerbosityLevel.DETAILED:
+            if verbosity >= 2:
                 print(f"Missing required columns: {missing}")
+            return
+        
+        # Filter out invalid rows
+        valid_mask = (
+            df["pixel_x"].notna() & 
+            df["pixel_y"].notna() & 
+            df["toa2"].notna() & 
+            df["time_diff"].notna()
+        )
+        n_invalid = (~valid_mask).sum()
+        if n_invalid > 0:
+            if verbosity >= 2:
+                print(f"  Filtering out {n_invalid} rows with NaN values")
+            df = df[valid_mask].reset_index(drop=True)
+        
+        if len(df) == 0:
+            if verbosity >= 1:
+                print("  No valid data after filtering NaN values")
             return
         
         # Setup output directory
@@ -1175,88 +1133,114 @@ class Lens:
             shutil.rmtree(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         
-        # Determine base filename
         base_name = f"traced_data_{file_index}" if file_index is not None else "traced_data"
         
-        # Build trigger time dictionary from pulse_time_ns
-        trigger_time_dict = {}  # Maps pulse_id -> trigger_time_ns
-        unique_pulse_ids = df['pulse_id'].dropna().unique()
-        for pulse_id in unique_pulse_ids:
+        # Build trigger time dictionary
+        trigger_time_dict = {}
+        for pulse_id in df['pulse_id'].dropna().unique():
             pulse_rows = df[df['pulse_id'] == pulse_id]
             if not pulse_rows.empty:
                 trigger_time_ns = pulse_rows['pulse_time_ns'].iloc[0]
-                # Validate trigger time is within range
-                if trigger_time_ns > MAX_TDC_TIMESTAMP * 1e9:
-                    if verbosity >= VerbosityLevel.DETAILED:
-                        print(f"  Warning: pulse_id {pulse_id} trigger time {trigger_time_ns:.1f} ns exceeds max TDC timestamp")
-                    trigger_time_ns = MAX_TDC_TIMESTAMP * 1e9
+                if trigger_time_ns > MAX_TDC_TIMESTAMP_S * 1e9:
+                    if verbosity >= 2:
+                        print(f"  Warning: pulse_id {pulse_id} time exceeds TDC range")
+                    trigger_time_ns = MAX_TDC_TIMESTAMP_S * 1e9
                 trigger_time_dict[int(pulse_id)] = trigger_time_ns
         
-        if verbosity >= VerbosityLevel.DETAILED:
-            print(f"  Using {len(trigger_time_dict)} trigger times from pulse_time_ns")
+        if verbosity >= 2:
+            print(f"  Triggers: {len(trigger_time_dict)}")
             if trigger_time_dict:
-                sample_ids = sorted(trigger_time_dict.keys())[:5]
-                sample_times = [trigger_time_dict[pid] for pid in sample_ids]
-                print(f"  Sample pulse IDs: {sample_ids}")
-                print(f"  Sample trigger times (ns): {[f'{t:.2f}' for t in sample_times]}")
+                sample = list(trigger_time_dict.items())[:3]
+                print(f"  Sample: {[(k, f'{v:.1f}ns') for k, v in sample]}")
         
-        # Extract data
-        px_i = np.clip(df["pixel_x"].astype(np.int64), 0, sensor_size - 1)
-        py_i = np.clip(df["pixel_y"].astype(np.int64), 0, sensor_size - 1)
-        toa_ns = df["toa2"].astype(float).to_numpy()
-        tot_ns = np.maximum(df["time_diff"].astype(float).to_numpy(), 1.0).astype(np.int64)
+        # Extract and convert data
+        px = np.clip(df["pixel_x"].to_numpy().astype(np.int64), 0, sensor_size - 1)
+        py = np.clip(df["pixel_y"].to_numpy().astype(np.int64), 0, sensor_size - 1)
+        toa_ns = df["toa2"].to_numpy().astype(float)
+        tot_ns = np.maximum(df["time_diff"].to_numpy().astype(float), 1.0)
         
-        # Convert ToA to ticks (1.5625 ns)
+        # Convert ToA to 1.5625ns ticks
         toa_ticks = np.round(toa_ns / TICK_NS).astype(np.int64)
         
-        # Convert ToT to ticks (1 ns resolution, 10-bit range)
-        tot_ticks = np.clip(tot_ns, 1, 0x3FF)
-        
-        # Decompose ToA
+        # Decompose ToA into packet fields
         spidr_time = ((toa_ticks >> 18) & 0xFFFF).astype(np.int64)
-        coarse_raw = ((toa_ticks >> 4) & 0x3FFF).astype(np.int64)
+        coarse_toa = ((toa_ticks >> 4) & 0x3FFF).astype(np.int64)
         ftoa = (15 - (toa_ticks & 0xF)).astype(np.int64)
         ftoa = np.clip(ftoa, 0, 15)
         
-        # Pixel address
-        pixaddr = (py_i * sensor_size + px_i).astype(np.int64)
+        # Convert ToT to ticks (10-bit, ~1ns resolution)
+        tot_ticks = np.clip(np.round(tot_ns).astype(np.int64), 1, 0x3FF)
         
-        # Timer values for GTS
-        timer_ticks = (toa_ticks / (TIMER_TICK_NS / TICK_NS)).astype(np.int64)
+        # Encode pixel address following TPX3 format
+        # From C++ decoder:
+        # dcol = (temp & 0x0FE0000000000000L) >> 52
+        # spix = (temp & 0x001F800000000000L) >> 45
+        # pix  = (temp & 0x0000700000000000L) >> 44
+        # x = dcol + pix / 4
+        # y = spix + (pix & 0x3)
+        #
+        # To encode:
+        # dcol = x - (x % 2) = x & 0xFE (even values: 0, 2, 4, ..., 254)
+        # spix = y - (y % 4) = y & 0xFC (multiples of 4: 0, 4, 8, ..., 252)
+        # pix = (x % 2) * 4 + (y % 4)  (0-7)
+        dcol = (px & 0xFE).astype(np.int64)
+        spix = (py & 0xFC).astype(np.int64)
+        pix = (((px & 1) << 2) | (py & 3)).astype(np.int64)
         
-        if verbosity >= VerbosityLevel.DETAILED:
-            print(f"  ToA range: {toa_ns.min():.2f} - {toa_ns.max():.2f} ns")
-            print(f"  ToT range: {tot_ns.min():.2f} - {tot_ns.max():.2f} ns")
-            print(f"  Pixel range: x=[{px_i.min()}, {px_i.max()}], y=[{py_i.min()}, {py_i.max()}]")
+        # Timer for GTS
+        timer_ticks = (toa_ticks * TICK_NS / TIMER_TICK_NS).astype(np.int64)
         
-        # Encode all pixel packets
+        if verbosity >= 2:
+            print(f"  ToA: {toa_ns.min():.1f} - {toa_ns.max():.1f} ns")
+            print(f"  ToT: {tot_ns.min():.1f} - {tot_ns.max():.1f} ns")
+            print(f"  Pixels: x[{px.min()}, {px.max()}], y[{py.min()}, {py.max()}]")
+            
+            # Verify encoding
+            print(f"  Encoding verification:")
+            for i in [0, min(5, len(px)-1)]:
+                decoded_x = dcol[i] + pix[i] // 4
+                decoded_y = spix[i] + (pix[i] & 3)
+                match = "✓" if (decoded_x == px[i] and decoded_y == py[i]) else "✗"
+                print(f"    ({px[i]},{py[i]}) → dcol={dcol[i]}, spix={spix[i]}, pix={pix[i]} → ({decoded_x},{decoded_y}) {match}")
+        
+        # Encode pixel packets
         pixel_packets = []
         for j in range(len(df)):
-            p = int(pixaddr[j]) & 0xFFFF
-            c = int(coarse_raw[j]) & 0x3FFF
-            tot = int(tot_ticks[j]) & 0x3FF
-            ft = int(ftoa[j]) & 0xF
-            sp = int(spidr_time[j]) & 0xFFFF
-            
-            pixel_word = (0xB << 60) | (p << 44) | (c << 30) | (tot << 20) | (ft << 16) | sp
+            # Build 64-bit pixel packet
+            # Bits 60-63: 0xB (pixel data header)
+            # Bits 52-59: dcol (8 bits)
+            # Bits 45-51: spix (7 bits)
+            # Bits 44-46: pix (3 bits)
+            # Bits 30-43: ToA coarse (14 bits)
+            # Bits 20-29: ToT (10 bits)
+            # Bits 16-19: FToA (4 bits)
+            # Bits 0-15: SpidrTime (16 bits)
+            pixel_word = (
+                (0xB << 60) |
+                ((int(dcol[j]) & 0xFF) << 52) |
+                ((int(spix[j]) & 0x7F) << 45) |
+                ((int(pix[j]) & 0x07) << 44) |
+                ((int(coarse_toa[j]) & 0x3FFF) << 30) |
+                ((int(tot_ticks[j]) & 0x3FF) << 20) |
+                ((int(ftoa[j]) & 0xF) << 16) |
+                (int(spidr_time[j]) & 0xFFFF)
+            )
             pixel_packets.append(struct.pack("<Q", pixel_word))
         
-        # Determine file groups based on split_method
+        # Determine file groups
         file_groups = []
         
         if split_method == "event" and "neutron_id" in df.columns:
             neutron_ids = df["neutron_id"].to_numpy()
             pulse_ids = df["pulse_id"].to_numpy()
-            unique_neutron_ids = np.unique(neutron_ids)
             
-            for nid in unique_neutron_ids:
+            for nid in np.unique(neutron_ids):
                 indices = np.where(neutron_ids == nid)[0]
                 if len(indices) > 0:
                     pulse_id = pulse_ids[indices[0]]
-                    unique_pulse_ids = np.unique(pulse_ids[indices])
-                    if len(unique_pulse_ids) > 1:
-                        if verbosity >= VerbosityLevel.DETAILED:
-                            print(f"  Warning: neutron_id {nid} has multiple pulse_ids: {unique_pulse_ids}, using first: {pulse_id}")
+                    unique_pulses = np.unique(pulse_ids[indices])
+                    if len(unique_pulses) > 1 and verbosity >= 2:
+                        print(f"  Warning: neutron {nid} spans multiple pulses: {unique_pulses}")
                     
                     trigger_time_ns = trigger_time_dict.get(int(pulse_id))
                     
@@ -1268,66 +1252,73 @@ class Lens:
                         'trigger_time_ns': trigger_time_ns
                     })
             
-            if verbosity >= VerbosityLevel.DETAILED:
-                print(f"  Split into {len(unique_neutron_ids)} files (one per neutron)")
+            if verbosity >= 2:
+                print(f"  Files: {len(file_groups)} (one per neutron)")
                 
         elif "neutron_id" in df.columns:
             neutron_ids = df["neutron_id"].to_numpy()
             pulse_ids = df["pulse_id"].to_numpy()
             
-            neutron_boundaries = [0]
+            boundaries = [0]
             for i in range(1, len(neutron_ids)):
                 if neutron_ids[i] != neutron_ids[i-1]:
-                    neutron_boundaries.append(i)
-            neutron_boundaries.append(len(df))
+                    boundaries.append(i)
+            boundaries.append(len(df))
             
-            current_group_start = 0
-            current_group_size = 16  # GTS pair
+            current_start = 0
+            current_size = 16
             current_triggers = set()
             
-            for i in range(len(neutron_boundaries) - 1):
-                start_idx = neutron_boundaries[i]
-                end_idx = neutron_boundaries[i + 1]
+            for i in range(len(boundaries) - 1):
+                start = boundaries[i]
+                end = boundaries[i + 1]
                 
-                neutron_size = (end_idx - start_idx) * PACKET_SIZE
-                neutron_pulse_ids = set(pulse_ids[start_idx:end_idx])
-                new_triggers = neutron_pulse_ids - current_triggers
-                neutron_size += len(new_triggers) * 8
+                n_size = (end - start) * PACKET_SIZE
+                n_pulses = set(pulse_ids[start:end])
+                new_triggers = n_pulses - current_triggers
+                n_size += len(new_triggers) * 8
                 
-                if current_group_size + neutron_size > MAX_CHUNK_BYTES:
-                    if start_idx > current_group_start:
-                        group_pulse_ids = set(pulse_ids[current_group_start:start_idx])
-                        group_triggers = {pid: trigger_time_dict.get(int(pid)) for pid in group_pulse_ids if int(pid) in trigger_time_dict}
-                        
-                        file_groups.append({
-                            'start_idx': current_group_start,
-                            'end_idx': start_idx,
-                            'neutron_id': None,
-                            'pulse_ids': group_pulse_ids,
-                            'trigger_times': group_triggers
-                        })
+                if current_size + n_size > MAX_CHUNK_BYTES and start > current_start:
+                    group_pulses = set(pulse_ids[current_start:start])
+                    group_triggers = {
+                        int(pid): trigger_time_dict.get(int(pid))
+                        for pid in group_pulses
+                        if int(pid) in trigger_time_dict
+                    }
                     
-                    current_group_start = start_idx
-                    current_group_size = 16 + neutron_size
-                    current_triggers = neutron_pulse_ids.copy()
+                    file_groups.append({
+                        'start_idx': current_start,
+                        'end_idx': start,
+                        'neutron_id': None,
+                        'pulse_ids': group_pulses,
+                        'trigger_times': group_triggers
+                    })
+                    
+                    current_start = start
+                    current_size = 16 + n_size
+                    current_triggers = n_pulses.copy()
                 else:
-                    current_group_size += neutron_size
-                    current_triggers.update(neutron_pulse_ids)
+                    current_size += n_size
+                    current_triggers.update(n_pulses)
             
-            if current_group_start < len(df):
-                group_pulse_ids = set(pulse_ids[current_group_start:])
-                group_triggers = {pid: trigger_time_dict.get(int(pid)) for pid in group_pulse_ids if int(pid) in trigger_time_dict}
+            if current_start < len(df):
+                group_pulses = set(pulse_ids[current_start:])
+                group_triggers = {
+                    int(pid): trigger_time_dict.get(int(pid))
+                    for pid in group_pulses
+                    if int(pid) in trigger_time_dict
+                }
                 
                 file_groups.append({
-                    'start_idx': current_group_start,
+                    'start_idx': current_start,
                     'end_idx': len(df),
                     'neutron_id': None,
-                    'pulse_ids': group_pulse_ids,
+                    'pulse_ids': group_pulses,
                     'trigger_times': group_triggers
                 })
             
-            if verbosity >= VerbosityLevel.DETAILED:
-                print(f"  Split into {len(file_groups)} files (auto grouping)")
+            if verbosity >= 2:
+                print(f"  Files: {len(file_groups)} (auto-grouped)")
         else:
             file_groups.append({
                 'start_idx': 0,
@@ -1337,67 +1328,58 @@ class Lens:
                 'trigger_time_ns': None
             })
         
-        if verbosity >= VerbosityLevel.DETAILED:
-            print(f"  Writing {len(file_groups)} TPX3 file(s)")
-        
         # Write files
         files_written = []
         for file_idx, group in enumerate(file_groups):
             start_idx = group['start_idx']
             end_idx = group['end_idx']
             
-            # Build initial GTS pair
+            # Initialize with GTS pair
             if split_method == "event":
-                trigger_time_ns = group.get('trigger_time_ns')
-                initial_timer = int(trigger_time_ns / TIMER_TICK_NS) if trigger_time_ns is not None else (timer_ticks[start_idx] if start_idx < len(timer_ticks) else 0)
+                trigger_ns = group.get('trigger_time_ns')
+                timer = int(trigger_ns / TIMER_TICK_NS) if trigger_ns else timer_ticks[start_idx]
             else:
-                trigger_times = group.get('trigger_times', {})
-                initial_timer = int(min(trigger_times.values()) / TIMER_TICK_NS) if trigger_times else (timer_ticks[start_idx] if start_idx < len(timer_ticks) else 0)
+                triggers = group.get('trigger_times', {})
+                timer = int(min(triggers.values()) / TIMER_TICK_NS) if triggers else timer_ticks[start_idx]
             
-            file_content = encode_gts_pair(initial_timer)
+            content = encode_gts_pair(timer)
             
-            # Add TDC trigger(s)
-            triggers_written = 0
+            # Add TDC triggers
+            n_triggers = 0
             
             if split_method == "event":
-                trigger_time_ns = group.get('trigger_time_ns')
+                trigger_ns = group.get('trigger_time_ns')
                 pulse_id = group.get('pulse_id')
                 
-                if trigger_time_ns is not None and pulse_id is not None:
-                    # Encode TDC packet for TDC channel 1, rising edge
-                    tdc_packet = encode_tdc_packet(trigger_time_ns, pulse_id, tdc_channel=1, edge_type='rising')
-                    file_content += tdc_packet
-                    triggers_written = 1
+                if trigger_ns is not None and pulse_id is not None:
+                    tdc_packet = encode_tdc_packet(trigger_ns, pulse_id, 1, 'rising')
+                    content += tdc_packet
+                    n_triggers = 1
                     
-                    if verbosity >= VerbosityLevel.DETAILED:
-                        first_pixel_toa = toa_ticks[start_idx] * TICK_NS if start_idx < len(toa_ticks) else 0
-                        print(f"  File {file_idx + 1}: Added TDC trigger for pulse_id {pulse_id}")
-                        print(f"    Trigger time: {trigger_time_ns:.2f} ns")
-                        print(f"    First pixel ToA: {first_pixel_toa:.2f} ns")
-                        print(f"    Time difference: {first_pixel_toa - trigger_time_ns:.2f} ns")
-                else:
-                    if verbosity >= VerbosityLevel.DETAILED:
-                        print(f"  File {file_idx + 1}: No trigger time available")
+                    if verbosity >= 2:
+                        first_toa = toa_ns[start_idx]
+                        dt = first_toa - trigger_ns
+                        print(f"  File {file_idx + 1}: TDC @ {trigger_ns:.1f}ns, first hit @ {first_toa:.1f}ns (Δt={dt:.1f}ns)")
             else:
-                trigger_times = group.get('trigger_times', {})
+                triggers = group.get('trigger_times', {})
                 
-                for pulse_id, trigger_time_ns in sorted(trigger_times.items()):
-                    if trigger_time_ns is not None:
-                        tdc_packet = encode_tdc_packet(trigger_time_ns, pulse_id, tdc_channel=1, edge_type='rising')
-                        file_content += tdc_packet
-                        triggers_written += 1
+                for pulse_id, trigger_ns in sorted(triggers.items()):
+                    if trigger_ns is not None:
+                        tdc_packet = encode_tdc_packet(trigger_ns, pulse_id, 1, 'rising')
+                        content += tdc_packet
+                        n_triggers += 1
                 
-                if verbosity >= VerbosityLevel.DETAILED and triggers_written > 0:
-                    print(f"  File {file_idx + 1}: Added {triggers_written} TDC trigger(s)")
+                if verbosity >= 2 and n_triggers > 0:
+                    print(f"  File {file_idx + 1}: {n_triggers} TDC trigger(s)")
             
             # Add pixel packets
             for j in range(start_idx, end_idx):
-                file_content += pixel_packets[j]
+                content += pixel_packets[j]
             
             # Determine filename
             neutron_id = group.get('neutron_id')
             if split_method == "event" and neutron_id is not None:
-                out_path = out_dir / f"{base_name}_neutron{int(neutron_id):06d}.tpx3"
+                out_path = out_dir / f"{base_name}_neutron{neutron_id:06d}.tpx3"
             elif len(file_groups) > 1:
                 out_path = out_dir / f"{base_name}_part{file_idx + 1:03d}.tpx3"
             else:
@@ -1405,24 +1387,24 @@ class Lens:
             
             # Write file
             with open(out_path, "wb") as fh:
-                file_size = len(file_content)
+                file_size = len(content)
                 header = struct.pack("<4sBBH", b"TPX3", chip_index & 0xFF, 0, file_size & 0xFFFF)
                 fh.write(header)
-                fh.write(file_content)
+                fh.write(content)
             
-            files_written.append((out_path, end_idx - start_idx, triggers_written))
+            files_written.append((out_path, end_idx - start_idx, n_triggers))
             
-            if verbosity >= VerbosityLevel.DETAILED:
-                neutron_info = f"neutron {neutron_id}" if neutron_id is not None else f"part {file_idx + 1}"
-                trigger_info = f", {triggers_written} trigger(s)" if triggers_written > 0 else ", no triggers"
-                print(f"  Wrote: {out_path.name}, {end_idx - start_idx} events, {file_size} bytes ({neutron_info}{trigger_info})")
+            if verbosity >= 2:
+                info = f"neutron {neutron_id}" if neutron_id else f"part {file_idx + 1}"
+                trig_info = f", {n_triggers} trig" if n_triggers else ""
+                print(f"  Wrote {out_path.name}: {end_idx - start_idx} events{trig_info}")
         
-        if verbosity >= VerbosityLevel.BASIC:
-            total_triggers = sum(t for _, _, t in files_written)
+        if verbosity >= 1:
+            total_trigs = sum(t for _, _, t in files_written)
             if len(files_written) == 1:
-                print(f"✅ Wrote {files_written[0][0].name}: {files_written[0][1]} events, {files_written[0][2]} trigger(s)")
+                print(f"✅ {files_written[0][0].name}: {files_written[0][1]} events, {files_written[0][2]} triggers")
             else:
-                print(f"✅ Wrote {len(files_written)} files, {total_triggers} total trigger(s)")
+                print(f"✅ {len(files_written)} files, {total_trigs} triggers total")
 
                 
     def _align_chunk_results(self, chunk_result, indices, chunk_idx, verbosity):
