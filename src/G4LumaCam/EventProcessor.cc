@@ -216,6 +216,8 @@ void EventProcessor::openOutputFile() {
         G4Exception("EventProcessor::openOutputFile()", "IO002", 
                     FatalException, "Cannot open output file");
     }
+
+    dataFile << std::fixed;
     
     dataFile << "id,parent_id,neutron_id,pulse_id,pulse_time_ns,x,y,z,dx,dy,dz,toa,wavelength,"
              << "parentName,px,py,pz,parentEnergy,nx,ny,nz,neutronEnergy\n";
@@ -223,28 +225,56 @@ void EventProcessor::openOutputFile() {
 
 void EventProcessor::writeData() {
     for (const auto& p : photons) {
+        // Integer columns (no decimal needed)
         dataFile << p.id << "," 
                  << p.parentId << "," 
                  << p.neutronId << ","
-                 << p.pulseId << "," 
-                 << p.pulseTime << ","
+                 << p.pulseId << ",";
+        
+        // HIGH PRECISION: pulse_time_ns (critical for TDC timing)
+        // Need precision to ~0.001 ns even at 1000 seconds
+        dataFile << std::setprecision(15) << p.pulseTime << ",";
+        
+        // MEDIUM PRECISION: position coordinates (mm)
+        // 4 decimal places = 0.0001 mm = 0.1 micron precision
+        dataFile << std::setprecision(4) 
                  << p.x << "," 
                  << p.y << "," 
-                 << p.z << ","
+                 << p.z << ",";
+        
+        // MEDIUM PRECISION: direction cosines
+        // 6 decimal places for normalized vectors
+        dataFile << std::setprecision(6)
                  << p.dx << "," 
                  << p.dy << "," 
-                 << p.dz << ","
-                 << p.timeOfArrival << "," 
-                 << p.wavelength << "," 
-                 << p.parentType << ","
+                 << p.dz << ",";
+        
+        // HIGH PRECISION: timeOfArrival (critical for TDC timing)
+        dataFile << std::setprecision(15) << p.timeOfArrival << ",";
+        
+        // LOW PRECISION: wavelength (nm)
+        // 2 decimal places sufficient for wavelength
+        dataFile << std::setprecision(2) << p.wavelength << "," 
+                 << p.parentType << ",";
+        
+        // MEDIUM PRECISION: parent position (mm)
+        dataFile << std::setprecision(4)
                  << p.px << "," 
                  << p.py << "," 
-                 << p.pz << "," 
-                 << p.parentEnergy << ","
+                 << p.pz << ",";
+        
+        // MEDIUM PRECISION: energies (MeV)
+        // 4 decimal places = 0.1 keV precision
+        dataFile << std::setprecision(4) << p.parentEnergy << ",";
+        
+        // MEDIUM PRECISION: neutron position (mm)
+        dataFile << std::setprecision(4)
                  << p.nx << "," 
                  << p.ny << "," 
-                 << p.nz << "," 
-                 << p.neutronEnergy << "\n";
+                 << p.nz << ",";
+        
+        // MEDIUM PRECISION: neutron energy (MeV)
+        dataFile << std::setprecision(4) << p.neutronEnergy << "\n";
     }
     dataFile.flush();
 }
