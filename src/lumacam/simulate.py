@@ -388,11 +388,11 @@ class Config:
 /gps/ang/maxtheta {self.max_theta} {self.angle_unit}
 /gps/ang/mintheta {self.min_theta} {self.angle_unit}
 /run/printProgress {self.progress_interval}
-/lumacam/sampleMaterial {self.sample_material}
 /lumacam/scintMaterial {self.scintillator}
 /lumacam/sampleThickness {self.sample_thickness} cm
 /lumacam/sampleWidth {self.sample_width} cm
 /lumacam/scintThickness {self.scintillator_thickness} cm
+/lumacam/sampleMaterial {self.sample_material}
 /lumacam/batchSize {self.csv_batch_size}
 /control/verbose 2
 /run/beamOn {self.num_events}
