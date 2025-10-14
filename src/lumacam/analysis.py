@@ -645,6 +645,7 @@ class Analysis:
             return self._process_grouped(
                 params=params,
                 n_threads=n_threads,
+                suffix=suffix,  # Pass the suffix to _process_grouped
                 pixel2photon=pixel2photon,
                 photon2event=photon2event,
                 event2image=event2image,
@@ -670,10 +671,10 @@ class Analysis:
             **kwargs
         )
 
-
     def _process_grouped(self, 
                         params: Union[str, Dict[str, Any]] = None,
                         n_threads: int = 1,
+                        suffix: str = "",  # Added suffix parameter
                         pixel2photon: bool = True,
                         photon2event: bool = True,
                         event2image: bool = False,
@@ -688,6 +689,7 @@ class Analysis:
         Args:
             params: Parameters for processing (same as process())
             n_threads: Number of threads for parallel processing
+            suffix: Optional suffix for creating a subfolder within each group
             pixel2photon: If True, runs empir_pixel2photon_tpx3spidr
             photon2event: If True, runs empir_photon2event
             event2image: If True, runs empir_event2image
@@ -733,7 +735,11 @@ class Analysis:
             
             # Temporarily change archive to this group
             self.archive = group_folder
-            self.photon_files_dir = self.archive / "photonFiles"
+            # Set photon_files_dir to the suffixed subfolder's photonFiles directory
+            if suffix:
+                self.photon_files_dir = self.archive / suffix.strip("_") / "photonFiles"
+            else:
+                self.photon_files_dir = self.archive / "photonFiles"
             self.photon_files_dir.mkdir(parents=True, exist_ok=True)
             
             try:
@@ -745,11 +751,11 @@ class Analysis:
                     continue
                 
                 # Call _process_single directly (NOT process) to avoid recursion
-                # Use QUIET verbosity to suppress all internal progress bars
+                # Pass the suffix to create the suffixed subfolder within the group
                 self._process_single(
                     params=params,
                     n_threads=n_threads,
-                    suffix="",  # No suffix needed, already in group folder
+                    suffix=suffix,  # Pass the suffix to _process_single
                     pixel2photon=pixel2photon,
                     photon2event=photon2event,
                     event2image=event2image,
