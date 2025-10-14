@@ -482,7 +482,7 @@ class Analysis:
 
     def _run_export_photons(self, process_dir: Path, verbosity: VerbosityLevel = VerbosityLevel.QUIET):
         """
-        Exports .empirphot files from photonFiles subfolder to CSV files in ImportedPhotons subfolder.
+        Exports .empirphot files from photonFiles subfolder to CSV files in ExportedPhotons subfolder.
         
         Args:
             process_dir: Path to the processing directory (supports suffix).
@@ -492,8 +492,8 @@ class Analysis:
         if not photon_files_dir.exists():
             raise FileNotFoundError(f"{photon_files_dir} does not exist.")
         
-        imported_photons_dir = process_dir / "ImportedPhotons"
-        imported_photons_dir.mkdir(parents=True, exist_ok=True)
+        exported_photons_dir = process_dir / "ExportedPhotons"
+        exported_photons_dir.mkdir(parents=True, exist_ok=True)
         
         empirphot_files = sorted(photon_files_dir.glob("*.empirphot"))
         if not empirphot_files:
@@ -504,7 +504,7 @@ class Analysis:
         
         for empirphot_file in tqdm(empirphot_files, desc="Exporting photons", disable=(verbosity == VerbosityLevel.QUIET)):
             try:
-                photon_result_csv = imported_photons_dir / f"imported_{empirphot_file.stem}.csv"
+                photon_result_csv = exported_photons_dir / f"exported_{empirphot_file.stem}.csv"
                 cmd = [
                     str(self.empir_dirpath / "empir_export_photons"),
                     str(empirphot_file),
@@ -602,7 +602,70 @@ class Analysis:
         if verbosity > VerbosityLevel.BASIC:
             print("✅ Finished exporting and modifying all event files!")
 
-    def process_grouped(self, 
+    def process(self, 
+                params: Union[str, Dict[str, Any]] = None,
+                n_threads: int = 1,
+                suffix: str = "",
+                pixel2photon: bool = True,
+                photon2event: bool = True,
+                event2image: bool = False,
+                export_photons: bool = True,
+                export_events: bool = False,
+                verbosity: VerbosityLevel = VerbosityLevel.BASIC,
+                clean: bool = True,
+                **kwargs) -> None:
+        """
+        Process TPX3 files through the EMPIR pipeline.
+        
+        Automatically detects groupby structures and processes all groups if found.
+        
+        Args:
+            params: Either a path to a parameterSettings.json file, a JSON string, or a dictionary
+            n_threads: Number of threads for parallel processing
+            suffix: Optional suffix for creating a subfolder (ignored for groupby structures)
+            pixel2photon: If True, runs empir_pixel2photon_tpx3spidr
+            photon2event: If True, runs empir_photon2event
+            event2image: If True, runs empir_event2image
+            export_photons: If True, exports photons to CSV
+            export_events: If True, exports events to CSV
+            verbosity: Controls output level
+            clean: If True, deletes existing processed files
+            **kwargs: Additional parameters
+        """
+        # Auto-detect and handle groupby structure
+        if self._is_groupby:
+            if verbosity > VerbosityLevel.BASIC:
+                print("Detected groupby structure, processing all groups...")
+            return self._process_grouped(
+                params=params,
+                n_threads=n_threads,
+                pixel2photon=pixel2photon,
+                photon2event=photon2event,
+                event2image=event2image,
+                export_photons=export_photons,
+                export_events=export_events,
+                verbosity=verbosity,
+                clean=clean,
+                **kwargs
+            )
+        
+        # Call the single processing method
+        return self._process_single(
+            params=params,
+            n_threads=n_threads,
+            suffix=suffix,
+            pixel2photon=pixel2photon,
+            photon2event=photon2event,
+            event2image=event2image,
+            export_photons=export_photons,
+            export_events=export_events,
+            verbosity=verbosity,
+            clean=clean,
+            **kwargs
+        )
+
+
+    def _process_grouped(self, 
                         params: Union[str, Dict[str, Any]] = None,
                         n_threads: int = 1,
                         pixel2photon: bool = True,
@@ -645,13 +708,19 @@ class Analysis:
         
         # Store original archive
         original_archive = self.archive
+        original_photon_files_dir = self.photon_files_dir
         
-        # Process each group
-        for i, group_folder in enumerate(tqdm(self._groupby_subfolders, 
-                                            desc="Processing groups",
-                                            disable=(verbosity == VerbosityLevel.QUIET))):
+        # Process each group - show progress bar at BASIC level or higher
+        group_iter = enumerate(self._groupby_subfolders)
+        if verbosity >= VerbosityLevel.BASIC:
+            group_iter = enumerate(tqdm(self._groupby_subfolders, 
+                                        desc=f"Processing groups",
+                                        position=0,
+                                        leave=True))
+        
+        for i, group_folder in group_iter:
             
-            if verbosity > VerbosityLevel.BASIC:
+            if verbosity >= VerbosityLevel.DETAILED:
                 print(f"\n{'─'*60}")
                 print(f"Group {i+1}/{len(self._groupby_subfolders)}: {group_folder.name}")
                 print(f"{'─'*60}")
@@ -669,8 +738,9 @@ class Analysis:
                         print(f"  No TPX3 files found in {group_folder.name}, skipping")
                     continue
                 
-                # Process this group
-                self.process(
+                # Call _process_single directly (NOT process) to avoid recursion
+                # Use QUIET verbosity to suppress all internal progress bars
+                self._process_single(
                     params=params,
                     n_threads=n_threads,
                     suffix="",  # No suffix needed, already in group folder
@@ -679,17 +749,17 @@ class Analysis:
                     event2image=event2image,
                     export_photons=export_photons,
                     export_events=export_events,
-                    verbosity=verbosity,
+                    verbosity=VerbosityLevel.QUIET,  # Always QUIET for internal processing
                     clean=clean,
                     **kwargs
                 )
                 
-                if verbosity > VerbosityLevel.BASIC:
+                if verbosity >= VerbosityLevel.DETAILED:
                     print(f"✓ Completed group '{group_folder.name}'")
             
             except Exception as e:
                 if verbosity > VerbosityLevel.BASIC:
-                    print(f"✗ Error processing group '{group_folder.name}': {e}")
+                    print(f"\n✗ Error processing group '{group_folder.name}': {e}")
                 if verbosity >= VerbosityLevel.DETAILED:
                     import traceback
                     traceback.print_exc()
@@ -697,26 +767,25 @@ class Analysis:
             finally:
                 # Restore original archive
                 self.archive = original_archive
-                self.photon_files_dir = self.archive / "photonFiles"
+                self.photon_files_dir = original_photon_files_dir
         
         if verbosity > VerbosityLevel.BASIC:
             print(f"\n{'='*60}")
             print(f"✓ Completed all {len(self._groupby_subfolders)} groups")
             print(f"{'='*60}\n")
 
-
-    def process(self, 
-                params: Union[str, Dict[str, Any]] = None,
-                n_threads: int = 1,
-                suffix: str = "",
-                pixel2photon: bool = True,
-                photon2event: bool = True,
-                event2image: bool = False,
-                export_photons: bool = True,
-                export_events: bool = False,
-                verbosity: VerbosityLevel = VerbosityLevel.BASIC,
-                clean: bool = True,
-                **kwargs) -> None:
+    def _process_single(self, 
+                        params: Union[str, Dict[str, Any]] = None,
+                        n_threads: int = 1,
+                        suffix: str = "",
+                        pixel2photon: bool = True,
+                        photon2event: bool = True,
+                        event2image: bool = False,
+                        export_photons: bool = True,
+                        export_events: bool = False,
+                        verbosity: VerbosityLevel = VerbosityLevel.BASIC,
+                        clean: bool = True,
+                        **kwargs) -> None:
         """
         Process TPX3 files through the EMPIR pipeline.
         
@@ -739,7 +808,7 @@ class Analysis:
         if self._is_groupby:
             if verbosity > VerbosityLevel.BASIC:
                 print("Detected groupby structure, processing all groups...")
-            return self.process_grouped(
+            return self._process_grouped(
                 params=params,
                 n_threads=n_threads,
                 pixel2photon=pixel2photon,

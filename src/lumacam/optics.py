@@ -981,7 +981,7 @@ class Lens:
                     )
 
                 # Print statistics if requested
-                if print_stats and verbosity >= VerbosityLevel.BASIC:
+                if print_stats and verbosity > VerbosityLevel.BASIC:
                     self._print_tracing_stats(csv_file.name, df, result_df)
 
                 if return_df:
@@ -1916,7 +1916,6 @@ class Lens:
             })
 
 
-
     def groupby(self, column: str, low: float = None, high: float = None, 
                 step: float = None, bins: List[float] = None, 
                 labels: List[str] = None, verbosity: VerbosityLevel = VerbosityLevel.BASIC):
@@ -2073,6 +2072,8 @@ class Lens:
             print(f"\n✓ Groupby complete. Created {len(labels)} groups in: {groupby_dir}")
         
         return self
+
+
 
 
     def trace_rays_grouped(self, deadtime: float = None, blob: float = 0.0, 
