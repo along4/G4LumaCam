@@ -25,6 +25,7 @@ from contextlib import redirect_stdout
 import tempfile
 import os
 import struct
+import json
 import shutil
 
 class VerbosityLevel(IntEnum):
@@ -1377,9 +1378,9 @@ class Lens:
                 trig_info = f", {n_triggers} trig" if n_triggers else ""
                 print(f"  Wrote {out_path.name}: {end_idx - start_idx} events{trig_info}")
         
-        if verbosity >= 1:
+        if verbosity >= 2:
             total_trigs = sum(t for _, _, t in files_written)
-            if len(files_written) == 1:
+            if len(files_written) == 2:
                 print(f"✅ {files_written[0][0].name}: {files_written[0][1]} events, {files_written[0][2]} triggers")
             else:
                 print(f"✅ {len(files_written)} files, {total_trigs} triggers total")
@@ -1641,7 +1642,7 @@ class Lens:
 
         all_results = []
         file_desc = f"Processing {len(dfs)} files" if save_results else "Processing provided data"
-        file_iter = tqdm(dfs, desc=file_desc, disable=not (verbosity >= VerbosityLevel.BASIC))
+        file_iter = tqdm(dfs, desc=file_desc, disable=not (verbosity > VerbosityLevel.BASIC))
 
         for i, (df, sim_df) in enumerate(file_iter):
             file_name = f"provided_data_{i}.csv" if not save_results else Path(df.name).name
@@ -1913,3 +1914,282 @@ class Lens:
                 'nz': nz[first_idx],                    # From first photon to hit this pixel
                 'pz': pz[first_idx]                     # From first photon to hit this pixel
             })
+
+
+
+    def groupby(self, column: str, low: float = None, high: float = None, 
+                step: float = None, bins: List[float] = None, 
+                labels: List[str] = None, verbosity: VerbosityLevel = VerbosityLevel.BASIC):
+        """
+        Group simulation data by a column and create subfolders with filtered data.
+        
+        Args:
+            column (str): Column name to group by (e.g., 'nz', 'neutronEnergy', 'pulse_id')
+            low (float, optional): Lower bound for binning
+            high (float, optional): Upper bound for binning
+            step (float, optional): Step size for bins
+            bins (List[float], optional): Custom bin edges (alternative to low/high/step)
+            labels (List[str], optional): Custom labels for bins
+            verbosity (VerbosityLevel): Controls output level
+        
+        Returns:
+            Lens: Self for method chaining
+        
+        Raises:
+            ValueError: If column doesn't exist or invalid parameters
+        """
+        if self.data.empty:
+            raise ValueError("No simulation data available. Load data first.")
+        
+        if column not in self.data.columns:
+            raise ValueError(f"Column '{column}' not found in data. Available columns: {list(self.data.columns)}")
+        
+        # Create bins
+        if bins is None:
+            if low is None or high is None or step is None:
+                raise ValueError("Must provide either 'bins' or all of 'low', 'high', 'step'")
+            bins = np.arange(low, high + step, step)
+        
+        if verbosity > VerbosityLevel.BASIC:
+            print(f"Grouping by column '{column}' with {len(bins)-1} bins")
+        
+        # Create groupby folder structure
+        groupby_dir = self.archive / column
+        groupby_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Save metadata about the groupby operation
+        metadata = {
+            "column": column,
+            "bins": bins.tolist() if isinstance(bins, np.ndarray) else bins,
+            "labels": labels,
+            "created": pd.Timestamp.now().isoformat(),
+            "type": "groupby"
+        }
+        
+        metadata_file = groupby_dir / ".groupby_metadata.json"
+        with open(metadata_file, 'w') as f:
+            json.dump(metadata, f, indent=4)
+        
+        if verbosity >= VerbosityLevel.DETAILED:
+            print(f"Created groupby directory: {groupby_dir}")
+            print(f"Saved metadata to: {metadata_file}")
+        
+        # Load all SimPhotons data if not already loaded
+        sim_photons_dir = self.archive / "SimPhotons"
+        if not sim_photons_dir.exists():
+            raise FileNotFoundError(f"SimPhotons directory not found: {sim_photons_dir}")
+        
+        csv_files = sorted(sim_photons_dir.glob("sim_data_*.csv"))
+        if not csv_files:
+            raise FileNotFoundError(f"No sim_data_*.csv files found in {sim_photons_dir}")
+        
+        # Load all data if self.data is empty or incomplete
+        if len(csv_files) > 1 or self.data.empty:
+            if verbosity > VerbosityLevel.BASIC:
+                print(f"Loading {len(csv_files)} simulation files...")
+            
+            all_data = []
+            for csv_file in tqdm(csv_files, desc="Loading data", disable=(verbosity == VerbosityLevel.QUIET)):
+                try:
+                    df = pd.read_csv(csv_file)
+                    if not df.empty:
+                        # Add file index to track which file each row came from
+                        df['_source_file_idx'] = int(csv_file.stem.split('_')[-1])
+                        all_data.append(df)
+                except Exception as e:
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"Warning: Failed to load {csv_file.name}: {e}")
+            
+            if not all_data:
+                raise ValueError("No valid data loaded from SimPhotons")
+            
+            self.data = pd.concat(all_data, ignore_index=True)
+            if verbosity >= VerbosityLevel.DETAILED:
+                print(f"Loaded {len(self.data)} total rows from {len(all_data)} files")
+        
+        # Add bin labels
+        if labels is None:
+            labels = [f"{bins[i]:.3f}" for i in range(len(bins)-1)]
+        
+        # Bin the data
+        self.data['_bin_label'] = pd.cut(
+            self.data[column], 
+            bins=bins, 
+            labels=labels, 
+            right=False,
+            include_lowest=True
+        )
+        
+        # Count rows per bin
+        bin_counts = self.data['_bin_label'].value_counts().sort_index()
+        
+        if verbosity > VerbosityLevel.BASIC:
+            print(f"\nBin distribution for '{column}':")
+            for label, count in bin_counts.items():
+                print(f"  {label}: {count} photons")
+        
+        # Create subfolders and save filtered data
+        for i, label in enumerate(tqdm(labels, desc="Creating groups", disable=(verbosity == VerbosityLevel.QUIET))):
+            bin_dir = groupby_dir / label
+            bin_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Create SimPhotons subfolder
+            bin_simphotons = bin_dir / "SimPhotons"
+            bin_simphotons.mkdir(parents=True, exist_ok=True)
+            
+            # Filter data for this bin
+            bin_data = self.data[self.data['_bin_label'] == label].copy()
+            
+            if bin_data.empty:
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"Warning: No data in bin '{label}'")
+                continue
+            
+            # Group by source file index and save
+            if '_source_file_idx' in bin_data.columns:
+                for file_idx, group_data in bin_data.groupby('_source_file_idx'):
+                    # Remove temporary columns
+                    save_data = group_data.drop(columns=['_bin_label', '_source_file_idx'], errors='ignore')
+                    output_file = bin_simphotons / f"sim_data_{int(file_idx)}.csv"
+                    save_data.to_csv(output_file, index=False)
+                    
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"  Saved {len(save_data)} rows to {output_file.name}")
+            else:
+                # If no source file index, save all data to single file
+                save_data = bin_data.drop(columns=['_bin_label'], errors='ignore')
+                output_file = bin_simphotons / "sim_data_0.csv"
+                save_data.to_csv(output_file, index=False)
+        
+        # Clean up temporary columns
+        self.data.drop(columns=['_bin_label', '_source_file_idx'], errors='ignore', inplace=True)
+        
+        # Store groupby info in the Lens object
+        self._groupby_column = column
+        self._groupby_dir = groupby_dir
+        self._groupby_labels = labels
+        
+        if verbosity > VerbosityLevel.BASIC:
+            print(f"\n✓ Groupby complete. Created {len(labels)} groups in: {groupby_dir}")
+        
+        return self
+
+
+    def trace_rays_grouped(self, deadtime: float = None, blob: float = 0.0, 
+                        decay_time: float = 100, split_method: str = "auto",
+                        n_processes: int = None, chunk_size: int = 1000,
+                        progress_bar: bool = True, verbosity: VerbosityLevel = VerbosityLevel.BASIC,
+                        **kwargs):
+        """
+        Trace rays for each group created by groupby().
+        
+        Args:
+            deadtime (float, optional): Deadtime in nanoseconds for pixel saturation
+            blob (float): Interaction radius in pixels for photon hits
+            decay_time (float): Decay time in nanoseconds for blob effect
+            split_method (str): TPX3 file splitting strategy ("auto" or "event")
+            n_processes (int, optional): Number of processes for parallel execution
+            chunk_size (int): Number of rays per processing chunk
+            progress_bar (bool): Display progress bars
+            verbosity (VerbosityLevel): Controls output level
+            **kwargs: Additional arguments passed to trace_rays()
+        
+        Returns:
+            None
+        
+        Raises:
+            ValueError: If groupby() hasn't been called first
+        """
+        if not hasattr(self, '_groupby_dir') or not hasattr(self, '_groupby_labels'):
+            raise ValueError("Must call groupby() before trace_rays_grouped()")
+        
+        groupby_dir = self._groupby_dir
+        labels = self._groupby_labels
+        
+        if verbosity > VerbosityLevel.BASIC:
+            print(f"\n{'='*60}")
+            print(f"Tracing rays for {len(labels)} groups in: {groupby_dir.name}")
+            print(f"{'='*60}\n")
+        
+        # Store original archive
+        original_archive = self.archive
+        
+        # Iterate through each group
+        for i, label in enumerate(tqdm(labels, desc="Processing groups", disable=(verbosity == VerbosityLevel.QUIET))):
+            bin_dir = groupby_dir / label
+            
+            if not bin_dir.exists():
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"Skipping non-existent group: {label}")
+                continue
+            
+            # Check if SimPhotons folder exists and has data
+            simphotons_dir = bin_dir / "SimPhotons"
+            if not simphotons_dir.exists() or not list(simphotons_dir.glob("sim_data_*.csv")):
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"Skipping group '{label}': no simulation data")
+                continue
+            
+            if verbosity > VerbosityLevel.BASIC:
+                print(f"\n{'─'*60}")
+                print(f"Group {i+1}/{len(labels)}: {label}")
+                print(f"{'─'*60}")
+            
+            # Temporarily change archive to this group's directory
+            self.archive = bin_dir
+            
+            try:
+                # Reload data for this group
+                csv_files = sorted(simphotons_dir.glob("sim_data_*.csv"))
+                valid_dfs = []
+                for csv_file in csv_files:
+                    try:
+                        if csv_file.stat().st_size > 100:
+                            df = pd.read_csv(csv_file)
+                            if not df.empty:
+                                valid_dfs.append(df)
+                    except Exception as e:
+                        if verbosity >= VerbosityLevel.DETAILED:
+                            print(f"Warning: Skipping {csv_file.name}: {e}")
+                
+                if valid_dfs:
+                    self.data = pd.concat(valid_dfs, ignore_index=True)
+                    
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"  Loaded {len(self.data)} photons for group '{label}'")
+                    
+                    # Trace rays for this group
+                    self.trace_rays(
+                        deadtime=deadtime,
+                        blob=blob,
+                        decay_time=decay_time,
+                        split_method=split_method,
+                        n_processes=n_processes,
+                        chunk_size=chunk_size,
+                        progress_bar=progress_bar,
+                        verbosity=verbosity,
+                        return_df=False,
+                        **kwargs
+                    )
+                    
+                    if verbosity > VerbosityLevel.BASIC:
+                        print(f"✓ Completed group '{label}'")
+                else:
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"  No valid data in group '{label}'")
+            
+            except Exception as e:
+                if verbosity > VerbosityLevel.BASIC:
+                    print(f"✗ Error processing group '{label}': {e}")
+                if verbosity >= VerbosityLevel.DETAILED:
+                    import traceback
+                    traceback.print_exc()
+            
+            finally:
+                # Restore original archive
+                self.archive = original_archive
+        
+        if verbosity > VerbosityLevel.BASIC:
+            print(f"\n{'='*60}")
+            print(f"✓ Completed all {len(labels)} groups")
+            print(f"{'='*60}\n")

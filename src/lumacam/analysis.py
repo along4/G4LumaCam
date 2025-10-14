@@ -157,10 +157,31 @@ class Analysis:
         Analysis class for processing TPX3 data through the EMPIR pipeline.
 
         Args:
-            archive: The directory containing TPX3 data.
+            archive: The directory containing TPX3 data or a groupby subfolder.
             empir_dirpath: Path to the EMPIR directory. If None, defaults to "./empir".
         """
         self.archive = Path(archive)
+        
+        # Check if this is a groupby folder
+        self._is_groupby = False
+        self._groupby_metadata = None
+        self._groupby_subfolders = []
+        
+        # Look for groupby metadata in the archive or parent
+        metadata_file = self.archive / ".groupby_metadata.json"
+        if metadata_file.exists():
+            self._is_groupby = True
+            with open(metadata_file, 'r') as f:
+                self._groupby_metadata = json.load(f)
+            
+            # Find all subfolders with SimPhotons or tpx3Files
+            for subfolder in sorted(self.archive.iterdir()):
+                if subfolder.is_dir() and not subfolder.name.startswith('.'):
+                    if (subfolder / "SimPhotons").exists() or (subfolder / "tpx3Files").exists():
+                        self._groupby_subfolders.append(subfolder)
+            
+            print(f"Detected groupby structure: {len(self._groupby_subfolders)} groups")
+            print(f"Groupby column: {self._groupby_metadata.get('column', 'unknown')}")
         
         if empir_dirpath is not None:
             self.empir_dirpath = Path(empir_dirpath)
@@ -349,7 +370,7 @@ class Analysis:
 
         if result_all != 0:
             # raise RuntimeError("Errors occurred during pixel2photon processing")
-            if verbosity >= VerbosityLevel.BASIC:
+            if verbosity > VerbosityLevel.BASIC:
                 print("Errors occurred during pixel2photon processing")
 
         if verbosity > VerbosityLevel.BASIC:
@@ -581,6 +602,109 @@ class Analysis:
         if verbosity > VerbosityLevel.BASIC:
             print("✅ Finished exporting and modifying all event files!")
 
+    def process_grouped(self, 
+                        params: Union[str, Dict[str, Any]] = None,
+                        n_threads: int = 1,
+                        pixel2photon: bool = True,
+                        photon2event: bool = True,
+                        event2image: bool = False,
+                        export_photons: bool = True,
+                        export_events: bool = False,
+                        verbosity: VerbosityLevel = VerbosityLevel.BASIC,
+                        clean: bool = True,
+                        **kwargs) -> None:
+        """
+        Process TPX3 files for all groups in a groupby structure.
+        
+        Args:
+            params: Parameters for processing (same as process())
+            n_threads: Number of threads for parallel processing
+            pixel2photon: If True, runs empir_pixel2photon_tpx3spidr
+            photon2event: If True, runs empir_photon2event
+            event2image: If True, runs empir_event2image
+            export_photons: If True, exports photons to CSV
+            export_events: If True, exports events to CSV
+            verbosity: Controls output level
+            clean: If True, deletes existing processed files before processing
+            **kwargs: Additional parameters
+        
+        Raises:
+            ValueError: If not a groupby structure
+        """
+        if not self._is_groupby:
+            raise ValueError("This archive is not a groupby structure. Use process() instead.")
+        
+        if not self._groupby_subfolders:
+            raise ValueError("No valid group subfolders found.")
+        
+        if verbosity > VerbosityLevel.BASIC:
+            print(f"\n{'='*60}")
+            print(f"Processing {len(self._groupby_subfolders)} groups")
+            print(f"Column: {self._groupby_metadata.get('column', 'unknown')}")
+            print(f"{'='*60}\n")
+        
+        # Store original archive
+        original_archive = self.archive
+        
+        # Process each group
+        for i, group_folder in enumerate(tqdm(self._groupby_subfolders, 
+                                            desc="Processing groups",
+                                            disable=(verbosity == VerbosityLevel.QUIET))):
+            
+            if verbosity > VerbosityLevel.BASIC:
+                print(f"\n{'─'*60}")
+                print(f"Group {i+1}/{len(self._groupby_subfolders)}: {group_folder.name}")
+                print(f"{'─'*60}")
+            
+            # Temporarily change archive to this group
+            self.archive = group_folder
+            self.photon_files_dir = self.archive / "photonFiles"
+            self.photon_files_dir.mkdir(parents=True, exist_ok=True)
+            
+            try:
+                # Check if tpx3Files exists
+                tpx3_dir = group_folder / "tpx3Files"
+                if not tpx3_dir.exists() or not list(tpx3_dir.glob("*.tpx3")):
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"  No TPX3 files found in {group_folder.name}, skipping")
+                    continue
+                
+                # Process this group
+                self.process(
+                    params=params,
+                    n_threads=n_threads,
+                    suffix="",  # No suffix needed, already in group folder
+                    pixel2photon=pixel2photon,
+                    photon2event=photon2event,
+                    event2image=event2image,
+                    export_photons=export_photons,
+                    export_events=export_events,
+                    verbosity=verbosity,
+                    clean=clean,
+                    **kwargs
+                )
+                
+                if verbosity > VerbosityLevel.BASIC:
+                    print(f"✓ Completed group '{group_folder.name}'")
+            
+            except Exception as e:
+                if verbosity > VerbosityLevel.BASIC:
+                    print(f"✗ Error processing group '{group_folder.name}': {e}")
+                if verbosity >= VerbosityLevel.DETAILED:
+                    import traceback
+                    traceback.print_exc()
+            
+            finally:
+                # Restore original archive
+                self.archive = original_archive
+                self.photon_files_dir = self.archive / "photonFiles"
+        
+        if verbosity > VerbosityLevel.BASIC:
+            print(f"\n{'='*60}")
+            print(f"✓ Completed all {len(self._groupby_subfolders)} groups")
+            print(f"{'='*60}\n")
+
+
     def process(self, 
                 params: Union[str, Dict[str, Any]] = None,
                 n_threads: int = 1,
@@ -594,24 +718,40 @@ class Analysis:
                 clean: bool = True,
                 **kwargs) -> None:
         """
-        Process TPX3 files through the EMPIR pipeline to produce photonFiles and eventFiles.
+        Process TPX3 files through the EMPIR pipeline.
+        
+        Automatically detects groupby structures and processes all groups if found.
         
         Args:
             params: Either a path to a parameterSettings.json file, a JSON string, or a dictionary
-                containing the parameters for pixel2photon, photon2event, and event2image.
-                If None, uses default parameters based on focus mode.
-            n_threads: Number of threads to use for parallel processing of files.
-            suffix: Optional suffix to create a subfolder and symlink TPX3 files for processing.
-            pixel2photon: If True, runs empir_pixel2photon_tpx3spidr on TPX3 files.
-            photon2event: If True, runs empir_photon2event on generated .empirphot files.
-            event2image: If True, runs empir_event2image on generated .empirevent files.
-            export_photons: If True, runs empir_export_photons on generated .empirphot files.
-            export_events: If True, runs empir_export_events on generated .empirevent files.
-            verbosity: Controls the level of output (QUIET=0, BASIC=1, DETAILED=2).
-            clean: If True, deletes existing .empirphot and .empirevent files before processing.
-            **kwargs: Additional parameters to update specific fields in the configuration
-                    (e.g., dTime_s, dSpace_px for photon2event).
+            n_threads: Number of threads for parallel processing
+            suffix: Optional suffix for creating a subfolder (ignored for groupby structures)
+            pixel2photon: If True, runs empir_pixel2photon_tpx3spidr
+            photon2event: If True, runs empir_photon2event
+            event2image: If True, runs empir_event2image
+            export_photons: If True, exports photons to CSV
+            export_events: If True, exports events to CSV
+            verbosity: Controls output level
+            clean: If True, deletes existing processed files
+            **kwargs: Additional parameters
         """
+        # Auto-detect and handle groupby structure
+        if self._is_groupby:
+            if verbosity > VerbosityLevel.BASIC:
+                print("Detected groupby structure, processing all groups...")
+            return self.process_grouped(
+                params=params,
+                n_threads=n_threads,
+                pixel2photon=pixel2photon,
+                photon2event=photon2event,
+                event2image=event2image,
+                export_photons=export_photons,
+                export_events=export_events,
+                verbosity=verbosity,
+                clean=clean,
+                **kwargs
+            )
+            
         import time
         start_time = time.time()
 
@@ -646,7 +786,7 @@ class Analysis:
                         if verbosity >= VerbosityLevel.DETAILED:
                             print(f"Symlink already exists: {dest_file}")
             except OSError as e:
-                if verbosity >= VerbosityLevel.BASIC:
+                if verbosity > VerbosityLevel.BASIC:
                     print(f"Error creating symlink for {tpx3_file}: {e}")
             finally:
                 os.chdir(current_dir)
