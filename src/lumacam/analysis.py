@@ -191,9 +191,15 @@ class Analysis:
                 self.empir_dirpath = Path(EMPIR_PATH)
             except ImportError:
                 self.empir_dirpath = Path("./empir")
-                
-        self.photon_files_dir = self.archive / "photonFiles"
-        self.photon_files_dir.mkdir(parents=True, exist_ok=True)
+        
+        # DON'T set photon_files_dir here if it's a groupby structure
+        # It will be set per-group in process_grouped
+        if not self._is_groupby:
+            self.photon_files_dir = self.archive / "photonFiles"
+            self.photon_files_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            # For groupby, we'll set this per group
+            self.photon_files_dir = None
 
         self.Photon2EventConfig = Photon2EventConfig
         self.EventBinningConfig = EventBinningConfig
@@ -760,7 +766,7 @@ class Analysis:
             except Exception as e:
                 if verbosity > VerbosityLevel.BASIC:
                     print(f"\n✗ Error processing group '{group_folder.name}': {e}")
-                if verbosity >= VerbosityLevel.DETAILED:
+                if verbosity > VerbosityLevel.DETAILED:
                     import traceback
                     traceback.print_exc()
             
@@ -804,22 +810,6 @@ class Analysis:
             clean: If True, deletes existing processed files
             **kwargs: Additional parameters
         """
-        # Auto-detect and handle groupby structure
-        if self._is_groupby:
-            if verbosity > VerbosityLevel.BASIC:
-                print("Detected groupby structure, processing all groups...")
-            return self._process_grouped(
-                params=params,
-                n_threads=n_threads,
-                pixel2photon=pixel2photon,
-                photon2event=photon2event,
-                event2image=event2image,
-                export_photons=export_photons,
-                export_events=export_events,
-                verbosity=verbosity,
-                clean=clean,
-                **kwargs
-            )
             
         import time
         start_time = time.time()
