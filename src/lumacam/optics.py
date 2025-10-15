@@ -620,12 +620,15 @@ class Lens:
         return [rays[i:i+chunk_size] for i in range(0, len(rays), chunk_size)]
 
     def trace_rays(self, opm=None, opm_file=None, zscan=0, zfine=0, fnumber=None,
-                   join=False, print_stats=False, n_processes=None, chunk_size=1000, 
-                   progress_bar=True, timeout=3600, return_df=False, 
-                   verbosity=VerbosityLevel.BASIC, deadtime=None, blob=0.0, decay_time=100, 
-                   split_method="auto"):
+                join=False, print_stats=False, n_processes=None, chunk_size=1000, 
+                progress_bar=True, timeout=3600, return_df=False, 
+                verbosity=VerbosityLevel.BASIC, deadtime=None, blob=0.0, decay_time=100, 
+                split_method="auto"):
         """
         Trace rays from simulation data files and save processed results, optionally applying pixel saturation and blob effect.
+        
+        If groupby() was called prior to this method, automatically performs grouped tracing for each group.
+        Otherwise, performs standard single-archive tracing.
 
         This method processes ray data from CSV files in the 'SimPhotons' directory using either
         a provided optical model, a saved optical model file, or by creating a refocused version
@@ -703,6 +706,59 @@ class Lens:
         FileNotFoundError: If opm_file does not exist or if no valid simulation
                             data files are found.
         RuntimeError: If tracing fails for a file.
+        """
+        # Check if groupby was called - if so, delegate to grouped tracing
+        if hasattr(self, '_groupby_dir') and hasattr(self, '_groupby_labels'):
+            return self._trace_rays_grouped(
+                opm=opm,
+                opm_file=opm_file,
+                zscan=zscan,
+                zfine=zfine,
+                fnumber=fnumber,
+                join=join,
+                print_stats=print_stats,
+                n_processes=n_processes,
+                chunk_size=chunk_size,
+                progress_bar=progress_bar,
+                timeout=timeout,
+                return_df=return_df,
+                verbosity=verbosity,
+                deadtime=deadtime,
+                blob=blob,
+                decay_time=decay_time,
+                split_method=split_method
+            )
+        
+        # Otherwise, perform standard single-archive tracing
+        return self._trace_rays_single(
+            opm=opm,
+            opm_file=opm_file,
+            zscan=zscan,
+            zfine=zfine,
+            fnumber=fnumber,
+            join=join,
+            print_stats=print_stats,
+            n_processes=n_processes,
+            chunk_size=chunk_size,
+            progress_bar=progress_bar,
+            timeout=timeout,
+            return_df=return_df,
+            verbosity=verbosity,
+            deadtime=deadtime,
+            blob=blob,
+            decay_time=decay_time,
+            split_method=split_method
+        )
+
+
+    def _trace_rays_single(self, opm=None, opm_file=None, zscan=0, zfine=0, fnumber=None,
+                        join=False, print_stats=False, n_processes=None, chunk_size=1000, 
+                        progress_bar=True, timeout=3600, return_df=False, 
+                        verbosity=VerbosityLevel.BASIC, deadtime=None, blob=0.0, decay_time=100, 
+                        split_method="auto"):
+        """
+        Internal method for single-archive ray tracing (non-grouped).
+        See trace_rays() for full documentation.
         """
         # Validate input parameters
         if opm is not None and opm_file is not None:
@@ -837,8 +893,8 @@ class Lens:
                 # Convert DataFrame to ray format
                 rays = [
                     (np.array([row.x, row.y, row.z], dtype=np.float64),
-                     np.array([row.dx, row.dy, row.dz], dtype=np.float64),
-                     np.array([row.wavelength], dtype=np.float64))
+                    np.array([row.dx, row.dy, row.dz], dtype=np.float64),
+                    np.array([row.wavelength], dtype=np.float64))
                     for row in df.itertuples()
                 ]
 
@@ -866,9 +922,9 @@ class Lens:
                             print("  Using sequential processing")
                         results_with_indices = []
                         chunk_iter = tqdm(enumerate(zip(chunks, index_chunks)), 
-                                         total=len(chunks),
-                                         desc=f"Tracing rays ({csv_file.name})",
-                                         disable=not progress_bar or verbosity == VerbosityLevel.QUIET)
+                                        total=len(chunks),
+                                        desc=f"Tracing rays ({csv_file.name})",
+                                        disable=not progress_bar or verbosity == VerbosityLevel.QUIET)
                         
                         for chunk_idx, (chunk, indices) in chunk_iter:
                             chunk_result = process_chunk(chunk)
@@ -1002,6 +1058,134 @@ class Lens:
         finally:
             pass
 
+
+    def _trace_rays_grouped(self, opm=None, opm_file=None, zscan=0, zfine=0, fnumber=None,
+                            join=False, print_stats=False, n_processes=None, chunk_size=1000, 
+                            progress_bar=True, timeout=3600, return_df=False, 
+                            verbosity=VerbosityLevel.BASIC, deadtime=None, blob=0.0, 
+                            decay_time=100, split_method="auto"):
+        """
+        Internal method for grouped ray tracing. 
+        Trace rays for each group created by groupby() with all trace_rays options.
+        
+        All parameters are identical to trace_rays(). See trace_rays() for full documentation.
+        
+        Raises:
+            ValueError: If groupby() hasn't been called first
+        """
+        if not hasattr(self, '_groupby_dir') or not hasattr(self, '_groupby_labels'):
+            raise ValueError("Must call groupby() before trace_rays() for grouped operation")
+        
+        groupby_dir = self._groupby_dir
+        labels = self._groupby_labels
+        
+        if verbosity > VerbosityLevel.BASIC:
+            print(f"\n{'='*60}")
+            print(f"Tracing rays for {len(labels)} groups in: {groupby_dir.name}")
+            print(f"{'='*60}\n")
+        
+        # Store original archive
+        original_archive = self.archive
+        all_group_results = []
+        
+        # Iterate through each group
+        for i, label in enumerate(tqdm(labels, desc="Processing groups", disable=(verbosity == VerbosityLevel.QUIET))):
+            bin_dir = groupby_dir / label
+            
+            if not bin_dir.exists():
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"Skipping non-existent group: {label}")
+                continue
+            
+            # Check if SimPhotons folder exists and has data
+            simphotons_dir = bin_dir / "SimPhotons"
+            if not simphotons_dir.exists() or not list(simphotons_dir.glob("sim_data_*.csv")):
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"Skipping group '{label}': no simulation data")
+                continue
+            
+            if verbosity > VerbosityLevel.BASIC:
+                print(f"\n{'─'*60}")
+                print(f"Group {i+1}/{len(labels)}: {label}")
+                print(f"{'─'*60}")
+            
+            # Temporarily change archive to this group's directory
+            self.archive = bin_dir
+            
+            try:
+                # Reload data for this group
+                csv_files = sorted(simphotons_dir.glob("sim_data_*.csv"))
+                valid_dfs = []
+                for csv_file in csv_files:
+                    try:
+                        if csv_file.stat().st_size > 100:
+                            df = pd.read_csv(csv_file)
+                            if not df.empty:
+                                valid_dfs.append(df)
+                    except Exception as e:
+                        if verbosity >= VerbosityLevel.DETAILED:
+                            print(f"Warning: Skipping {csv_file.name}: {e}")
+                
+                if valid_dfs:
+                    self.data = pd.concat(valid_dfs, ignore_index=True)
+                    
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"  Loaded {len(self.data)} photons for group '{label}'")
+                    
+                    # Trace rays for this group with all parameters
+                    group_result = self._trace_rays_single(
+                        opm=opm,
+                        opm_file=opm_file,
+                        zscan=zscan,
+                        zfine=zfine,
+                        fnumber=fnumber,
+                        join=join,
+                        print_stats=print_stats,
+                        n_processes=n_processes,
+                        chunk_size=chunk_size,
+                        progress_bar=progress_bar,
+                        timeout=timeout,
+                        return_df=return_df,
+                        verbosity=verbosity,
+                        deadtime=deadtime,
+                        blob=blob,
+                        decay_time=decay_time,
+                        split_method=split_method
+                    )
+                    
+                    if return_df and group_result is not None:
+                        all_group_results.append(group_result)
+                    
+                    if verbosity > VerbosityLevel.BASIC:
+                        print(f"✓ Completed group '{label}'")
+                else:
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"  No valid data in group '{label}'")
+            
+            except Exception as e:
+                if verbosity > VerbosityLevel.BASIC:
+                    print(f"✗ Error processing group '{label}': {e}")
+                if verbosity >= VerbosityLevel.DETAILED:
+                    import traceback
+                    traceback.print_exc()
+            
+            finally:
+                # Restore original archive
+                self.archive = original_archive
+        
+        if verbosity > VerbosityLevel.BASIC:
+            print(f"\n{'='*60}")
+            print(f"✓ Completed all {len(labels)} groups")
+            print(f"{'='*60}\n")
+        
+        # Return combined results if requested
+        if return_df and all_group_results:
+            combined_df = pd.concat(all_group_results, ignore_index=True)
+            if verbosity >= VerbosityLevel.DETAILED:
+                print(f"\nReturning combined DataFrame with {len(combined_df)} total rows from all groups")
+            return combined_df
+        
+        return None
 
 
 
@@ -2074,123 +2258,86 @@ class Lens:
         return self
 
 
-
-
-    def trace_rays_grouped(self, deadtime: float = None, blob: float = 0.0, 
-                        decay_time: float = 100, split_method: str = "auto",
-                        n_processes: int = None, chunk_size: int = 1000,
-                        progress_bar: bool = True, verbosity: VerbosityLevel = VerbosityLevel.BASIC,
-                        **kwargs):
+    def plot(self, opm: "OpticalModel" = None, kind: str = "layout",
+                                scale: float = None, 
+                                is_dark: bool = False, **kwargs) -> None:
         """
-        Trace rays for each group created by groupby().
-        
+        Plot the lens layout or aberration diagrams.
+
         Args:
-            deadtime (float, optional): Deadtime in nanoseconds for pixel saturation
-            blob (float): Interaction radius in pixels for photon hits
-            decay_time (float): Decay time in nanoseconds for blob effect
-            split_method (str): TPX3 file splitting strategy ("auto" or "event")
-            n_processes (int, optional): Number of processes for parallel execution
-            chunk_size (int): Number of rays per processing chunk
-            progress_bar (bool): Display progress bars
-            verbosity (VerbosityLevel): Controls output level
-            **kwargs: Additional arguments passed to trace_rays()
-        
+            opm (OpticalModel, optional): Optical model to plot. Defaults to self.opm0.
+            kind (str): Type of plot ('layout', 'ray', 'opd', 'spot'). Defaults to 'layout'.
+            scale (float):  Scale factor for the plot. If None, uses Fit.User_Scale or Fit.All_Same.
+            is_dark (bool): Use dark theme for plots. Defaults to False.
+            **kwargs: Additional keyword arguments for the figure.
+                - dpi (int, optional): Figure resolution. Defaults to 120.
+                - figsize (tuple, optional): Figure size as (width, height). Defaults to (8, 2) for layout, (8, 4) for others.
+                - frameon (bool, optional): Whether to draw the frame (for layout only). Defaults to False.
+                - Other keyword arguments are passed to the plot function.
+
         Returns:
             None
-        
+
         Raises:
-            ValueError: If groupby() hasn't been called first
+            ValueError: If opm is None or kind is unsupported.
         """
-        if not hasattr(self, '_groupby_dir') or not hasattr(self, '_groupby_labels'):
-            raise ValueError("Must call groupby() before trace_rays_grouped()")
-        
-        groupby_dir = self._groupby_dir
-        labels = self._groupby_labels
-        
-        if verbosity > VerbosityLevel.BASIC:
-            print(f"\n{'='*60}")
-            print(f"Tracing rays for {len(labels)} groups in: {groupby_dir.name}")
-            print(f"{'='*60}\n")
-        
-        # Store original archive
-        original_archive = self.archive
-        
-        # Iterate through each group
-        for i, label in enumerate(tqdm(labels, desc="Processing groups", disable=(verbosity == VerbosityLevel.QUIET))):
-            bin_dir = groupby_dir / label
-            
-            if not bin_dir.exists():
-                if verbosity >= VerbosityLevel.DETAILED:
-                    print(f"Skipping non-existent group: {label}")
-                continue
-            
-            # Check if SimPhotons folder exists and has data
-            simphotons_dir = bin_dir / "SimPhotons"
-            if not simphotons_dir.exists() or not list(simphotons_dir.glob("sim_data_*.csv")):
-                if verbosity >= VerbosityLevel.DETAILED:
-                    print(f"Skipping group '{label}': no simulation data")
-                continue
-            
-            if verbosity > VerbosityLevel.BASIC:
-                print(f"\n{'─'*60}")
-                print(f"Group {i+1}/{len(labels)}: {label}")
-                print(f"{'─'*60}")
-            
-            # Temporarily change archive to this group's directory
-            self.archive = bin_dir
-            
-            try:
-                # Reload data for this group
-                csv_files = sorted(simphotons_dir.glob("sim_data_*.csv"))
-                valid_dfs = []
-                for csv_file in csv_files:
-                    try:
-                        if csv_file.stat().st_size > 100:
-                            df = pd.read_csv(csv_file)
-                            if not df.empty:
-                                valid_dfs.append(df)
-                    except Exception as e:
-                        if verbosity >= VerbosityLevel.DETAILED:
-                            print(f"Warning: Skipping {csv_file.name}: {e}")
-                
-                if valid_dfs:
-                    self.data = pd.concat(valid_dfs, ignore_index=True)
-                    
-                    if verbosity >= VerbosityLevel.DETAILED:
-                        print(f"  Loaded {len(self.data)} photons for group '{label}'")
-                    
-                    # Trace rays for this group
-                    self.trace_rays(
-                        deadtime=deadtime,
-                        blob=blob,
-                        decay_time=decay_time,
-                        split_method=split_method,
-                        n_processes=n_processes,
-                        chunk_size=chunk_size,
-                        progress_bar=progress_bar,
-                        verbosity=verbosity,
-                        return_df=False,
-                        **kwargs
-                    )
-                    
-                    if verbosity > VerbosityLevel.BASIC:
-                        print(f"✓ Completed group '{label}'")
-                else:
-                    if verbosity >= VerbosityLevel.DETAILED:
-                        print(f"  No valid data in group '{label}'")
-            
-            except Exception as e:
-                if verbosity > VerbosityLevel.BASIC:
-                    print(f"✗ Error processing group '{label}': {e}")
-                if verbosity >= VerbosityLevel.DETAILED:
-                    import traceback
-                    traceback.print_exc()
-            
-            finally:
-                # Restore original archive
-                self.archive = original_archive
-        
-        if verbosity > VerbosityLevel.BASIC:
-            print(f"\n{'='*60}")
-            print(f"✓ Completed all {len(labels)} groups")
-            print(f"{'='*60}\n")
+        opm = opm if opm is not None else self.opm0
+        if opm is None:
+            raise ValueError("No optical model available to plot (self.opm0 is None).")
+
+        # Set default figsize based on plot kind
+        figsize = kwargs.pop("figsize", (8, 2) if kind == "layout" else (8, 4))
+        dpi = kwargs.pop("dpi", 120)
+        frameon = kwargs.pop("frameon", False)
+        # scale = kwargs.pop("scale", 10)
+        scale_type = Fit.User_Scale if scale else Fit.All_Same
+
+        # Ensure model is updated and vignetting is applied
+        # opm.seq_model.do_apertures = False
+        # opm.update_model()
+        # apply_paraxial_vignetting(opm)
+
+        if kind == "layout":
+            plt.figure(
+                FigureClass=InteractiveLayout,
+                opt_model=opm,
+                frameon=frameon,
+                dpi=dpi,
+                figsize=figsize,
+                do_draw_rays=True,
+                do_paraxial_layout=False
+            ).plot(**kwargs)
+        elif kind == "ray":
+            plt.figure(
+                FigureClass=RayFanFigure,
+                opt_model=opm,
+                data_type="Ray",
+                scale_type=scale_type,
+                is_dark=is_dark,
+                dpi=dpi,
+                figsize=figsize
+            ).plot(**kwargs)
+        elif kind == "opd":
+            plt.figure(
+                FigureClass=RayFanFigure,
+                opt_model=opm,
+                data_type="OPD",
+                scale_type=scale_type,
+                is_dark=is_dark,
+                dpi=dpi,
+                figsize=figsize
+            ).plot(**kwargs)
+        elif kind == "spot":
+            # Remove manual ray tracing - let SpotDiagramFigure handle it
+            plt.figure(
+                FigureClass=SpotDiagramFigure,
+                opt_model=opm,
+                scale_type=scale_type,
+                user_scale_value=scale,
+                is_dark=is_dark,
+                frameon=frameon,
+                dpi=dpi,
+                figsize=figsize
+            ).plot(**kwargs)
+        else:
+            raise ValueError(f"Unsupported plot kind: {kind}, supported kinds are ['layout', 'ray', 'opd', 'spot']")
