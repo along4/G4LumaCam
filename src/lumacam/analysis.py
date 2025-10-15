@@ -315,7 +315,7 @@ class Analysis:
 
 
 
-    def roi_analysis(self, 
+    def _run_roi_analysis(self, 
                     tiff_path: str, 
                     roi_zip_path: str, 
                     output_dir: str,
@@ -534,8 +534,8 @@ class Analysis:
         )
         
         # Set reasonable bounds
-        params['width'].min = 0.1
-        params['amplitude'].min = 0
+        # params['width'].min = 1e-5
+        # params['amplitude'].min = 1e-5
         
         # Perform the fit
         result = model.fit(esf_clean, params, x=x_clean)
@@ -955,7 +955,7 @@ class Analysis:
         """
         Process TPX3 files through the EMPIR pipeline.
         
-        If roifile is provided, sets event2image=True and runs roi_analysis on the output TIFF.
+        If roifile is provided, sets event2image=True and runs _run_roi_analysis on the output TIFF.
         
         Args:
             params: Either a path to a parameterSettings.json file, a JSON string, or a dictionary
@@ -1281,7 +1281,7 @@ class Analysis:
             else:
                 if verbosity > VerbosityLevel.BASIC:
                     print(f"Running ROI analysis on {tiff_path} with ROI file {roifile}")
-                self.roi_analysis(tiff_path, roifile, output_dir, verbosity=verbosity)
+                self._run_roi_analysis(tiff_path, roifile, output_dir, verbosity=verbosity)
         
         if verbosity > VerbosityLevel.BASIC:
             print(f"Total processing time: {time.time() - start_time:.2f} seconds")
