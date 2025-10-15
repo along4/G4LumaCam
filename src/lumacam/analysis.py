@@ -6,6 +6,10 @@ from enum import IntEnum
 from dataclasses import dataclass
 import json
 from typing import Dict, Any, Optional, Union
+import numpy as np
+import pandas as pd
+import tifffile
+from roifile import ImagejRoi, ROI_TYPE
 
 class VerbosityLevel(IntEnum):
     """Verbosity levels for simulation output."""
@@ -192,13 +196,11 @@ class Analysis:
             except ImportError:
                 self.empir_dirpath = Path("./empir")
         
-        # DON'T set photon_files_dir here if it's a groupby structure
-        # It will be set per-group in process_grouped
+        # Set photon_files_dir only for non-groupby structures
         if not self._is_groupby:
             self.photon_files_dir = self.archive / "photonFiles"
             self.photon_files_dir.mkdir(parents=True, exist_ok=True)
         else:
-            # For groupby, we'll set this per group
             self.photon_files_dir = None
 
         self.Photon2EventConfig = Photon2EventConfig
@@ -253,7 +255,7 @@ class Analysis:
                     "nPhotons_max": 1,
                     "psd_min": 0,
                     "time_extTrigger": "reference",
-                    "time_res_s": 1.5625e-09,
+                    "time_res_s": 1.5625e-9,
                     "time_limit": 640
                 },
             },
@@ -278,14 +280,14 @@ class Analysis:
                     "nPhotons_max": 9999,
                     "psd_min": 0,
                     "time_extTrigger": "reference",
-                    "time_res_s": 1.5625e-09,
+                    "time_res_s": 1.5625e-9,
                     "time_limit": 640
                 },
             },
             "hitmap": {
                 "pixel2photon": {
                     "dSpace": 0.001,
-                    "dTime":1e-9,
+                    "dTime": 1e-9,
                     "nPxMin": 1,
                     "TDC1": True
                 },
@@ -302,11 +304,127 @@ class Analysis:
                     "nPhotons_max": 9999,
                     "psd_min": 0,
                     "time_extTrigger": "reference",
-                    "time_res_s": 1.5625e-09,
+                    "time_res_s": 1.5625e-9,
                     "time_limit": 640
                 },
             }
         }
+
+    def roi_analysis(self, 
+                    tiff_path: str, 
+                    roi_zip_path: str, 
+                    output_dir: str,
+                    verbosity: VerbosityLevel = VerbosityLevel.BASIC) -> None:
+        """
+        Reads a TIFF stack and applies rectangular ROIs from a .zip file, calculates counts
+        (sum of pixel values) per slice per ROI, and saves CSV files with columns: stack
+        (1-based), counts, err (sqrt(counts)) in the specified output directory.
+
+        Args:
+            tiff_path: Absolute path to the TIFF stack file.
+            roi_zip_path: Absolute path to the roi.zip file.
+            output_dir: Absolute path to the output directory for CSV files.
+            verbosity: Controls the level of output during processing.
+        """
+        tiff_path = Path(tiff_path)
+        roi_zip_path = Path(roi_zip_path)
+        output_dir = Path(output_dir)
+
+        if not tiff_path.exists():
+            raise FileNotFoundError(f"TIFF file not found: {tiff_path}")
+        if not roi_zip_path.exists():
+            raise FileNotFoundError(f"ROI zip file not found: {roi_zip_path}")
+
+        # Read TIFF stack
+        stack = tifffile.imread(tiff_path)
+        if len(stack.shape) != 3:
+            raise ValueError(f"Expected 3D TIFF stack (slices, height, width), got shape {stack.shape}")
+        slices, height, width = stack.shape
+
+        # Check if TIFF stack has non-zero values
+        if np.all(stack == 0):
+            if verbosity >= VerbosityLevel.BASIC:
+                print(f"Warning: TIFF stack at {tiff_path} contains all zero values")
+            return
+
+        # Read ROIs - fromfile returns a list directly, not a context manager
+        rois = ImagejRoi.fromfile(roi_zip_path)
+        
+        # Ensure rois is a list
+        if isinstance(rois, ImagejRoi):
+            rois = [rois]
+        
+        rect_rois = [roi for roi in rois if roi.roitype == ROI_TYPE.RECT]
+        n_rois = len(rect_rois)
+        if n_rois == 0:
+            raise ValueError(f"No rectangular ROIs found in {roi_zip_path}")
+
+        if verbosity >= VerbosityLevel.BASIC:
+            print(f"Loaded TIFF stack: {slices} slices, {height}x{width}")
+            print(f"Processing {n_rois} rectangular ROIs from {roi_zip_path}")
+
+        # Create output directory
+        output_dir.mkdir(parents=True, exist_ok=True)
+        if verbosity >= VerbosityLevel.BASIC:
+            print(f"Output directory: {output_dir}")
+
+        # Process each rectangular ROI
+        for i, roi in enumerate(tqdm(rect_rois, desc="Processing ROIs", disable=(verbosity == VerbosityLevel.QUIET))):
+            roi_name = roi.name if roi.name else f"ROI_{i+1}"
+
+            # Generate mask for rectangular ROI
+            # Use integer coordinates directly from the ROI
+            left = max(0, int(np.floor(roi.left)))
+            top = max(0, int(np.floor(roi.top)))
+            right = min(width, int(np.ceil(roi.right)))
+            bottom = min(height, int(np.ceil(roi.bottom)))
+            
+            if right <= left or bottom <= top:
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"Skipping {roi_name}: invalid rectangle (left={left}, right={right}, top={top}, bottom={bottom})")
+                continue
+
+            # Create mask - note: numpy uses [row, col] indexing which is [y, x]
+            mask = np.zeros((height, width), dtype=bool)
+            mask[top:bottom, left:right] = True
+            area = np.sum(mask)
+            
+            if area == 0:
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"Skipping {roi_name}: zero area mask")
+                continue
+
+            if verbosity >= VerbosityLevel.DETAILED:
+                print(f"Processing {roi_name}: bounds=[{left}:{right}, {top}:{bottom}], area={area}")
+
+            # Calculate counts per slice
+            results = []
+            for z in range(slices):
+                # Get slice - ensure it's float to avoid overflow
+                slice_img = stack[z].astype(np.float64)
+                
+                # Apply mask and calculate sum
+                roi_pixels = slice_img[mask]
+                sum_val = np.sum(roi_pixels)
+                
+                # Calculate error (sqrt of counts, treating as Poisson statistics)
+                err_val = np.sqrt(max(sum_val, 0))
+                
+                results.append({
+                    "stack": z + 1,  # 1-based indexing to match ImageJ
+                    "counts": sum_val,
+                    "err": err_val
+                })
+
+            # Save results to CSV
+            df = pd.DataFrame(results)
+            csv_path = output_dir / f"{roi_name}.csv"
+            df.to_csv(csv_path, index=False)
+            if verbosity >= VerbosityLevel.DETAILED:
+                print(f"Saved: {csv_path} (mean counts: {df['counts'].mean():.2f})")
+
+        if verbosity >= VerbosityLevel.BASIC:
+            print(f"Completed: {n_rois} ROI spectra saved to {output_dir}")
 
     def _run_pixel2photon(self, tpx3_dir: Path, photon_files_dir: Path, 
                                 params_file: Path, n_threads: int, 
@@ -323,7 +441,7 @@ class Analysis:
         """
         tpx3_files = sorted([f for f in tpx3_dir.glob("*.tpx3")])
         if not tpx3_files:
-            raise FileNotFoundError(f"No .tpx3 files with '_part' found in {tpx3_dir}")
+            raise FileNotFoundError(f"No .tpx3 files found in {tpx3_dir}")
 
         if verbosity > VerbosityLevel.BASIC:
             print(f"Processing {len(tpx3_files)} .tpx3 files to photon files...")
@@ -464,13 +582,12 @@ class Analysis:
         if verbosity > VerbosityLevel.BASIC:
             print(f"Processing {len(empirevent_files)} .empirevent files into a single image...")
 
-        output_file = final_dir / "combined.empirimage"
+        output_file = final_dir / "image"
         cmd = [
             str(self.empir_dirpath / "bin/empir_event2image"),
             "-I", str(event_files_dir),
             "-o", str(output_file),
-            "--paramsFile", str(params_file),
-            # "--fileFormat", "empirimage"
+            "--paramsFile", str(params_file)
         ]
         
         if verbosity >= VerbosityLevel.DETAILED:
@@ -524,7 +641,6 @@ class Analysis:
                     subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
                 
                 try:
-                    import pandas as pd
                     df = pd.read_csv(photon_result_csv)
                     df.columns = ["x", "y", "toa", "tof"]
                     df["x"] = df["x"].astype(float)
@@ -616,13 +732,14 @@ class Analysis:
                 event2image: bool = False,
                 export_photons: bool = True,
                 export_events: bool = False,
+                roifile: Optional[str] = None,
                 verbosity: VerbosityLevel = VerbosityLevel.BASIC,
                 clean: bool = True,
                 **kwargs) -> None:
         """
         Process TPX3 files through the EMPIR pipeline.
         
-        Automatically detects groupby structures and processes all groups if found.
+        If roifile is provided, sets event2image=True and runs roi_analysis on the output TIFF.
         
         Args:
             params: Either a path to a parameterSettings.json file, a JSON string, or a dictionary
@@ -633,10 +750,17 @@ class Analysis:
             event2image: If True, runs empir_event2image
             export_photons: If True, exports photons to CSV
             export_events: If True, exports events to CSV
+            roifile: Optional path to roi.zip file for ROI analysis
             verbosity: Controls output level
             clean: If True, deletes existing processed files
             **kwargs: Additional parameters
         """
+        # If roifile is provided, ensure event2image is True
+        if roifile is not None:
+            event2image = True
+            if not Path(roifile).exists():
+                raise FileNotFoundError(f"ROI file not found: {roifile}")
+
         # Auto-detect and handle groupby structure
         if self._is_groupby:
             if verbosity > VerbosityLevel.BASIC:
@@ -644,12 +768,13 @@ class Analysis:
             return self._process_grouped(
                 params=params,
                 n_threads=n_threads,
-                suffix=suffix,  # Pass the suffix to _process_grouped
+                suffix=suffix,
                 pixel2photon=pixel2photon,
                 photon2event=photon2event,
                 event2image=event2image,
                 export_photons=export_photons,
                 export_events=export_events,
+                roifile=roifile,
                 verbosity=verbosity,
                 clean=clean,
                 **kwargs
@@ -665,6 +790,7 @@ class Analysis:
             event2image=event2image,
             export_photons=export_photons,
             export_events=export_events,
+            roifile=roifile,
             verbosity=verbosity,
             clean=clean,
             **kwargs
@@ -673,12 +799,13 @@ class Analysis:
     def _process_grouped(self, 
                         params: Union[str, Dict[str, Any]] = None,
                         n_threads: int = 1,
-                        suffix: str = "",  # Added suffix parameter
+                        suffix: str = "",
                         pixel2photon: bool = True,
                         photon2event: bool = True,
                         event2image: bool = False,
                         export_photons: bool = True,
                         export_events: bool = False,
+                        roifile: Optional[str] = None,
                         verbosity: VerbosityLevel = VerbosityLevel.BASIC,
                         clean: bool = True,
                         **kwargs) -> None:
@@ -721,12 +848,11 @@ class Analysis:
         group_iter = enumerate(self._groupby_subfolders)
         if verbosity >= VerbosityLevel.BASIC:
             group_iter = enumerate(tqdm(self._groupby_subfolders, 
-                                        desc=f"Processing groups",
+                                        desc="Processing groups",
                                         position=0,
                                         leave=True))
         
         for i, group_folder in group_iter:
-            
             if verbosity >= VerbosityLevel.DETAILED:
                 print(f"\n{'─'*60}")
                 print(f"Group {i+1}/{len(self._groupby_subfolders)}: {group_folder.name}")
@@ -754,13 +880,14 @@ class Analysis:
                 self._process_single(
                     params=params,
                     n_threads=n_threads,
-                    suffix=suffix,  # Pass the suffix to _process_single
+                    suffix=suffix,
                     pixel2photon=pixel2photon,
                     photon2event=photon2event,
                     event2image=event2image,
                     export_photons=export_photons,
                     export_events=export_events,
-                    verbosity=VerbosityLevel.QUIET,  # Always QUIET for internal processing
+                    roifile=roifile,
+                    verbosity=VerbosityLevel.QUIET,
                     clean=clean,
                     **kwargs
                 )
@@ -776,7 +903,6 @@ class Analysis:
                     traceback.print_exc()
             
             finally:
-                # Restore original archive
                 self.archive = original_archive
                 self.photon_files_dir = original_photon_files_dir
         
@@ -794,6 +920,7 @@ class Analysis:
                         event2image: bool = False,
                         export_photons: bool = True,
                         export_events: bool = False,
+                        roifile: Optional[str] = None,
                         verbosity: VerbosityLevel = VerbosityLevel.BASIC,
                         clean: bool = True,
                         **kwargs) -> None:
@@ -830,7 +957,6 @@ class Analysis:
             if not orig_tpx3_dir.exists():
                 raise FileNotFoundError(f"Original tpx3Files directory not found at {orig_tpx3_dir}")
             
-            # Get list of existing .tpx3 files in the original directory
             existing_tpx3_files = sorted(orig_tpx3_dir.glob("*.tpx3"))
             if not existing_tpx3_files:
                 raise FileNotFoundError(f"No .tpx3 files found in {orig_tpx3_dir}")
@@ -927,6 +1053,18 @@ class Analysis:
         
         if event2image:
             self._run_event2image(event_files_dir, final_dir, params_file, n_threads, verbosity)
+        
+        # Run ROI analysis if roifile is provided
+        if roifile:
+            tiff_path = final_dir / "image"
+            output_dir = base_dir / "ROI_spectra"
+            if not tiff_path.exists():
+                if verbosity > VerbosityLevel.BASIC:
+                    print(f"Warning: TIFF file not found at {tiff_path}, skipping ROI analysis")
+            else:
+                if verbosity > VerbosityLevel.BASIC:
+                    print(f"Running ROI analysis on {tiff_path} with ROI file {roifile}")
+                self.roi_analysis(tiff_path, roifile, output_dir, verbosity=verbosity)
         
         if verbosity > VerbosityLevel.BASIC:
             print(f"Total processing time: {time.time() - start_time:.2f} seconds")
