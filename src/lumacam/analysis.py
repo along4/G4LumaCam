@@ -238,7 +238,7 @@ class Analysis:
                     "dTime": 100e-09,
                     "nPxMin": 8,
                     "nPxMax": 100,
-                    "TDC1": true
+                    "TDC1": True
                 },
                 "photon2event": {
                     "dSpace_px": 0.001,
@@ -257,12 +257,13 @@ class Analysis:
                     "time_limit": 640
                 },
             },
+            "out_of_focus": {
                 "pixel2photon": {
                     "dSpace": 2,
                     "dTime": 5e-08,
                     "nPxMin": 2,
                     "nPxMax": 12,
-                    "TDC1": true
+                    "TDC1": True
                 },
                 "photon2event": {
                     "dSpace_px": 60,
@@ -286,7 +287,7 @@ class Analysis:
                     "dSpace": 0.001,
                     "dTime":1e-9,
                     "nPxMin": 1,
-                    "TDC1": true
+                    "TDC1": True
                 },
                 "photon2event": {
                     "dSpace_px": 0.001,
