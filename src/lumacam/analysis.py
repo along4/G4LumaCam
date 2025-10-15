@@ -10,6 +10,9 @@ import numpy as np
 import pandas as pd
 import tifffile
 from roifile import ImagejRoi, ROI_TYPE
+from lmfit.models import Model
+from scipy.special import erfc
+from matplotlib import pyplot as plt
 
 class VerbosityLevel(IntEnum):
     """Verbosity levels for simulation output."""
@@ -310,21 +313,29 @@ class Analysis:
             }
         }
 
+
+
     def roi_analysis(self, 
                     tiff_path: str, 
                     roi_zip_path: str, 
                     output_dir: str,
-                    verbosity: VerbosityLevel = VerbosityLevel.BASIC) -> None:
+                    verbosity: VerbosityLevel = VerbosityLevel.BASIC,
+                    pixel_size_um: float = 120.0,
+                    detector_pixels: int = 512) -> None:
         """
         Reads a TIFF stack and applies rectangular ROIs from a .zip file, calculates counts
         (sum of pixel values) per slice per ROI, and saves CSV files with columns: stack
         (1-based), counts, err (sqrt(counts)) in the specified output directory.
+        
+        If ROI name contains "mtf", performs MTF analysis on the summed image within that ROI.
 
         Args:
             tiff_path: Absolute path to the TIFF stack file.
             roi_zip_path: Absolute path to the roi.zip file.
             output_dir: Absolute path to the output directory for CSV files.
             verbosity: Controls the level of output during processing.
+            pixel_size_um: Pixel size in micrometers (default: 120.0).
+            detector_pixels: Number of detector pixels for frequency conversion (default: 512).
         """
         tiff_path = Path(tiff_path)
         roi_zip_path = Path(roi_zip_path)
@@ -367,6 +378,20 @@ class Analysis:
         output_dir.mkdir(parents=True, exist_ok=True)
         if verbosity >= VerbosityLevel.BASIC:
             print(f"Output directory: {output_dir}")
+
+        # Create MTF output directory at base_dir level
+        base_dir = output_dir.parent
+        mtf_output_dir = base_dir / "MTF_calculation"
+        
+        # Compute summed image for MTF analysis (only if needed)
+        mtf_rois = [roi for roi in rect_rois if "mtf" in (roi.name or "").lower()]
+        if mtf_rois:
+            summed_image = np.sum(stack, axis=0).astype(np.float64)
+            # Replace inf and nan with nan for proper handling
+            summed_image = np.where(np.isinf(summed_image), np.nan, summed_image)
+            mtf_output_dir.mkdir(parents=True, exist_ok=True)
+            if verbosity >= VerbosityLevel.BASIC:
+                print(f"MTF output directory: {mtf_output_dir}")
 
         # Process each rectangular ROI
         for i, roi in enumerate(tqdm(rect_rois, desc="Processing ROIs", disable=(verbosity == VerbosityLevel.QUIET))):
@@ -423,8 +448,199 @@ class Analysis:
             if verbosity >= VerbosityLevel.DETAILED:
                 print(f"Saved: {csv_path} (mean counts: {df['counts'].mean():.2f})")
 
+            # Perform MTF analysis if "mtf" is in the ROI name
+            if "mtf" in roi_name.lower():
+                if verbosity >= VerbosityLevel.BASIC:
+                    print(f"Performing MTF analysis for {roi_name}")
+                
+                try:
+                    self._perform_mtf_analysis(
+                        summed_image=summed_image,
+                        roi_name=roi_name,
+                        left=left,
+                        right=right,
+                        top=top,
+                        bottom=bottom,
+                        output_dir=mtf_output_dir,
+                        pixel_size_um=pixel_size_um,
+                        detector_pixels=detector_pixels,
+                        verbosity=verbosity
+                    )
+                except Exception as e:
+                    if verbosity >= VerbosityLevel.BASIC:
+                        print(f"Warning: MTF analysis failed for {roi_name}: {e}")
+
         if verbosity >= VerbosityLevel.BASIC:
             print(f"Completed: {n_rois} ROI spectra saved to {output_dir}")
+
+
+    def _perform_mtf_analysis(self,
+                            summed_image: np.ndarray,
+                            roi_name: str,
+                            left: int,
+                            right: int,
+                            top: int,
+                            bottom: int,
+                            output_dir: Path,
+                            pixel_size_um: float,
+                            detector_pixels: int,
+                            verbosity: VerbosityLevel) -> None:
+        """
+        Performs MTF (Modulation Transfer Function) analysis on a knife-edge ROI.
+        
+        Args:
+            summed_image: 2D array of the summed stack
+            roi_name: Name of the ROI
+            left, right, top, bottom: ROI boundaries
+            output_dir: Directory to save MTF results
+            pixel_size_um: Pixel size in micrometers
+            detector_pixels: Number of detector pixels for frequency conversion
+            verbosity: Verbosity level
+        """
+        # Extract ROI from summed image
+        roi_image = summed_image[top:bottom, left:right]
+        
+        # Sum across columns (knife edge at lower part, so we sum horizontally)
+        # This gives us the Edge Spread Function (ESF)
+        esf = np.nansum(roi_image, axis=1)
+        x = np.arange(len(esf))
+        
+        # Remove any remaining nan/inf values
+        valid_mask = np.isfinite(esf)
+        if not np.any(valid_mask):
+            raise ValueError("No valid data points in ROI after removing nan/inf")
+        
+        x_clean = x[valid_mask]
+        esf_clean = esf[valid_mask]
+        
+        # Define erfc model for fitting the Edge Spread Function
+        def erfc_model(x, center, width, amplitude, offset):
+            return amplitude * 0.5 * erfc((x - center) / (np.sqrt(2) * width)) + offset
+        
+        # Create lmfit Model
+        model = Model(erfc_model)
+        
+        # Initial parameter guesses
+        center_guess = len(esf_clean) / 2
+        amplitude_guess = np.nanmax(esf_clean) - np.nanmin(esf_clean)
+        offset_guess = np.nanmin(esf_clean)
+        width_guess = len(esf_clean) * 0.1
+        
+        params = model.make_params(
+            center=center_guess,
+            width=width_guess,
+            amplitude=amplitude_guess,
+            offset=offset_guess
+        )
+        
+        # Set reasonable bounds
+        params['width'].min = 0.1
+        params['amplitude'].min = 0
+        
+        # Perform the fit
+        result = model.fit(esf_clean, params, x=x_clean)
+        
+        # Calculate LSF by differentiating the fitted ESF
+        fitted_esf = result.eval(x=x_clean)
+        lsf = -np.gradient(fitted_esf, x_clean)
+        
+        # Compute MTF from the Fourier transform of the LSF
+        mtf = np.abs(np.fft.fft(lsf))
+        frequencies = np.fft.fftfreq(len(x_clean), x_clean[1] - x_clean[0] if len(x_clean) > 1 else 1.0)
+        
+        # Take only positive frequencies and normalize
+        positive_freq_idx = len(mtf) // 2
+        mtf = mtf[:positive_freq_idx]
+        frequencies = frequencies[:positive_freq_idx]
+        
+        if mtf[0] > 0:
+            mtf = mtf / mtf[0]  # Normalize to 1 at zero frequency
+        
+        # Convert frequencies to lp/mm
+        frequencies_lpmm = frequencies * detector_pixels / pixel_size_um
+        
+        # Save fit parameters and statistics to CSV
+        fit_results = {
+            'parameter': ['center', 'width', 'amplitude', 'offset', 'reduced_chi2'],
+            'value': [
+                result.params['center'].value,
+                result.params['width'].value,
+                result.params['amplitude'].value,
+                result.params['offset'].value,
+                result.redchi
+            ],
+            'stderr': [
+                result.params['center'].stderr if result.params['center'].stderr else np.nan,
+                result.params['width'].stderr if result.params['width'].stderr else np.nan,
+                result.params['amplitude'].stderr if result.params['amplitude'].stderr else np.nan,
+                result.params['offset'].stderr if result.params['offset'].stderr else np.nan,
+                np.nan
+            ]
+        }
+        
+        fit_df = pd.DataFrame(fit_results)
+        fit_csv_path = output_dir / f"{roi_name}_fit_params.csv"
+        fit_df.to_csv(fit_csv_path, index=False)
+        
+        # Save MTF data
+        mtf_data = pd.DataFrame({
+            'frequency_lpmm': frequencies_lpmm,
+            'mtf': mtf
+        })
+        mtf_csv_path = output_dir / f"{roi_name}_mtf.csv"
+        mtf_data.to_csv(mtf_csv_path, index=False)
+        
+        # Create plot
+        fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+        
+        # Plot 1: ESF and fit
+        axes[0, 0].plot(x_clean, esf_clean, 'o', label='Data', markersize=3, alpha=0.6)
+        axes[0, 0].plot(x_clean, fitted_esf, 'r-', label='Fit', linewidth=2)
+        axes[0, 0].set_xlabel('Position (pixels)')
+        axes[0, 0].set_ylabel('Intensity')
+        axes[0, 0].set_title(f'Edge Spread Function - {roi_name}')
+        axes[0, 0].legend()
+        axes[0, 0].grid(True, alpha=0.3)
+        
+        # Plot 2: LSF
+        axes[0, 1].plot(x_clean, lsf, 'b-', linewidth=2)
+        axes[0, 1].set_xlabel('Position (pixels)')
+        axes[0, 1].set_ylabel('Intensity Derivative')
+        axes[0, 1].set_title('Line Spread Function')
+        axes[0, 1].grid(True, alpha=0.3)
+        
+        # Plot 3: MTF
+        axes[1, 0].plot(frequencies_lpmm, mtf, 'g-', linewidth=2)
+        axes[1, 0].axhline(0.1, color='0.7', linestyle='--', zorder=-1, label='MTF=0.1')
+        axes[1, 0].set_xlabel('Frequency (lp/mm)')
+        axes[1, 0].set_ylabel('MTF')
+        axes[1, 0].set_title('Modulation Transfer Function')
+        axes[1, 0].set_xlim(0, min(1.0, np.max(frequencies_lpmm)))
+        axes[1, 0].set_ylim(0, 1.1)
+        axes[1, 0].legend()
+        axes[1, 0].grid(True, alpha=0.3)
+        
+        # Plot 4: Fit statistics
+        axes[1, 1].axis('off')
+        fit_text = f"Fit Parameters:\n"
+        fit_text += f"Center: {result.params['center'].value:.2f} ± {result.params['center'].stderr:.2f}\n" if result.params['center'].stderr else f"Center: {result.params['center'].value:.2f}\n"
+        fit_text += f"Width: {result.params['width'].value:.2f} ± {result.params['width'].stderr:.2f}\n" if result.params['width'].stderr else f"Width: {result.params['width'].value:.2f}\n"
+        fit_text += f"Amplitude: {result.params['amplitude'].value:.2f} ± {result.params['amplitude'].stderr:.2f}\n" if result.params['amplitude'].stderr else f"Amplitude: {result.params['amplitude'].value:.2f}\n"
+        fit_text += f"Offset: {result.params['offset'].value:.2f} ± {result.params['offset'].stderr:.2f}\n" if result.params['offset'].stderr else f"Offset: {result.params['offset'].value:.2f}\n"
+        fit_text += f"\nReduced χ²: {result.redchi:.4f}"
+        axes[1, 1].text(0.1, 0.5, fit_text, fontsize=11, verticalalignment='center', 
+                        family='monospace', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+        
+        plt.tight_layout()
+        plot_path = output_dir / f"{roi_name}_mtf_analysis.png"
+        plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        
+        if verbosity >= VerbosityLevel.DETAILED:
+            print(f"Saved MTF analysis: {fit_csv_path}")
+            print(f"Saved MTF data: {mtf_csv_path}")
+            print(f"Saved MTF plot: {plot_path}")
+            print(f"Reduced χ²: {result.redchi:.4f}")
 
     def _run_pixel2photon(self, tpx3_dir: Path, photon_files_dir: Path, 
                                 params_file: Path, n_threads: int, 
@@ -947,6 +1163,7 @@ class Analysis:
         start_time = time.time()
 
         base_dir = self.archive
+        process_dir = base_dir
         if suffix:
             process_dir = base_dir / suffix.strip("_")
             process_dir.mkdir(parents=True, exist_ok=True)
@@ -1057,7 +1274,7 @@ class Analysis:
         # Run ROI analysis if roifile is provided
         if roifile:
             tiff_path = final_dir / "image"
-            output_dir = base_dir / "ROI_spectra"
+            output_dir = process_dir / "ROI_spectra"
             if not tiff_path.exists():
                 if verbosity > VerbosityLevel.BASIC:
                     print(f"Warning: TIFF file not found at {tiff_path}, skipping ROI analysis")
