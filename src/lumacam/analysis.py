@@ -314,6 +314,165 @@ class Analysis:
         }
 
 
+    def _run_roi_analysis(self, 
+                    tiff_path: str, 
+                    roi_zip_path: str, 
+                    output_dir: str,
+                    verbosity: VerbosityLevel = VerbosityLevel.BASIC,
+                    pixel_size_um: float = 120.0,
+                    detector_pixels: int = 512) -> None:
+        """
+        Reads a TIFF stack and applies rectangular ROIs from a .zip file, calculates counts
+        (sum of pixel values) per slice per ROI, and saves CSV files with columns: stack
+        (1-based), counts, err (sqrt(counts)) in the specified output directory.
+        
+        If ROI name contains "mtf", performs MTF analysis on the summed image within that ROI.
+
+        Args:
+            tiff_path: Absolute path to the TIFF stack file.
+            roi_zip_path: Absolute path to the roi.zip file.
+            output_dir: Absolute path to the output directory for CSV files.
+            verbosity: Controls the level of output during processing.
+            pixel_size_um: Pixel size in micrometers (default: 120.0).
+            detector_pixels: Number of detector pixels for frequency conversion (default: 512).
+        """
+        tiff_path = Path(tiff_path)
+        roi_zip_path = Path(roi_zip_path)
+        output_dir = Path(output_dir)
+
+        if not tiff_path.exists():
+            raise FileNotFoundError(f"TIFF file not found: {tiff_path}")
+        if not roi_zip_path.exists():
+            raise FileNotFoundError(f"ROI zip file not found: {roi_zip_path}")
+
+        # Read TIFF stack
+        stack = tifffile.imread(tiff_path)
+        if len(stack.shape) != 3:
+            raise ValueError(f"Expected 3D TIFF stack (slices, height, width), got shape {stack.shape}")
+        slices, height, width = stack.shape
+
+        # Check if TIFF stack has non-zero values
+        if np.all(stack == 0):
+            if verbosity >= VerbosityLevel.BASIC:
+                print(f"Warning: TIFF stack at {tiff_path} contains all zero values")
+            return
+
+        # Read ROIs - fromfile returns a list directly, not a context manager
+        rois = ImagejRoi.fromfile(roi_zip_path)
+        
+        # Ensure rois is a list
+        if isinstance(rois, ImagejRoi):
+            rois = [rois]
+        
+        rect_rois = [roi for roi in rois if roi.roitype == ROI_TYPE.RECT]
+        n_rois = len(rect_rois)
+        if n_rois == 0:
+            raise ValueError(f"No rectangular ROIs found in {roi_zip_path}")
+
+        if verbosity >= VerbosityLevel.BASIC:
+            print(f"Loaded TIFF stack: {slices} slices, {height}x{width}")
+            print(f"Processing {n_rois} rectangular ROIs from {roi_zip_path}")
+
+        # Create output directory
+        output_dir.mkdir(parents=True, exist_ok=True)
+        if verbosity >= VerbosityLevel.BASIC:
+            print(f"Output directory: {output_dir}")
+
+        # Create MTF output directory at base_dir level
+        base_dir = output_dir.parent
+        mtf_output_dir = base_dir / "MTF_calculation"
+        
+        # Compute summed image for MTF analysis (only if needed)
+        mtf_rois = [roi for roi in rect_rois if "mtf" in (roi.name or "").lower()]
+        if mtf_rois:
+            summed_image = np.sum(stack, axis=0).astype(np.float64)
+            # Replace inf and nan with nan for proper handling
+            summed_image = np.where(np.isinf(summed_image), np.nan, summed_image)
+            mtf_output_dir.mkdir(parents=True, exist_ok=True)
+            if verbosity >= VerbosityLevel.BASIC:
+                print(f"MTF output directory: {mtf_output_dir}")
+
+        # Process each rectangular ROI
+        for i, roi in enumerate(tqdm(rect_rois, desc="Processing ROIs", disable=(verbosity == VerbosityLevel.QUIET))):
+            roi_name = roi.name if roi.name else f"ROI_{i+1}"
+
+            # Generate mask for rectangular ROI
+            # Use integer coordinates directly from the ROI
+            left = max(0, int(np.floor(roi.left)))
+            top = max(0, int(np.floor(roi.top)))
+            right = min(width, int(np.ceil(roi.right)))
+            bottom = min(height, int(np.ceil(roi.bottom)))
+            
+            if right <= left or bottom <= top:
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"Skipping {roi_name}: invalid rectangle (left={left}, right={right}, top={top}, bottom={bottom})")
+                continue
+
+            # Create mask - note: numpy uses [row, col] indexing which is [y, x]
+            mask = np.zeros((height, width), dtype=bool)
+            mask[top:bottom, left:right] = True
+            area = np.sum(mask)
+            
+            if area == 0:
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"Skipping {roi_name}: zero area mask")
+                continue
+
+            if verbosity >= VerbosityLevel.DETAILED:
+                print(f"Processing {roi_name}: bounds=[{left}:{right}, {top}:{bottom}], area={area}")
+
+            # Calculate counts per slice
+            results = []
+            for z in range(slices):
+                # Get slice - ensure it's float to avoid overflow
+                slice_img = stack[z].astype(np.float64)
+                
+                # Apply mask and calculate sum
+                roi_pixels = slice_img[mask]
+                sum_val = np.sum(roi_pixels)
+                
+                # Calculate error (sqrt of counts, treating as Poisson statistics)
+                err_val = np.sqrt(max(sum_val, 0))
+                
+                results.append({
+                    "stack": z + 1,  # 1-based indexing to match ImageJ
+                    "counts": sum_val,
+                    "err": err_val
+                })
+
+            # Save results to CSV
+            df = pd.DataFrame(results)
+            csv_path = output_dir / f"{roi_name}.csv"
+            df.to_csv(csv_path, index=False)
+            if verbosity >= VerbosityLevel.DETAILED:
+                print(f"Saved: {csv_path} (mean counts: {df['counts'].mean():.2f})")
+
+            # Perform MTF analysis if "mtf" is in the ROI name
+            if "mtf" in roi_name.lower():
+                if verbosity >= VerbosityLevel.BASIC:
+                    print(f"Performing MTF analysis for {roi_name}")
+                
+                try:
+                    self._perform_mtf_analysis(
+                        summed_image=summed_image,
+                        roi_name=roi_name,
+                        left=left,
+                        right=right,
+                        top=top,
+                        bottom=bottom,
+                        output_dir=mtf_output_dir,
+                        pixel_size_um=pixel_size_um,
+                        detector_pixels=detector_pixels,
+                        verbosity=verbosity
+                    )
+                except Exception as e:
+                    if verbosity >= VerbosityLevel.BASIC:
+                        print(f"Warning: MTF analysis failed for {roi_name}: {e}")
+
+        if verbosity >= VerbosityLevel.BASIC:
+            print(f"Completed: {n_rois} ROI spectra saved to {output_dir}")
+
+
 
     def _perform_mtf_analysis(self,
                             summed_image: np.ndarray,
