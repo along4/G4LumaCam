@@ -1289,22 +1289,29 @@ class Lens:
                 print(f"Missing required columns: {missing}")
             return
         
-        # Filter out invalid rows
+        # Filter out invalid rows (NaN values and out-of-range coordinates)
         valid_mask = (
             df["pixel_x"].notna() & 
             df["pixel_y"].notna() & 
             df["toa2"].notna() & 
-            df["time_diff"].notna()
+            df["time_diff"].notna() &
+            (df["pixel_x"] >= 0) & (df["pixel_x"] < sensor_size) &
+            (df["pixel_y"] >= 0) & (df["pixel_y"] < sensor_size)
         )
         n_invalid = (~valid_mask).sum()
         if n_invalid > 0:
+            n_nan = df[["pixel_x", "pixel_y", "toa2", "time_diff"]].isna().any(axis=1).sum()
+            n_oob = ((df["pixel_x"] < 0) | (df["pixel_x"] >= sensor_size) | 
+                     (df["pixel_y"] < 0) | (df["pixel_y"] >= sensor_size)).sum()
             if verbosity >= 2:
-                print(f"  Filtering out {n_invalid} rows with NaN values")
+                print(f"  Filtering out {n_invalid} invalid rows:")
+                print(f"    - {n_nan} with NaN values")
+                print(f"    - {n_oob} with out-of-range coordinates (must be 0-{sensor_size-1})")
             df = df[valid_mask].reset_index(drop=True)
         
         if len(df) == 0:
             if verbosity >= 1:
-                print("  No valid data after filtering NaN values")
+                print("  No valid data after filtering")
             return
         
         # Setup output directory
@@ -1333,9 +1340,9 @@ class Lens:
                 sample = list(trigger_time_dict.items())[:3]
                 print(f"  Sample: {[(k, f'{v:.1f}ns') for k, v in sample]}")
         
-        # Extract and convert data
-        px = np.clip(df["pixel_x"].to_numpy().astype(np.int64), 0, sensor_size - 1)
-        py = np.clip(df["pixel_y"].to_numpy().astype(np.int64), 0, sensor_size - 1)
+        # Extract and convert data (no clipping - already filtered)
+        px = df["pixel_x"].to_numpy().astype(np.int64)
+        py = df["pixel_y"].to_numpy().astype(np.int64)
         toa_ns = df["toa2"].to_numpy().astype(float)
         tot_ns = np.maximum(df["time_diff"].to_numpy().astype(float), 1.0)
         
@@ -1351,8 +1358,16 @@ class Lens:
         # Convert ToT to ticks (10-bit, ~1ns resolution)
         tot_ticks = np.clip(np.round(tot_ns).astype(np.int64), 1, 0x3FF)
         
-        # Encode PixAddr directly (16 bits: 8 bits x, 8 bits y)
-        pix_addr = (px.astype(np.uint16) << 8) | py.astype(np.uint16)
+        # Encode PixAddr using TPX3 hierarchical addressing scheme
+        # X = dcol + pix / 4  =>  dcol = X - (pix / 4)
+        # Y = spix + (pix & 3)  =>  spix = Y - (pix & 3)
+        # pix encodes both the fine X and Y position within a superpixel
+        pix = ((px % 4) << 2) | (py % 4)  # 3 bits: combines X[1:0] and Y[1:0]
+        dcol = (px >> 2).astype(np.uint16)  # 7 bits: X / 4
+        spix = (py >> 2).astype(np.uint16)  # 6 bits: Y / 4
+        
+        # Combine into 16-bit PixAddr field
+        pix_addr = ((dcol & 0x7F) << 9) | ((spix & 0x3F) << 3) | (pix & 0x7)
         
         # Timer for GTS
         timer_ticks = (toa_ticks * TICK_NS / TIMER_TICK_NS).astype(np.int64)
@@ -1365,17 +1380,17 @@ class Lens:
             # Verify encoding
             print(f"  Encoding verification:")
             for i in [0, min(5, len(px)-1)]:
-                decoded_x = (pix_addr[i] >> 8) & 0xFF
-                decoded_y = pix_addr[i] & 0xFF
+                decoded_x = pix_addr[i] % 256
+                decoded_y = pix_addr[i] // 256
                 match = "✓" if (decoded_x == px[i] and decoded_y == py[i]) else "✗"
-                print(f"    ({px[i]},{py[i]}) → pix_addr={pix_addr[i]:04x} → ({decoded_x},{decoded_y}) {match}")
+                print(f"    ({px[i]},{py[i]}) → pix_addr={pix_addr[i]:05d} → ({decoded_x},{decoded_y}) {match}")
         
         # Encode pixel packets
         pixel_packets = []
         for j in range(len(df)):
             # Build 64-bit pixel packet
             # Bits 63-60: 0xb (header)
-            # Bits 59-44: PixAddr (16 bits: 8 bits x, 8 bits y)
+            # Bits 59-44: PixAddr (16 bits: linear address = Y * 256 + X)
             # Bits 43-30: ToA coarse (14 bits)
             # Bits 29-20: ToT (10 bits)
             # Bits 19-16: FToA (4 bits)
@@ -1568,7 +1583,7 @@ class Lens:
                 print(f"✅ {files_written[0][0].name}: {files_written[0][1]} events, {files_written[0][2]} triggers")
             else:
                 print(f"✅ {len(files_written)} files, {total_trigs} triggers total")
-                
+
     def _align_chunk_results(self, chunk_result, indices, chunk_idx, verbosity):
         """
         Align chunk processing results with original row indices.
