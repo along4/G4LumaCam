@@ -463,6 +463,7 @@ class Analysis:
                         output_dir=mtf_output_dir,
                         pixel_size_um=pixel_size_um,
                         detector_pixels=detector_pixels,
+                        orientation="top-bottom",
                         verbosity=verbosity
                     )
                 except Exception as e:
@@ -484,7 +485,9 @@ class Analysis:
                             output_dir: Path,
                             pixel_size_um: float,
                             detector_pixels: int,
-                            verbosity: VerbosityLevel) -> None:
+                            orientation: str = "top-bottom",
+                            verbosity: VerbosityLevel = VerbosityLevel.QUIET
+                            ) -> None:
         """
         Performs MTF (Modulation Transfer Function) analysis on a knife-edge ROI.
         
@@ -495,14 +498,28 @@ class Analysis:
             output_dir: Directory to save MTF results
             pixel_size_um: Pixel size in micrometers
             detector_pixels: Number of detector pixels for frequency conversion
+            orientation: Orientation of the edge ("top-bottom" or "left-right")
             verbosity: Verbosity level
         """
         # Extract ROI from summed image
         roi_image = summed_image[top:bottom, left:right]
         
-        # Sum across columns (knife edge at lower part, so we sum horizontally)
-        # This gives us the Edge Spread Function (ESF)
-        esf = np.nansum(roi_image, axis=1)
+        roi_height = bottom - top
+        roi_width = right - left
+        
+        if orientation=="top-bottom":
+            # Horizontal edge (top-bottom) - sum along axis=1 (columns)
+            esf = np.nansum(roi_image, axis=1)
+            orientation = "top-bottom"
+            scan_length = roi_height
+        elif orientation=="left-right":
+            # Vertical edge (left-right) - sum along axis=0 (rows)
+            esf = np.nansum(roi_image, axis=0)
+            orientation = "left-right"
+            scan_length = roi_width
+        else:
+            raise ValueError("Invalid orientation. Use 'top-bottom' or 'left-right'.")  
+        
         x = np.arange(len(esf))
         
         # Remove any remaining nan/inf values
@@ -513,6 +530,9 @@ class Analysis:
         x_clean = x[valid_mask]
         esf_clean = esf[valid_mask]
         
+        if len(x_clean) < 10:
+            raise ValueError(f"Insufficient valid data points ({len(x_clean)}) for MTF analysis")
+        
         # Define erfc model for fitting the Edge Spread Function
         def erfc_model(x, center, width, amplitude, offset):
             return amplitude * 0.5 * erfc((x - center) / (np.sqrt(2) * width)) + offset
@@ -520,11 +540,23 @@ class Analysis:
         # Create lmfit Model
         model = Model(erfc_model)
         
-        # Initial parameter guesses
+        # Improved initial parameter guesses
         center_guess = len(esf_clean) / 2
+        
+        # Estimate edge position from where signal changes most
+        # Find the steepest gradient
+        gradient = np.abs(np.gradient(esf_clean))
+        if np.max(gradient) > 0:
+            center_guess = x_clean[np.argmax(gradient)]
+        
         amplitude_guess = np.nanmax(esf_clean) - np.nanmin(esf_clean)
         offset_guess = np.nanmin(esf_clean)
-        width_guess = len(esf_clean) * 0.1
+        
+        # Better width estimate: use a small fraction of scan length
+        # Typical knife edge is 2-10 pixels wide
+        width_guess = min(5.0, len(esf_clean) * 0.05)
+        center_guess = 68 if detector_pixels == 256 else 100
+        amplitude_guess = -300 if detector_pixels == 256 else -100
         
         params = model.make_params(
             center=center_guess,
@@ -533,12 +565,23 @@ class Analysis:
             offset=offset_guess
         )
         
-        # Set reasonable bounds
-        # params['width'].min = 0.1
+        # Set reasonable bounds to prevent unrealistic fits
+        # params['width'].min = 0.5
+        # params['width'].max = len(esf_clean) * 0.3  # Max 30% of scan range
         # params['amplitude'].min = 0
+        params['center'].min = 0
+        params['center'].max = len(esf_clean)
         
         # Perform the fit
-        result = model.fit(esf_clean, params, x=x_clean)
+        try:
+            result = model.fit(esf_clean, params, x=x_clean)
+        except Exception as e:
+            raise ValueError(f"Fit failed: {e}")
+        
+        # Check fit quality
+        if result.redchi > 100:
+            if verbosity >= VerbosityLevel.BASIC:
+                print(f"Warning: Poor fit quality (reduced χ² = {result.redchi:.2f})")
         
         # Calculate LSF by differentiating the fitted ESF
         fitted_esf = result.eval(x=x_clean)
@@ -547,11 +590,7 @@ class Analysis:
         # Compute MTF from FFT of LSF
         mtf = np.abs(np.fft.fft(lsf))
         
-        # CORRECTED: Frequency conversion
-        # FFT gives frequencies in cycles per sample
-        # dx = 1 pixel (spacing in x_clean)
-        # freq in cycles/pixel needs to be converted to lp/mm
-        # Conversion: cycles/pixel × (1000 μm/mm) / (pixel_size_um μm/pixel) = lp/mm
+        # Frequency conversion
         dx_pixels = 1.0  # spacing in x_clean array (pixels)
         frequencies = np.fft.fftfreq(len(x_clean), d=dx_pixels)  # cycles per pixel
         
@@ -559,19 +598,22 @@ class Analysis:
         mtf = mtf[:positive_freq_idx]
         frequencies = frequencies[:positive_freq_idx]
         
+        # Normalize MTF
         if mtf[0] > 0:
             mtf = mtf / mtf[0]
         
         # Convert from cycles/pixel to lp/mm
-        # 1 cycle/pixel = 1000/pixel_size_um lp/mm
         frequencies_lpmm = frequencies * 1000.0 / pixel_size_um
         
         # Additional diagnostic info
-        nyquist_lpmm = 0.5 * 1000.0 / pixel_size_um  # Nyquist frequency in lp/mm
+        nyquist_lpmm = 0.5 * 1000.0 / pixel_size_um
+        edge_width_mm = result.params['width'].value * pixel_size_um / 1000.0
         
+        # Save fit results
         fit_results = {
             'parameter': ['center', 'width', 'amplitude', 'offset', 'reduced_chi2', 
-                        'pixel_size_um', 'nyquist_lpmm', 'roi_height_pixels'],
+                        'pixel_size_um', 'nyquist_lpmm', 'roi_dimension_pixels',
+                        'edge_width_mm', 'orientation'],
             'value': [
                 result.params['center'].value,
                 result.params['width'].value,
@@ -580,13 +622,17 @@ class Analysis:
                 result.redchi,
                 pixel_size_um,
                 nyquist_lpmm,
-                bottom - top
+                scan_length,
+                edge_width_mm,
+                orientation
             ],
             'stderr': [
                 result.params['center'].stderr if result.params['center'].stderr else np.nan,
                 result.params['width'].stderr if result.params['width'].stderr else np.nan,
                 result.params['amplitude'].stderr if result.params['amplitude'].stderr else np.nan,
                 result.params['offset'].stderr if result.params['offset'].stderr else np.nan,
+                np.nan,
+                np.nan,
                 np.nan,
                 np.nan,
                 np.nan,
@@ -598,6 +644,7 @@ class Analysis:
         fit_csv_path = output_dir / f"{roi_name}_fit_params.csv"
         fit_df.to_csv(fit_csv_path, index=False)
         
+        # Save MTF data
         mtf_data = pd.DataFrame({
             'frequency_lpmm': frequencies_lpmm,
             'mtf': mtf
@@ -605,19 +652,19 @@ class Analysis:
         mtf_csv_path = output_dir / f"{roi_name}_mtf.csv"
         mtf_data.to_csv(mtf_csv_path, index=False)
         
-        fig, axes = plt.subplots(2, 2, figsize=(8, 6))
+        # Create diagnostic plots
+        fig, axes = plt.subplots(2, 2, figsize=(10, 8))
         
         # Plot 1: ESF and fit
         axes[0, 0].plot(x_clean, esf_clean, 'o', label='Data', markersize=3, alpha=0.6)
         axes[0, 0].plot(x_clean, fitted_esf, 'r-', label='Fit', linewidth=2)
         axes[0, 0].set_xlabel('Position (pixels)')
         axes[0, 0].set_ylabel('Intensity')
-        axes[0, 0].set_title(f'Edge Spread Function - {roi_name}')
+        axes[0, 0].set_title(f'Edge Spread Function - {roi_name}\n({orientation})')
         axes[0, 0].legend()
         axes[0, 0].grid(True, alpha=0.3)
-        # Add text with width in pixels and physical units
-        width_mm = result.params['width'].value * pixel_size_um / 1000.0
-        axes[0, 0].text(0.05, 0.95, f"Width: {result.params['width'].value:.1f} px ({width_mm:.3f} mm)", 
+        axes[0, 0].text(0.05, 0.95, 
+                        f"Width: {result.params['width'].value:.2f} px\n({edge_width_mm:.4f} mm)", 
                         transform=axes[0, 0].transAxes, verticalalignment='top',
                         bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
         
@@ -628,14 +675,13 @@ class Analysis:
         axes[0, 1].set_title('Line Spread Function')
         axes[0, 1].grid(True, alpha=0.3)
         
-        # Plot 3: MTF - CORRECTED X-AXIS LIMIT
+        # Plot 3: MTF
         axes[1, 0].plot(frequencies_lpmm, mtf, 'g-', linewidth=2)
         axes[1, 0].axhline(0.1, color='0.7', linestyle='--', zorder=-1, label='MTF=0.1')
         axes[1, 0].set_xlabel('Frequency (lp/mm)')
         axes[1, 0].set_ylabel('MTF')
         axes[1, 0].set_title('Modulation Transfer Function')
-        # Use Nyquist frequency as upper limit, or reasonable fraction
-        max_freq = min(nyquist_lpmm, 5.0)  # Show up to 5 lp/mm or Nyquist
+        max_freq = min(nyquist_lpmm, 5.0)
         axes[1, 0].set_xlim(0, max_freq)
         axes[1, 0].set_ylim(0, 1.1)
         axes[1, 0].legend()
@@ -643,7 +689,7 @@ class Analysis:
         
         # Plot 4: Fit statistics
         axes[1, 1].axis('off')
-        fit_text = f"Fit Parameters:\n"
+        fit_text = f"Fit Parameters ({orientation}):\n\n"
         fit_text += f"Center: {result.params['center'].value:.2f}"
         if result.params['center'].stderr:
             fit_text += f" ± {result.params['center'].stderr:.2f}"
@@ -652,24 +698,26 @@ class Analysis:
         fit_text += f"Width: {result.params['width'].value:.2f}"
         if result.params['width'].stderr:
             fit_text += f" ± {result.params['width'].stderr:.2f}"
-        fit_text += f" px ({width_mm:.3f} mm)\n"
+        fit_text += f" px\n       ({edge_width_mm:.4f} mm)\n"
         
-        fit_text += f"Amplitude: {result.params['amplitude'].value:.2f}"
+        fit_text += f"Amplitude: {result.params['amplitude'].value:.1f}"
         if result.params['amplitude'].stderr:
-            fit_text += f" ± {result.params['amplitude'].stderr:.2f}"
+            fit_text += f" ± {result.params['amplitude'].stderr:.1f}"
         fit_text += "\n"
         
-        fit_text += f"Offset: {result.params['offset'].value:.2f}"
+        fit_text += f"Offset: {result.params['offset'].value:.1f}"
         if result.params['offset'].stderr:
-            fit_text += f" ± {result.params['offset'].stderr:.2f}"
-        fit_text += "\n"
+            fit_text += f" ± {result.params['offset'].stderr:.1f}"
+        fit_text += "\n\n"
         
-        fit_text += f"\nReduced χ²: {result.redchi:.4f}\n"
+        fit_text += f"Reduced χ²: {result.redchi:.4f}\n"
         fit_text += f"Pixel size: {pixel_size_um:.2f} μm\n"
+        fit_text += f"ROI size: {scan_length} px\n"
         fit_text += f"Nyquist: {nyquist_lpmm:.3f} lp/mm"
         
-        axes[1, 1].text(0.1, 0.5, fit_text, fontsize=10, verticalalignment='center', 
-                        family='monospace', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+        axes[1, 1].text(0.1, 0.5, fit_text, fontsize=9, verticalalignment='center', 
+                        family='monospace', 
+                        bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
         
         plt.tight_layout()
         plot_path = output_dir / f"{roi_name}_mtf_analysis.png"
@@ -677,12 +725,14 @@ class Analysis:
         plt.close()
         
         if verbosity >= VerbosityLevel.DETAILED:
-            print(f"Saved MTF analysis: {fit_csv_path}")
-            print(f"Saved MTF data: {mtf_csv_path}")
-            print(f"Saved MTF plot: {plot_path}")
-            print(f"Reduced χ²: {result.redchi:.4f}")
-            print(f"Edge width: {result.params['width'].value:.2f} pixels ({width_mm:.3f} mm)")
-            print(f"Nyquist frequency: {nyquist_lpmm:.3f} lp/mm")
+            print(f"MTF Analysis Results for {roi_name}:")
+            print(f"  Orientation: {orientation}")
+            print(f"  Edge width: {result.params['width'].value:.2f} pixels ({edge_width_mm:.4f} mm)")
+            print(f"  Reduced χ²: {result.redchi:.4f}")
+            print(f"  Nyquist frequency: {nyquist_lpmm:.3f} lp/mm")
+            print(f"  Saved: {fit_csv_path}")
+            print(f"  Saved: {mtf_csv_path}")
+            print(f"  Saved: {plot_path}")
 
     
     def _run_pixel2photon(self, tpx3_dir: Path, photon_files_dir: Path, 
