@@ -985,6 +985,9 @@ class Lens:
 
                 # Apply saturation if deadtime or blob is provided
                 if deadtime is not None or blob > 0:
+                    # Initialize in_tpx3 column as False (will be marked True for surviving rows)
+                    result_df['in_tpx3'] = False
+                    
                     if verbosity >= VerbosityLevel.DETAILED:
                         print(f"  Applying saturation with deadtime={deadtime} ns, blob={blob} pixels, decay_time={decay_time}ns")
                     
@@ -996,8 +999,11 @@ class Lens:
                             print(f"Cannot apply saturation to {csv_file.name}: missing columns {missing_cols}")
                         continue
                     
+                    # Store original indices before saturation
+                    result_df['_original_index'] = result_df.index
+                    
                     # Call saturate_photons
-                    result_df = self.saturate_photons(
+                    saturated_df = self.saturate_photons(
                         data=result_df,
                         deadtime=deadtime,
                         blob=blob,
@@ -1007,16 +1013,48 @@ class Lens:
                         verbosity=verbosity
                     )
                     
-                    if result_df is None or result_df.empty:
+                    if saturated_df is None or saturated_df.empty:
                         if verbosity > VerbosityLevel.QUIET:
                             print(f"  Saturation produced no results for {csv_file.name}")
-                        continue
-                    
-                    # Sort by time to restore chronological order
-                    result_df = result_df.sort_values('toa2').reset_index(drop=True)
-                    
+                        # Still need to save the result_df with in_tpx3=False for all rows
+                        # Don't continue here - proceed to save the CSV with no rows marked for TPX3
+                        result_df['in_tpx3'] = False
+                    else:
+                        # Mark rows that survived saturation
+                        if '_original_index' in saturated_df.columns:
+                            survived_indices = saturated_df['_original_index'].values
+                            result_df.loc[survived_indices, 'in_tpx3'] = True
+                        
+                        # Update result_df with saturated data
+                        result_df = saturated_df
+                        
+                        # Sort by time to restore chronological order
+                        result_df = result_df.sort_values('toa2').reset_index(drop=True)
+                        
+                        # Remove temporary index column
+                        if '_original_index' in result_df.columns:
+                            result_df = result_df.drop(columns=['_original_index'])
+                        
+                        if verbosity >= VerbosityLevel.DETAILED:
+                            print(f"  After saturation and sorting: {len(result_df)} rows")
+                            tpx3_count = result_df['in_tpx3'].sum() if 'in_tpx3' in result_df.columns else len(result_df)
+                            print(f"  Rows marked for TPX3: {tpx3_count}")
+                else:
+                    # No saturation applied - mark all rows as in_tpx3=True
+                    result_df['in_tpx3'] = True
                     if verbosity >= VerbosityLevel.DETAILED:
-                        print(f"  After saturation and sorting: {len(result_df)} rows")
+                        print(f"  No saturation applied - all {len(result_df)} rows marked for TPX3")
+
+                # Filter columns to keep only desired ones
+                desired_columns = ['pixel_x', 'pixel_y', 'toa2', 'photon_count', 'time_diff', 
+                                   'id', 'neutron_id', 'pulse_id', 'pulse_time_ns', 'in_tpx3']
+                
+                # Keep only columns that exist in the dataframe
+                columns_to_keep = [col for col in desired_columns if col in result_df.columns]
+                result_df = result_df[columns_to_keep]
+                
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"  Filtered to columns: {columns_to_keep}")
 
                 # Save results to file
                 output_file = traced_photons_dir / f"traced_{csv_file.name}"
@@ -1026,8 +1064,21 @@ class Lens:
                 if deadtime is not None or blob > 0:
                     # Extract file index from filename (e.g., sim_data_0.csv -> 0)
                     file_index = int(csv_file.stem.split('_')[-1])
+                    
+                    # Only pass rows marked as in_tpx3 (ensure column exists)
+                    if 'in_tpx3' in result_df.columns:
+                        tpx3_data = result_df[result_df['in_tpx3']].copy()
+                    else:
+                        # Fallback: if column doesn't exist, use all rows
+                        tpx3_data = result_df.copy()
+                        if verbosity >= VerbosityLevel.DETAILED:
+                            print(f"  Warning: 'in_tpx3' column not found, using all rows for TPX3")
+                    
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"  Writing {len(tpx3_data)} rows to TPX3 file")
+                    
                     self._write_tpx3(
-                        traced_data=result_df,
+                        traced_data=tpx3_data,
                         chip_index=0,
                         verbosity=verbosity,
                         sensor_size=256,
