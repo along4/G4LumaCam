@@ -326,6 +326,9 @@ class Analysis:
         (sum of pixel values) per slice per ROI, and saves CSV files with columns: stack
         (1-based), counts, err (sqrt(counts)) in the specified output directory.
         
+        Also generates a summary statistics CSV with total counts and statistics for the 
+        entire TIFF and each ROI.
+        
         If ROI name contains "mtf", performs MTF analysis on the summed image within that ROI.
 
         Args:
@@ -392,6 +395,27 @@ class Analysis:
             if verbosity >= VerbosityLevel.BASIC:
                 print(f"MTF output directory: {mtf_output_dir}")
 
+        # Initialize summary statistics list
+        summary_stats = []
+        
+        # Calculate statistics for entire TIFF stack
+        stack_float = stack.astype(np.float64)
+        total_counts = np.sum(stack_float)
+        total_pixels = height * width * slices
+        summary_stats.append({
+            "region": "FULL_TIFF",
+            "total_counts": total_counts,
+            "mean_counts": np.mean(stack_float),
+            "std_counts": np.std(stack_float),
+            "min_counts": np.min(stack_float),
+            "max_counts": np.max(stack_float),
+            "total_area_pixels": total_pixels,
+            "area_per_slice": height * width,
+            "n_slices": slices,
+            "counts_per_slice_mean": total_counts / slices,
+            "counts_per_slice_std": np.std([np.sum(stack[z]) for z in range(slices)])
+        })
+
         # Process each rectangular ROI
         for i, roi in enumerate(tqdm(rect_rois, desc="Processing ROIs", disable=(verbosity == VerbosityLevel.QUIET))):
             roi_name = roi.name if roi.name else f"ROI_{i+1}"
@@ -421,8 +445,11 @@ class Analysis:
             if verbosity >= VerbosityLevel.DETAILED:
                 print(f"Processing {roi_name}: bounds=[{left}:{right}, {top}:{bottom}], area={area}")
 
-            # Calculate counts per slice
+            # Calculate counts per slice and collect statistics
             results = []
+            slice_counts = []
+            all_roi_pixels = []
+            
             for z in range(slices):
                 # Get slice - ensure it's float to avoid overflow
                 slice_img = stack[z].astype(np.float64)
@@ -430,6 +457,8 @@ class Analysis:
                 # Apply mask and calculate sum
                 roi_pixels = slice_img[mask]
                 sum_val = np.sum(roi_pixels)
+                slice_counts.append(sum_val)
+                all_roi_pixels.extend(roi_pixels.flatten())
                 
                 # Calculate error (sqrt of counts, treating as Poisson statistics)
                 err_val = np.sqrt(max(sum_val, 0))
@@ -446,6 +475,22 @@ class Analysis:
             df.to_csv(csv_path, index=False)
             if verbosity >= VerbosityLevel.DETAILED:
                 print(f"Saved: {csv_path} (mean counts: {df['counts'].mean():.2f})")
+
+            # Add ROI statistics to summary
+            all_roi_pixels = np.array(all_roi_pixels)
+            summary_stats.append({
+                "region": roi_name,
+                "total_counts": np.sum(slice_counts),
+                "mean_counts": np.mean(all_roi_pixels),
+                "std_counts": np.std(all_roi_pixels),
+                "min_counts": np.min(all_roi_pixels),
+                "max_counts": np.max(all_roi_pixels),
+                "total_area_pixels": area * slices,
+                "area_per_slice": area,
+                "n_slices": slices,
+                "counts_per_slice_mean": np.mean(slice_counts),
+                "counts_per_slice_std": np.std(slice_counts)
+            })
 
             # Perform MTF analysis if "mtf" is in the ROI name
             if "mtf" in roi_name.lower():
@@ -470,7 +515,13 @@ class Analysis:
                     if verbosity >= VerbosityLevel.BASIC:
                         print(f"Warning: MTF analysis failed for {roi_name}: {e}")
 
+        # Save summary statistics CSV
+        summary_df = pd.DataFrame(summary_stats)
+        summary_csv_path = output_dir / "summary_statistics.csv"
+        summary_df.to_csv(summary_csv_path, index=False)
+        
         if verbosity >= VerbosityLevel.BASIC:
+            print(f"Saved summary statistics: {summary_csv_path}")
             print(f"Completed: {n_rois} ROI spectra saved to {output_dir}")
 
 
