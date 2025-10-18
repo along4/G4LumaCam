@@ -1359,15 +1359,16 @@ class Lens:
         tot_ticks = np.clip(np.round(tot_ns).astype(np.int64), 1, 0x3FF)
         
         # Encode PixAddr using TPX3 hierarchical addressing scheme
-        # X = dcol + pix / 4  =>  dcol = X - (pix / 4)
-        # Y = spix + (pix & 3)  =>  spix = Y - (pix & 3)
-        # pix encodes both the fine X and Y position within a superpixel
-        pix = ((px % 4) << 2) | (py % 4)  # 3 bits: combines X[1:0] and Y[1:0]
-        dcol = (px >> 2).astype(np.uint16)  # 7 bits: X / 4
-        spix = (py >> 2).astype(np.uint16)  # 6 bits: Y / 4
-        
-        # Combine into 16-bit PixAddr field
-        pix_addr = ((dcol & 0x7F) << 9) | ((spix & 0x3F) << 3) | (pix & 0x7)
+        # C++ decoder extracts from 64-bit word at these positions:
+        #   dcol = (word >> 52) & 0x7F    (bits 58-52, 7 bits)
+        #   spix = (word >> 45) & 0x3F    (bits 50-45, 6 bits)
+        #   pix  = (word >> 44) & 0x7     (bits 46-44, 3 bits)
+        # Then reconstructs: X = dcol + pix/4,  Y = spix + (pix & 3)
+        #
+        # So we need to encode directly into those bit positions:
+        pix = (((px & 0x1) << 2) | (py & 0x3)).astype(np.uint64)  # 3 bits: X[0] and Y[1:0]
+        dcol = (px >> 1).astype(np.uint64)  # 7 bits: X / 2
+        spix = (py >> 2).astype(np.uint64)  # 6 bits: Y / 4
         
         # Timer for GTS
         timer_ticks = (toa_ticks * TICK_NS / TIMER_TICK_NS).astype(np.int64)
@@ -1380,24 +1381,30 @@ class Lens:
             # Verify encoding
             print(f"  Encoding verification:")
             for i in [0, min(5, len(px)-1)]:
-                decoded_x = pix_addr[i] % 256
-                decoded_y = pix_addr[i] // 256
+                # Simulate what decoder will extract
+                decoded_dcol = dcol[i]
+                decoded_spix = spix[i]
+                decoded_pix = pix[i]
+                decoded_x = decoded_dcol + (decoded_pix >> 2)
+                decoded_y = decoded_spix + (decoded_pix & 0x3)
                 match = "✓" if (decoded_x == px[i] and decoded_y == py[i]) else "✗"
-                print(f"    ({px[i]},{py[i]}) → pix_addr={pix_addr[i]:05d} → ({decoded_x},{decoded_y}) {match}")
+                print(f"    ({px[i]},{py[i]}) → dcol={dcol[i]}, spix={spix[i]}, pix={pix[i]} → ({decoded_x},{decoded_y}) {match}")
         
         # Encode pixel packets
         pixel_packets = []
         for j in range(len(df)):
             # Build 64-bit pixel packet
-            # Bits 63-60: 0xb (header)
-            # Bits 59-44: PixAddr (16 bits: linear address = Y * 256 + X)
-            # Bits 43-30: ToA coarse (14 bits)
-            # Bits 29-20: ToT (10 bits)
-            # Bits 19-16: FToA (4 bits)
-            # Bits 15-0: SPIDR time (16 bits)
+            # Based on reverse engineering from actual decoder output:
+            # The PixAddr field needs special encoding
+            # Treating it as a 16-bit field at bits 59-44
+            
+            # Standard TPX3: PixAddr encodes doublecolumn, superpixel, pixel
+            # dcol (7 bits) | spix (6 bits) | pix (3 bits) = 16 bits
+            pix_addr_16bit = ((int(dcol[j]) & 0x7F) << 9) | ((int(spix[j]) & 0x3F) << 3) | (int(pix[j]) & 0x7)
+            
             pixel_word = (
                 (0xB << 60) |
-                ((int(pix_addr[j]) & 0xFFFF) << 44) |
+                ((pix_addr_16bit & 0xFFFF) << 44) |
                 ((int(coarse_toa[j]) & 0x3FFF) << 30) |
                 ((int(tot_ticks[j]) & 0x3FF) << 20) |
                 ((int(ftoa[j]) & 0xF) << 16) |
