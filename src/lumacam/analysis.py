@@ -786,11 +786,12 @@ class Analysis:
             print(f"  Saved: {plot_path}")
 
     
-    def _run_pixel2photon(self, tpx3_dir: Path, photon_files_dir: Path, 
-                                params_file: Path, n_threads: int, 
-                                parameters: Dict[str, Any], 
-                                verbosity: VerbosityLevel) -> None:
-        """Run pixel2photon processing on TPX3 files.
+    def _run_pixel2photon(self, tpx3_dir: Path, photon_files_dir: Path,
+                        params_file: Path, n_threads: int,
+                        parameters: Dict[str, Any],
+                        verbosity: VerbosityLevel) -> None:
+        """Run pixel2photon processing on TPX3 files and add neutron_id from traced photons.
+        
         Args:
             tpx3_dir: Directory containing .tpx3 files.
             photon_files_dir: Directory to save .empirphot files.
@@ -802,24 +803,34 @@ class Analysis:
         tpx3_files = sorted([f for f in tpx3_dir.glob("*.tpx3")])
         if not tpx3_files:
             raise FileNotFoundError(f"No .tpx3 files found in {tpx3_dir}")
-
+        
         if verbosity > VerbosityLevel.BASIC:
             print(f"Processing {len(tpx3_files)} .tpx3 files to photon files...")
-
+        
+        # Find traced photons directory
+        traced_photons_dir = tpx3_dir.parent / "TracedPhotons"
+        if not traced_photons_dir.exists():
+            if verbosity > VerbosityLevel.BASIC:
+                print(f"Warning: TracedPhotons directory not found at {traced_photons_dir}")
+                print("Proceeding without neutron_id mapping")
+            traced_photons_dir = None
+        
         pids = []
         file_cnt = 0
         result_all = 0
-
+        
         for tpx3_file in tqdm(tpx3_files, desc="Processing pixel2photon", disable=(verbosity == VerbosityLevel.QUIET)):
             file_base = tpx3_file.stem
             file_cnt += 1
             output_file = photon_files_dir / f"{file_base}.empirphot"
+            
             cmd = [
                 str(self.empir_dirpath / "bin/empir_pixel2photon_tpx3spidr"),
                 "-i", str(tpx3_file),
                 "-o", str(output_file),
                 "--paramsFile", str(params_file)
             ]
+            
             if parameters.get("pixel2photon", {}).get("TDC1", False):
                 cmd.append("-T")
             
@@ -843,21 +854,160 @@ class Analysis:
                 pids = []
                 if verbosity > VerbosityLevel.BASIC:
                     print("Processed files, continuing...")
-
+        
         for process in pids:
             result = process.wait()
             if result != 0:
                 result_all = 1
                 if verbosity > VerbosityLevel.BASIC:
                     print(f"Error occurred while processing a file!")
-
+        
         if result_all != 0:
-            # raise RuntimeError("Errors occurred during pixel2photon processing")
             if verbosity > VerbosityLevel.BASIC:
                 print("Errors occurred during pixel2photon processing")
-
+        
         if verbosity > VerbosityLevel.BASIC:
             print(f"Finished processing {file_cnt} .tpx3 files")
+        
+        # Now add neutron_id to the empirphot files
+        if traced_photons_dir is not None:
+            self._add_neutron_id_to_photon_files(
+                photon_files_dir=photon_files_dir,
+                traced_photons_dir=traced_photons_dir,
+                verbosity=verbosity
+            )
+
+
+    def _add_neutron_id_to_photon_files(self, photon_files_dir: Path, 
+                                        traced_photons_dir: Path,
+                                        verbosity: VerbosityLevel) -> None:
+        """Add neutron_id column to empirphot files by matching with traced photons.
+        
+        Args:
+            photon_files_dir: Directory containing .empirphot files.
+            traced_photons_dir: Directory containing traced_*.csv files.
+            verbosity: Controls the level of output during processing.
+        """
+        if verbosity > VerbosityLevel.BASIC:
+            print("\nAdding neutron_id to photon files...")
+        
+        empirphot_files = sorted([f for f in photon_files_dir.glob("*.empirphot")])
+        if not empirphot_files:
+            if verbosity > VerbosityLevel.BASIC:
+                print("No .empirphot files found to process")
+            return
+        
+        # Parse TPX3 filename to extract the data file index
+        # Format: traced_data_X_partY.tpx3 or traced_data_X.tpx3
+        def extract_data_index(filename: str) -> int:
+            """Extract data index from TPX3 filename."""
+            # Remove extension
+            stem = filename.replace('.empirphot', '').replace('.tpx3', '')
+            
+            # Handle partitioned files: traced_data_10_part003
+            if '_part' in stem:
+                stem = stem.split('_part')[0]
+            
+            # Extract the number: traced_data_10 -> 10
+            parts = stem.split('_')
+            for part in reversed(parts):
+                if part.isdigit():
+                    return int(part)
+            
+            raise ValueError(f"Could not extract data index from filename: {filename}")
+        
+        for empirphot_file in tqdm(empirphot_files, desc="Adding neutron_id", 
+                                disable=(verbosity == VerbosityLevel.QUIET)):
+            try:
+                # Extract the data file index
+                data_index = extract_data_index(empirphot_file.stem)
+                
+                # Find corresponding traced photons file
+                traced_file = traced_photons_dir / f"traced_sim_data_{data_index}.csv"
+                
+                if not traced_file.exists():
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"Warning: Traced file not found for {empirphot_file.name}: {traced_file}")
+                    continue
+                
+                # Read the empirphot file
+                try:
+                    empirphot_df = pd.read_csv(empirphot_file)
+                except Exception as e:
+                    if verbosity > VerbosityLevel.BASIC:
+                        print(f"Error reading {empirphot_file.name}: {e}")
+                    continue
+                
+                if empirphot_df.empty:
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"Skipping empty file: {empirphot_file.name}")
+                    continue
+                
+                # Read the traced photons file
+                try:
+                    traced_df = pd.read_csv(traced_file)
+                except Exception as e:
+                    if verbosity > VerbosityLevel.BASIC:
+                        print(f"Error reading {traced_file.name}: {e}")
+                    continue
+                
+                # Filter to only rows that are in TPX3
+                if 'in_tpx3' in traced_df.columns:
+                    traced_df = traced_df[traced_df['in_tpx3']].copy()
+                else:
+                    if verbosity > VerbosityLevel.BASIC:
+                        print(f"Warning: 'in_tpx3' column not found in {traced_file.name}")
+                
+                # Check if neutron_id exists
+                if 'neutron_id' not in traced_df.columns:
+                    if verbosity > VerbosityLevel.BASIC:
+                        print(f"Warning: 'neutron_id' column not found in {traced_file.name}")
+                    continue
+                
+                # The empirphot file should have the same number of rows as traced photons with in_tpx3=True
+                # They should be in the same order (chronological by toa2)
+                if len(empirphot_df) != len(traced_df):
+                    if verbosity > VerbosityLevel.BASIC:
+                        print(f"Warning: Row count mismatch for {empirphot_file.name}")
+                        print(f"  empirphot: {len(empirphot_df)} rows, traced (in_tpx3): {len(traced_df)} rows")
+                    
+                    # Try to match based on available columns if counts don't match
+                    # This is a fallback - ideally counts should match
+                    if 'pixel_x' in empirphot_df.columns and 'pixel_x' in traced_df.columns:
+                        # Attempt merge on pixel_x, pixel_y, and toa (if available)
+                        merge_cols = ['pixel_x', 'pixel_y']
+                        if 'toa' in empirphot_df.columns and 'toa2' in traced_df.columns:
+                            # Rename toa2 to toa for merging
+                            traced_df = traced_df.rename(columns={'toa2': 'toa'})
+                            merge_cols.append('toa')
+                        
+                        empirphot_df = empirphot_df.merge(
+                            traced_df[merge_cols + ['neutron_id']],
+                            on=merge_cols,
+                            how='left'
+                        )
+                    else:
+                        if verbosity > VerbosityLevel.BASIC:
+                            print(f"  Cannot merge: missing required columns")
+                        continue
+                else:
+                    # Simple case: same number of rows, assume same order
+                    empirphot_df['neutron_id'] = traced_df['neutron_id'].values
+                
+                # Save the updated empirphot file
+                empirphot_df.to_csv(empirphot_file, index=False)
+                
+                if verbosity >= VerbosityLevel.DETAILED:
+                    neutron_count = empirphot_df['neutron_id'].notna().sum()
+                    print(f"Added neutron_id to {empirphot_file.name}: {neutron_count} valid IDs")
+            
+            except Exception as e:
+                if verbosity > VerbosityLevel.BASIC:
+                    print(f"Error processing {empirphot_file.name}: {e}")
+                continue
+        
+        if verbosity > VerbosityLevel.BASIC:
+            print(f"Finished adding neutron_id to {len(empirphot_files)} photon files")
 
     def _run_photon2event(self, photon_files_dir: Path, event_files_dir: Path, params_file: Path, n_threads: int, verbosity: VerbosityLevel) -> None:
         """Run photon2event processing on .empirphot files.
