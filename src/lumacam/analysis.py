@@ -21,143 +21,6 @@ class VerbosityLevel(IntEnum):
     BASIC = 1    # Show progress bar and basic info
     DETAILED = 2 # Show everything
 
-@dataclass
-class Photon2EventConfig:
-    """Configuration for the photon2event step."""
-    dSpace_px: int = 40
-    dTime_s: float = 50e-9
-    durationMax_s: float = 500e-9
-    dTime_ext: int = 5
-
-    def write(self, output_file: str=".parameterSettings.json") -> str:
-        """
-        Write the photon2event configuration to a JSON file.
-        
-        Args:
-            output_file: The path to save the parameters file.
-            
-        Returns:
-            The path to the created JSON file.
-        """
-        parameters = {
-            "photon2event": {
-                "dSpace_px": self.dSpace_px,
-                "dTime_s": self.dTime_s,
-                "durationMax_s": self.durationMax_s,
-                "dTime_ext": self.dTime_ext
-            }
-        }
-        
-        os.makedirs(os.path.dirname(os.path.abspath(output_file)), exist_ok=True)
-        with open(output_file, 'w') as f:
-            json.dump(parameters, f, indent=4)
-        return output_file
-
-@dataclass
-class BinningConfig:
-    """Configuration for a single binning dimension."""
-    nBins: int
-    resolution: Optional[float] = None
-    resolution_s: Optional[float] = None
-    resolution_px: Optional[float] = None
-    offset: Optional[float] = None
-    offset_s: Optional[float] = None
-    offset_px: Optional[float] = None
-
-@dataclass
-class EventBinningConfig:
-    """Configuration for the event binning step."""
-    binning_t: Optional[BinningConfig] = None
-    binning_x: Optional[BinningConfig] = None
-    binning_y: Optional[BinningConfig] = None
-    binning_nPhotons: Optional[BinningConfig] = None
-    binning_psd: Optional[BinningConfig] = None
-    binning_t_relToExtTrigger: Optional[BinningConfig] = None
-    
-    @classmethod
-    def empty(cls) -> 'EventBinningConfig':
-        """Create an empty configuration."""
-        return cls()
-    
-    def tof_binning(self) -> 'EventBinningConfig':
-        self.binning_t_relToExtTrigger = BinningConfig(
-            resolution_s=1.5625e-9,
-            nBins=640,
-            offset_s=0
-        )
-        return self
-    
-    def psd_binning(self) -> 'EventBinningConfig':
-        self.binning_psd = BinningConfig(
-            resolution=1e-6,
-            nBins=100,
-            offset=0
-        )
-        return self
-    
-    def nphotons_binning(self) -> 'EventBinningConfig':
-        self.binning_nPhotons = BinningConfig(
-            resolution=1,
-            nBins=10,
-            offset=0
-        )
-        return self
-    
-    def time_binning(self) -> 'EventBinningConfig':
-        self.binning_t = BinningConfig(
-            resolution_s=1.5625e-9,
-            nBins=640,
-            offset_s=0
-        )
-        return self
-    
-    def spatial_binning(self) -> 'EventBinningConfig':
-        self.binning_x = BinningConfig(
-            resolution_px=32,
-            nBins=8,
-            offset_px=0
-        )
-        self.binning_y = BinningConfig(
-            resolution_px=32,
-            nBins=8,
-            offset_px=0
-        )
-        return self
-    
-    def write(self, output_file: str=".parameterEvents.json") -> str:
-        parameters = {"bin_events": {}}
-        if self.binning_t:
-            parameters["bin_events"]["binning_t"] = self._get_config_dict(self.binning_t, use_s=True)
-        if self.binning_x:
-            parameters["bin_events"]["binning_x"] = self._get_config_dict(self.binning_x, use_px=True)
-        if self.binning_y:
-            parameters["bin_events"]["binning_y"] = self._get_config_dict(self.binning_y, use_px=True)
-        if self.binning_nPhotons:
-            parameters["bin_events"]["binning_nPhotons"] = self._get_config_dict(self.binning_nPhotons)
-        if self.binning_psd:
-            parameters["bin_events"]["binning_psd"] = self._get_config_dict(self.binning_psd)
-        if self.binning_t_relToExtTrigger:
-            parameters["bin_events"]["binning_t_relToExtTrigger"] = self._get_config_dict(self.binning_t_relToExtTrigger, use_s=True)
-        
-        os.makedirs(os.path.dirname(os.path.abspath(output_file)), exist_ok=True)
-        with open(output_file, 'w') as f:
-            json.dump(parameters, f, indent=4)
-        return output_file
-    
-    def _get_config_dict(self, config: BinningConfig, use_s: bool = False, use_px: bool = False) -> Dict[str, Any]:
-        if config is None:
-            return {}
-        result = {"nBins": config.nBins}
-        if use_s:
-            result["resolution_s"] = config.resolution_s if config.resolution_s is not None else config.resolution
-            result["offset_s"] = config.offset_s if config.offset_s is not None else (config.offset or 0)
-        elif use_px:
-            result["resolution_px"] = config.resolution_px if config.resolution_px is not None else config.resolution
-            result["offset_px"] = config.offset_px if config.offset_px is not None else (config.offset or 0)
-        else:
-            result["resolution"] = config.resolution if config.resolution is not None else 0
-            result["offset"] = config.offset if config.offset is not None else 0
-        return result
 
 class Analysis:
     def __init__(self, archive: str = "test", empir_dirpath: str = None):
@@ -207,17 +70,10 @@ class Analysis:
         else:
             self.photon_files_dir = None
 
-        self.Photon2EventConfig = Photon2EventConfig
-        self.EventBinningConfig = EventBinningConfig
-
         if not self.empir_dirpath.exists():
             raise FileNotFoundError(f"{self.empir_dirpath} does not exist.")
         
         required_files = {
-            "empir_import_photons": "empir_import_photons",
-            "empir_bin_photons": "empir_bin_photons",
-            "empir_bin_events": "empir_bin_events",
-            "process_photon2event": "process_photon2event.sh",
             "empir_export_events": "empir_export_events",
             "empir_export_photons": "empir_export_photons",
             "empir_pixel2photon_tpx3spidr": "bin/empir_pixel2photon_tpx3spidr",
@@ -232,10 +88,6 @@ class Analysis:
                 raise FileNotFoundError(f"{filename} not found in {self.empir_dirpath}")
             self.executables[attr_name] = file_path
             setattr(self, attr_name, file_path)
-
-        self.events_df = None
-        self.photons_df = None
-        self.associated_df = None
 
         self.default_params = {
             "in_focus": {
