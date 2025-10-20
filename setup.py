@@ -80,7 +80,6 @@ setup(
         "tqdm",
         "pandas",
         "scikit-learn",
-        "neutron_event_analyzer",
         "lmfit",
         "matplotlib",
         "tifffile",
