@@ -13,6 +13,7 @@ from roifile import ImagejRoi, ROI_TYPE
 from lmfit.models import Model
 from scipy.special import erfc
 from matplotlib import pyplot as plt
+import glob
 
 class VerbosityLevel(IntEnum):
     """Verbosity levels for simulation output."""
@@ -785,6 +786,325 @@ class Analysis:
             print(f"  Saved: {mtf_csv_path}")
             print(f"  Saved: {plot_path}")
 
+
+
+    def collect_analysis_results(self, group_name: str = "pz", verbosity: VerbosityLevel = VerbosityLevel.QUIET) -> pd.DataFrame:
+        """
+        Collects MTF analysis and ROI summary statistics from the archive folder structure.
+        Searches for MTF_calculation and ROI_spectra subfolders within group/suffix directories
+        (e.g., archive/knife_edge/pz/*/suffix/[MTF_calculation|ROI_spectra] for groupby,
+        or archive/suffix/[MTF_calculation|ROI_spectra] for non-groupby). The suffix is any
+        folder containing MTF_calculation or ROI_spectra subfolders.
+
+        Args:
+            group_name (str): Name of the group directory (default: "pz"). Used for groupby structure.
+            verbosity (VerbosityLevel): Controls the level of debugging output (QUIET, BASIC, DETAILED).
+
+        Returns:
+            pd.DataFrame: Combined DataFrame with MTF and ROI statistics, multi-indexed by
+                        group value (if groupby), suffix, and mtf_size (for MTF data).
+        """
+        result_dfs = []
+        archive_path = Path(self.archive).resolve()  # Ensure absolute path
+
+        if verbosity >= VerbosityLevel.BASIC:
+            print(f"Resolved archive path: {archive_path}")
+            print(f"Is groupby: {self._is_groupby}")
+            if self._is_groupby:
+                print(f"Groupby subfolders: {[f.name for f in self._groupby_subfolders]}")
+
+        # Helper function to find suffix folders
+        def find_suffixes(base_path: Path) -> set:
+            suffixes = set()
+            if not base_path.exists():
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"Base path does not exist: {base_path}")
+                return suffixes
+            for f in base_path.iterdir():
+                if f.is_dir() and not f.name.startswith('.'):
+                    mtf_exists = any((f / name).exists() for name in ["MTF_calculation", "MTF_Calculation", "mtf_calculation"])
+                    roi_exists = any((f / name).exists() for name in ["ROI_spectra", "ROI_Spectra", "roi_spectra"])
+                    if mtf_exists or roi_exists:
+                        suffixes.add(f.name)
+            return suffixes
+
+        # Check if groupby structure exists
+        group_path = archive_path / group_name
+        process_groupby = group_path.exists()
+
+        # Process non-groupby structure only if groupby is not present
+        if not process_groupby:
+            if verbosity >= VerbosityLevel.BASIC:
+                print("Checking non-groupby structure")
+
+            suffix_names = find_suffixes(archive_path)
+            if verbosity >= VerbosityLevel.DETAILED:
+                print(f"Non-groupby directories checked: {[f.name for f in archive_path.iterdir() if f.is_dir()]}")
+                print(f"Non-groupby suffixes found: {suffix_names}")
+
+            for suffix in suffix_names:
+                if verbosity >= VerbosityLevel.BASIC:
+                    print(f"  Processing non-groupby suffix: {suffix}")
+
+                # Collect MTF analysis results
+                mtf_path = archive_path / suffix / "MTF_calculation"
+                mtf_pattern = str(mtf_path / "*_fit_params.csv")
+                mtf_files = glob.glob(mtf_pattern)
+                
+                if not mtf_files:
+                    mtf_path_alt = archive_path / suffix / "MTF_Calculation"
+                    mtf_pattern_alt = str(mtf_path_alt / "*_fit_params.csv")
+                    mtf_files = glob.glob(mtf_pattern_alt)
+                    mtf_path = mtf_path_alt if mtf_files else mtf_path
+                
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"    MTF path: {mtf_path}")
+                    print(f"    MTF pattern: {mtf_pattern}")
+                    print(f"    MTF files: {mtf_files if mtf_files else 'None'}")
+
+                for fname in mtf_files:
+                    fname_path = Path(fname)
+                    try:
+                        df = pd.read_csv(fname)
+                        if df.empty:
+                            if verbosity >= VerbosityLevel.DETAILED:
+                                print(f"    Empty MTF file: {fname}")
+                            continue
+                        
+                        # Extract width parameter
+                        mtf_data = df.loc[df['parameter'] == 'width', ['value', 'stderr']].copy()
+                        if mtf_data.empty:
+                            if verbosity >= VerbosityLevel.DETAILED:
+                                print(f"    No 'width' parameter in MTF file: {fname}")
+                            continue
+                        
+                        # Extract mtf_size from filename (e.g., '256' or '512')
+                        mtf_size = fname_path.stem.split('_')[1]  # e.g., mtf_256_fit_params -> 256
+                        mtf_data['group_value'] = 0.0
+                        mtf_data['suffix'] = suffix
+                        mtf_data['mtf_size'] = mtf_size
+                        mtf_data['metric'] = 'mtf_width'
+                        result_dfs.append(mtf_data)
+                        if verbosity >= VerbosityLevel.BASIC:
+                            print(f"    Added MTF data from {fname} (mtf_size: {mtf_size})")
+                    except Exception as e:
+                        if verbosity >= VerbosityLevel.DETAILED:
+                            print(f"    Error reading MTF file {fname}: {e}")
+
+                # Collect ROI summary statistics
+                roi_path = archive_path / suffix / "ROI_spectra"
+                roi_pattern = str(roi_path / "summary_statistics.csv")
+                roi_files = glob.glob(roi_pattern)
+                
+                if not roi_files:
+                    roi_path_alt = archive_path / suffix / "ROI_Spectra"
+                    roi_pattern_alt = str(roi_path_alt / "summary_statistics.csv")
+                    roi_files = glob.glob(roi_pattern_alt)
+                    roi_path = roi_path_alt if roi_files else roi_path
+                
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"    ROI path: {roi_path}")
+                    print(f"    ROI pattern: {roi_pattern}")
+                    print(f"    ROI files: {roi_files if roi_files else 'None'}")
+
+                for fname in roi_files:
+                    fname_path = Path(fname)
+                    try:
+                        df = pd.read_csv(fname)
+                        if df.empty:
+                            if verbosity >= VerbosityLevel.DETAILED:
+                                print(f"    Empty ROI file: {fname}")
+                            continue
+                        
+                        # Extract ROI data (row 1)
+                        if len(df) <= 1:
+                            if verbosity >= VerbosityLevel.DETAILED:
+                                print(f"    Insufficient data in ROI file: {fname}")
+                            continue
+                        
+                        roi_data = df.loc[1, ['total_counts', 'mean_counts', 'std_counts', 
+                                            'min_counts', 'max_counts', 'counts_per_slice_mean', 
+                                            'counts_per_slice_std']].copy()
+                        roi_data = pd.DataFrame([roi_data])
+                        roi_data['group_value'] = 0.0
+                        roi_data['suffix'] = suffix
+                        roi_data['mtf_size'] = 'none'  # No mtf_size for ROI
+                        roi_data['metric'] = 'roi_summary'
+                        result_dfs.append(roi_data)
+                        if verbosity >= VerbosityLevel.BASIC:
+                            print(f"    Added ROI data from {fname}")
+                    except Exception as e:
+                        if verbosity >= VerbosityLevel.DETAILED:
+                            print(f"    Error reading ROI file {fname}: {e}")
+
+        # Process groupby structure
+        if process_groupby:
+            if verbosity >= VerbosityLevel.BASIC:
+                print(f"Checking groupby structure with group '{group_name}'")
+
+            subfolders = [f for f in group_path.iterdir() if f.is_dir()]
+            if verbosity >= VerbosityLevel.DETAILED:
+                print(f"Group subfolders: {[f.name for f in subfolders]}")
+
+            for subfolder in subfolders:
+                try:
+                    group_value = float(subfolder.name)
+                except ValueError:
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"  Skipping non-numeric subfolder: {subfolder.name}")
+                    continue
+
+                if verbosity >= VerbosityLevel.BASIC:
+                    print(f"  Processing group: {subfolder.name}")
+
+                suffix_names = find_suffixes(subfolder)
+                if not suffix_names:
+                    if verbosity >= VerbosityLevel.BASIC:
+                        print(f"  No suffix folders found in {subfolder}")
+                    continue
+
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"  Found suffixes in {subfolder.name}: {suffix_names}")
+
+                for suffix in suffix_names:
+                    if verbosity >= VerbosityLevel.BASIC:
+                        print(f"    Processing groupby suffix: {suffix}")
+
+                    # Collect MTF analysis results
+                    mtf_path = subfolder / suffix / "MTF_calculation"
+                    mtf_pattern = str(mtf_path / "*_fit_params.csv")
+                    mtf_files = glob.glob(mtf_pattern)
+                    
+                    if not mtf_files:
+                        mtf_path_alt = subfolder / suffix / "MTF_Calculation"
+                        mtf_pattern_alt = str(mtf_path_alt / "*_fit_params.csv")
+                        mtf_files = glob.glob(mtf_pattern_alt)
+                        mtf_path = mtf_path_alt if mtf_files else mtf_path
+                    
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"      MTF path: {mtf_path}")
+                        print(f"      MTF pattern: {mtf_pattern}")
+                        print(f"      MTF files: {mtf_files if mtf_files else 'None'}")
+
+                    for fname in mtf_files:
+                        fname_path = Path(fname)
+                        try:
+                            df = pd.read_csv(fname)
+                            if df.empty:
+                                if verbosity >= VerbosityLevel.DETAILED:
+                                    print(f"      Empty MTF file: {fname}")
+                                continue
+                            
+                            # Extract width parameter
+                            mtf_data = df.loc[df['parameter'] == 'width', ['value', 'stderr']].copy()
+                            if mtf_data.empty:
+                                if verbosity >= VerbosityLevel.DETAILED:
+                                    print(f"      No 'width' parameter in MTF file: {fname}")
+                                continue
+                            
+                            # Extract mtf_size from filename
+                            mtf_size = fname_path.stem.split('_')[1]  # e.g., mtf_256_fit_params -> 256
+                            mtf_data['group_value'] = group_value
+                            mtf_data['suffix'] = suffix
+                            mtf_data['mtf_size'] = mtf_size
+                            mtf_data['metric'] = 'mtf_width'
+                            result_dfs.append(mtf_data)
+                            if verbosity >= VerbosityLevel.BASIC:
+                                print(f"      Added MTF data from {fname} (mtf_size: {mtf_size})")
+                        except Exception as e:
+                            if verbosity >= VerbosityLevel.DETAILED:
+                                print(f"      Error reading MTF file {fname}: {e}")
+
+                    # Collect ROI summary statistics
+                    roi_path = subfolder / suffix / "ROI_spectra"
+                    roi_pattern = str(roi_path / "summary_statistics.csv")
+                    roi_files = glob.glob(roi_pattern)
+                    
+                    if not roi_files:
+                        roi_path_alt = subfolder / suffix / "ROI_Spectra"
+                        roi_pattern_alt = str(roi_path_alt / "summary_statistics.csv")
+                        roi_files = glob.glob(roi_pattern_alt)
+                        roi_path = roi_path_alt if roi_files else roi_path
+                    
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"      ROI path: {roi_path}")
+                        print(f"      ROI pattern: {roi_pattern}")
+                        print(f"      ROI files: {roi_files if roi_files else 'None'}")
+
+                    for fname in roi_files:
+                        fname_path = Path(fname)
+                        try:
+                            df = pd.read_csv(fname)
+                            if df.empty:
+                                if verbosity >= VerbosityLevel.DETAILED:
+                                    print(f"      Empty ROI file: {fname}")
+                                continue
+                            
+                            # Extract ROI data (row 1)
+                            if len(df) <= 1:
+                                if verbosity >= VerbosityLevel.DETAILED:
+                                    print(f"      Insufficient data in ROI file: {fname}")
+                                continue
+                            
+                            roi_data = df.loc[1, ['total_counts', 'mean_counts', 'std_counts', 
+                                                'min_counts', 'max_counts', 'counts_per_slice_mean', 
+                                                'counts_per_slice_std']].copy()
+                            roi_data = pd.DataFrame([roi_data])
+                            roi_data['group_value'] = group_value
+                            roi_data['suffix'] = suffix
+                            roi_data['mtf_size'] = 'none'  # No mtf_size for ROI
+                            roi_data['metric'] = 'roi_summary'
+                            result_dfs.append(roi_data)
+                            if verbosity >= VerbosityLevel.BASIC:
+                                print(f"      Added ROI data from {fname}")
+                        except Exception as e:
+                            if verbosity >= VerbosityLevel.DETAILED:
+                                print(f"      Error reading ROI file {fname}: {e}")
+
+        if not result_dfs:
+            if verbosity >= VerbosityLevel.BASIC:
+                print("No data collected. Returning empty DataFrame.")
+            return pd.DataFrame()
+
+        # Combine all results
+        combined_df = pd.concat(result_dfs, ignore_index=True, sort=False)
+        
+        # Convert numeric columns to float
+        numeric_columns = ['value', 'stderr', 'total_counts', 'mean_counts', 'std_counts',
+                        'min_counts', 'max_counts', 'counts_per_slice_mean', 
+                        'counts_per_slice_std']
+        for col in numeric_columns:
+            if col in combined_df:
+                combined_df[col] = combined_df[col].astype(float)
+
+        # Debug: Print DataFrame before unstack
+        if verbosity >= VerbosityLevel.DETAILED:
+            print("DataFrame before unstack:")
+            print(combined_df)
+
+        # Create multi-index and pivot to organize by metric and mtf_size
+        combined_df = combined_df.set_index(['group_value', 'suffix', 'mtf_size', 'metric'])
+        try:
+            combined_df = combined_df.unstack(level=['metric', 'mtf_size']).reset_index()
+        except ValueError as e:
+            if verbosity >= VerbosityLevel.BASIC:
+                print(f"Error during unstack: {e}")
+                print("Index value counts:")
+                print(combined_df.index.value_counts())
+            raise
+
+        # Flatten column names
+        combined_df.columns = [f"{col[0]}_{col[1]}_{col[2]}" if col[1] else col[0] 
+                            for col in combined_df.columns]
+        
+        # Sort by group_value and suffix
+        combined_df = combined_df.sort_values(['group_value', 'suffix'])
+        
+        if verbosity >= VerbosityLevel.BASIC:
+            print(f"Collected data for {len(combined_df)} rows")
+            print(f"Columns: {list(combined_df.columns)}")
+        
+        return combined_df
     
     def _run_pixel2photon(self, tpx3_dir: Path, photon_files_dir: Path,
                         params_file: Path, n_threads: int,

@@ -7,7 +7,7 @@ from rayoptics.gui import roafile
 from rayoptics.elem.elements import Element
 from rayoptics.raytr.trace import apply_paraxial_vignetting, trace_base
 import matplotlib.pyplot as plt
-from typing import Union, List, Tuple
+from typing import Union, List, Tuple, Optional
 from pathlib import Path
 from multiprocessing import Pool
 from functools import partial   
@@ -620,10 +620,12 @@ class Lens:
         return [rays[i:i+chunk_size] for i in range(0, len(rays), chunk_size)]
 
     def trace_rays(self, opm=None, opm_file=None, zscan=0, zfine=0, fnumber=None,
+                deadtime=None, blob=0.0, blob_variance=0.0, decay_time=100, 
                 join=False, print_stats=False, n_processes=None, chunk_size=1000, 
-                progress_bar=True, timeout=3600, return_df=False, 
-                verbosity=VerbosityLevel.BASIC, deadtime=None, blob=0.0, decay_time=100, 
-                split_method="auto"):
+                progress_bar=True, timeout=3600, return_df=False, split_method="auto",
+                seed: int = None,
+                verbosity=VerbosityLevel.BASIC
+                ) -> Optional[pd.DataFrame]:
         """
         Trace rays from simulation data files and save processed results, optionally applying pixel saturation and blob effect.
         
@@ -655,6 +657,24 @@ class Lens:
         fnumber : float, optional
             New f-number for the lens. Applied to refocused model if neither opm nor
             opm_file is provided.
+        deadtime : float, optional
+            Deadtime in nanoseconds for pixel saturation. If provided, applies
+            saturate_photons with output_format="photons" and saves results to
+            'TracedPhotons', followed by _write_tpx3.
+        blob : float, default 0.0
+            Interaction radius in pixels for photon hits. If > 0, each photon hit affects
+            all pixels within this radius. If provided, applies saturate_photons and
+            triggers _write_tpx3.
+        blob_variance : float, default 0.0
+            Radius value subtracted from blob radius (in pixels). Only used if blob > 0.
+            Each photon's actual blob radius is drawn uniformly from [blob - blob_variance, blob].
+            Example: blob=5, blob_variance=2.5 → radius uniformly distributed in [2.5, 5.0] pixels.
+        decay_time : float, default 100.0
+            Exponential decay time constant in nanoseconds for blob activation timing.
+            Single delay drawn per photon, applied to all pixels in its blob.
+        seed : int, optional
+            Random seed for reproducibility. If None, uses random state. If specified, allows
+            exact reconstruction of results across multiple runs.
         join : bool, default False
             If True, concatenates original simulation data with traced results.
             If False, returns only traced positions and identifiers.
@@ -673,25 +693,15 @@ class Lens:
         return_df : bool, default False
             If True, returns a combined DataFrame of all processed files.
             If False, returns None (files are still saved to disk).
-        verbosity : VerbosityLevel, default VerbosityLevel.BASIC
-            Controls output detail level:
-            - QUIET: Only essential error messages
-            - BASIC: Progress bars + basic file info + statistics
-            - DETAILED: All available information including warnings
-        deadtime : float, optional
-            Deadtime in nanoseconds for pixel saturation. If provided, applies
-            saturate_photons with output_format="photons" and saves results to
-            'TracedPhotons', followed by _write_tpx3.
-        blob : float, default 0.0
-            Interaction radius in pixels for photon hits. If > 0, each photon hit affects
-            all pixels within this radius. If provided, applies saturate_photons and
-            triggers _write_tpx3.
-        decay_time : float, default 100
-            Decay time in nanoseconds for blob effect. Only used if blob > 0.
         split_method : str, default "auto"
             TPX3 file splitting strategy (only used when deadtime or blob is provided):
             - "auto": Groups neutron events to minimize file count (default)
             - "event": Creates one TPX3 file per neutron_id for event-by-event analysis
+        verbosity : VerbosityLevel, default VerbosityLevel.BASIC
+            Controls output detail level:
+            - QUIET (0): Only essential error messages
+            - BASIC (1): Progress bars + basic file info + statistics
+            - DETAILED (2): All available information including warnings
 
         Returns:
         --------
@@ -715,6 +725,11 @@ class Lens:
                 zscan=zscan,
                 zfine=zfine,
                 fnumber=fnumber,
+                deadtime=deadtime,
+                blob=blob,
+                blob_variance=blob_variance,
+                decay_time=decay_time,
+                seed=seed,
                 join=join,
                 print_stats=print_stats,
                 n_processes=n_processes,
@@ -722,11 +737,8 @@ class Lens:
                 progress_bar=progress_bar,
                 timeout=timeout,
                 return_df=return_df,
-                verbosity=verbosity,
-                deadtime=deadtime,
-                blob=blob,
-                decay_time=decay_time,
-                split_method=split_method
+                split_method=split_method,
+                verbosity=verbosity
             )
         
         # Otherwise, perform standard single-archive tracing
@@ -736,6 +748,11 @@ class Lens:
             zscan=zscan,
             zfine=zfine,
             fnumber=fnumber,
+            deadtime=deadtime,
+            blob=blob,
+            blob_variance=blob_variance,
+            decay_time=decay_time,        
+            seed=seed,    
             join=join,
             print_stats=print_stats,
             n_processes=n_processes,
@@ -743,22 +760,31 @@ class Lens:
             progress_bar=progress_bar,
             timeout=timeout,
             return_df=return_df,
-            verbosity=verbosity,
-            deadtime=deadtime,
-            blob=blob,
-            decay_time=decay_time,
-            split_method=split_method
+            split_method=split_method,        
+            verbosity=verbosity
         )
 
 
     def _trace_rays_single(self, opm=None, opm_file=None, zscan=0, zfine=0, fnumber=None,
+                        deadtime=None, blob=0.0, blob_variance=0.0, decay_time=100, seed: int = None,
                         join=False, print_stats=False, n_processes=None, chunk_size=1000, 
                         progress_bar=True, timeout=3600, return_df=False, 
-                        verbosity=VerbosityLevel.BASIC, deadtime=None, blob=0.0, decay_time=100, 
-                        split_method="auto"):
+                        split_method="auto",
+                        verbosity=VerbosityLevel.BASIC,  
+                        ) -> pd.DataFrame or None:
         """
         Internal method for single-archive ray tracing (non-grouped).
         See trace_rays() for full documentation.
+
+        Parameters:
+        -----------
+        (Same as trace_rays)
+        Returns:
+        --------
+        pd.DataFrame or None
+            Combined DataFrame of all processed results if return_df=True,
+            otherwise None. Each row represents a traced ray.
+
         """
         # Validate input parameters
         if opm is not None and opm_file is not None:
@@ -1007,8 +1033,10 @@ class Lens:
                         data=result_df,
                         deadtime=deadtime,
                         blob=blob,
+                        blob_variance=blob_variance,
+                        seed=seed,
                         output_format="photons",
-                        min_tot=20.0,
+                        min_tot=1.0,
                         decay_time=decay_time,
                         verbosity=verbosity
                     )
@@ -1111,10 +1139,10 @@ class Lens:
 
 
     def _trace_rays_grouped(self, opm=None, opm_file=None, zscan=0, zfine=0, fnumber=None,
+                            deadtime=None, blob=0.0, blob_variance=0.0, decay_time=100, seed: int = None,
                             join=False, print_stats=False, n_processes=None, chunk_size=1000, 
-                            progress_bar=True, timeout=3600, return_df=False, 
-                            verbosity=VerbosityLevel.BASIC, deadtime=None, blob=0.0, 
-                            decay_time=100, split_method="auto"):
+                            progress_bar=True, timeout=3600, return_df=False, split_method="auto",
+                            verbosity=VerbosityLevel.BASIC) -> pd.DataFrame or None:
         """
         Internal method for grouped ray tracing. 
         Trace rays for each group created by groupby() with all trace_rays options.
@@ -1190,6 +1218,11 @@ class Lens:
                         zscan=zscan,
                         zfine=zfine,
                         fnumber=fnumber,
+                        deadtime=deadtime,
+                        blob=blob,
+                        blob_variance=blob_variance,
+                        decay_time=decay_time,          
+                        seed=seed,              
                         join=join,
                         print_stats=print_stats,
                         n_processes=n_processes,
@@ -1197,11 +1230,8 @@ class Lens:
                         progress_bar=progress_bar,
                         timeout=timeout,
                         return_df=return_df,
-                        verbosity=verbosity,
-                        deadtime=deadtime,
-                        blob=blob,
-                        decay_time=decay_time,
-                        split_method=split_method
+                        split_method=split_method,
+                        verbosity=verbosity
                     )
                     
                     if return_df and group_result is not None:
@@ -1794,21 +1824,23 @@ class Lens:
 
 
     def saturate_photons(self, data: pd.DataFrame = None, deadtime: float = 600.0, blob: float = 0.0, 
-                        output_format: str = "photons", min_tot: float = 20.0, 
-                        decay_time: float = 100.0, 
+                        blob_variance: float = 0.0, output_format: str = "photons", min_tot: float = 20.0, 
+                        decay_time: float = 100.0, seed: int = None,
                         verbosity: VerbosityLevel = VerbosityLevel.BASIC
                         ) -> Union[pd.DataFrame, None]:
         """
         Process traced photons to simulate an image intensifier coupled to an event camera.
 
-        Physical model:
+        Physical model (UPDATED):
         1. Photon hits image intensifier at position (pixel_x, pixel_y)
-        2. Intensifier creates a circular blob on the camera with specified radius
-        3. Each pixel within blob is activated with a time drawn from exponential decay
+        2. Intensifier creates a circular blob on the camera with variable radius
+        3. ALL pixels within the blob are activated SIMULTANEOUSLY at time = photon_toa + exponential_delay
+        (single exponential delay drawn per photon, applies to entire blob)
         4. Each pixel has independent deadtime (default 600ns)
-        5. During deadtime, additional photons update TOT but not TOA
-        6. TOA = time of first photon to hit that pixel
-        7. TOT = time from first photon to last photon within deadtime window
+        5. During deadtime, additional photon blobs can update the pixel's TOT (time to last photon)
+        6. Pixels cannot be re-activated (new TOA) until deadtime expires
+        7. TOA = activation time for that pixel (first photon blob to activate it)
+        8. TOT = time from first activation to last photon blob hit within deadtime
 
         Parameters:
         -----------
@@ -1816,12 +1848,16 @@ class Lens:
             DataFrame containing photon data to process. If None, loads from 'TracedPhotons' directory.
             Must have columns: pixel_x, pixel_y, toa2, id, neutron_id, pulse_id, pulse_time_ns
         deadtime : float, default 600.0
-            Deadtime in nanoseconds for pixel saturation. During this window after first photon,
-            pixel accumulates additional photons but doesn't reset.
+            Deadtime in nanoseconds for pixel saturation. During this window after activation,
+            additional photons update TOT but don't create new activation.
         blob : float, default 0.0
-            Blob radius in pixel units (can be float). Each photon from the intensifier triggers 
-            all camera pixels within this radius. A larger blob increases the number of triggered pixels.
+            Maximum blob radius in pixel units (can be float). Each photon from the intensifier triggers 
+            all camera pixels within a circular region.
             Example: blob=0 → 1 pixel per photon, blob=1 → ~9 pixels, blob=2 → ~25 pixels.
+        blob_variance : float, default 0.0
+            Radius value subtracted from blob radius (in pixels). Only used if blob > 0.
+            Each photon's actual blob radius is drawn uniformly from [blob - blob_variance, blob].
+            Example: blob=5, blob_variance=2.5 → radius uniformly distributed in [2.5, 5.0] pixels.
         output_format : str, default "photons"
             Output format: "photons" for photon-averaged output with nz, pz columns.
             Note: Use trace_rays() -> saturate_photons() -> _write_tpx3() pipeline for TPX3 files.
@@ -1829,6 +1865,10 @@ class Lens:
             Minimum Time-Over-Threshold in nanoseconds.
         decay_time : float, default 100.0
             Exponential decay time constant in nanoseconds for blob activation timing.
+            Single delay drawn per photon, applied to all pixels in its blob.
+        seed : int, optional
+            Random seed for reproducibility. If None, uses random state. If specified, allows
+            exact reconstruction of results across multiple runs.
         verbosity : VerbosityLevel, default VerbosityLevel.BASIC
             Controls output detail level.
 
@@ -1837,14 +1877,24 @@ class Lens:
         pd.DataFrame or None
             Columns: pixel_x, pixel_y, toa2, photon_count, time_diff, id, neutron_id, pulse_id, pulse_time_ns, nz, pz
             - pixel_x, pixel_y: integer pixel positions
-            - toa2: time of arrival in nanoseconds (first photon to hit pixel)
-            - time_diff: time-over-threshold in nanoseconds (first to last photon)
-            - photon_count: number of photons that hit this pixel during deadtime
+            - toa2: time of arrival in nanoseconds (first activation time)
+            - time_diff: time-over-threshold in nanoseconds (first to last photon in deadtime)
+            - photon_count: number of photon blobs that hit this pixel during deadtime
         """
         if blob < 0:
             raise ValueError(f"blob must be non-negative, got {blob}")
+        if blob_variance < 0:
+            raise ValueError(f"blob_variance must be non-negative, got {blob_variance}")
+        if blob_variance > blob:
+            raise ValueError(f"blob_variance ({blob_variance}) cannot be larger than blob ({blob})")
         if deadtime is not None and deadtime <= 0:
             raise ValueError(f"deadtime must be positive, got {deadtime}")
+
+        # Set random seed if provided
+        if seed is not None:
+            np.random.seed(seed)
+            if verbosity > VerbosityLevel.BASIC:
+                print(f"Random seed set to: {seed}")
 
         # Set up input data
         if data is not None:
@@ -1955,24 +2005,36 @@ class Lens:
                 print(f"  Pixel coordinate range: x=[{px_float.min():.1f}, {px_float.max():.1f}], "
                     f"y=[{py_float.min():.1f}, {py_float.max():.1f}]")
 
-            # Apply the photon-pixel hit algorithm
+            # Apply the physical blob model with TOT tracking
             result_rows = []
-            pixel_state = {}  # Key: (px_i, py_i), Value: {'first_toa': float, 'last_toa': float, 'photon_indices': list}
+            pixel_state = {}  # Key: (px_i, py_i), Value: {'first_toa': float, 'last_toa': float, 'photon_count': int, 'idx': int}
             
             if verbosity >= VerbosityLevel.DETAILED:
-                print(f"  Applying blob effect with radius {blob} pixels, deadtime {deadtime}ns, decay {decay_time}ns")
+                variance_msg = f", variance ±{blob_variance} pixels" if blob_variance > 0 else ""
+                print(f"  Applying physical blob model: max radius {blob} pixels{variance_msg}, deadtime {deadtime}ns, decay {decay_time}ns")
 
             for idx in range(len(df)):
                 cx = px_float[idx]
                 cy = py_float[idx]
                 photon_toa = toa[idx]
                 
-                # Find all pixels covered by the circle (partial overlap allowed)
-                if blob > 0:
-                    i_min = int(np.floor(cx - blob - 0.5))
-                    i_max = int(np.ceil(cx + blob + 0.5))
-                    j_min = int(np.floor(cy - blob - 0.5))
-                    j_max = int(np.ceil(cy + blob + 0.5))
+                # Draw single exponential delay for this photon's entire blob
+                activation_delay = np.random.exponential(decay_time)
+                activation_time = photon_toa + activation_delay
+                
+                # Draw blob radius for this photon
+                if blob_variance > 0 and blob > 0:
+                    min_radius = blob - blob_variance
+                    actual_blob = np.random.uniform(min_radius, blob)
+                else:
+                    actual_blob = blob
+                
+                # Find all pixels covered by the circular blob
+                if actual_blob > 0:
+                    i_min = int(np.floor(cx - actual_blob - 0.5))
+                    i_max = int(np.ceil(cx + actual_blob + 0.5))
+                    j_min = int(np.floor(cy - actual_blob - 0.5))
+                    j_max = int(np.ceil(cy + actual_blob + 0.5))
                     
                     # Create grid of pixel centers
                     x_grid = np.arange(i_min, i_max + 1)
@@ -1985,7 +2047,7 @@ class Lens:
                     closest_x = np.clip(cx, xx - 0.5, xx + 0.5)
                     closest_y = np.clip(cy, yy - 0.5, yy + 0.5)
                     dist2 = (closest_x - cx) ** 2 + (closest_y - cy) ** 2
-                    mask = dist2 <= blob ** 2
+                    mask = dist2 <= actual_blob ** 2
                     
                     covered_x = xx[mask]
                     covered_y = yy[mask]
@@ -1997,36 +2059,33 @@ class Lens:
                 if len(covered_x) == 0:
                     continue
                 
-                # Process each covered pixel
+                # Process all pixels in blob
                 for px_i, py_i in zip(covered_x, covered_y):
                     pixel_key = (int(px_i), int(py_i))
                     
-                    # Check if pixel is active (within deadtime)
+                    # Check if pixel is currently active (in deadtime)
                     if pixel_key in pixel_state:
                         pixel_info = pixel_state[pixel_key]
-                        time_since_first = photon_toa - pixel_info['first_toa']
+                        time_since_first = activation_time - pixel_info['first_toa']
                         
                         if deadtime is not None and time_since_first <= deadtime:
-                            # Pixel still in deadtime - update last_toa and add to photon list
-                            pixel_info['last_toa'] = photon_toa
-                            pixel_info['photon_indices'].append(idx)
+                            # Pixel still in deadtime - update last_toa and increment count
+                            pixel_info['last_toa'] = activation_time
+                            pixel_info['photon_count'] += 1
                             continue
                         else:
                             # Deadtime expired - finalize previous pixel event
                             self._finalize_pixel_event(result_rows, pixel_key, pixel_info, 
                                                     photon_ids, neutron_ids, pulse_ids, pulse_times, nz, pz, min_tot)
-                            # Start new pixel event (will be handled below)
+                            # Remove from active state (will be re-added below)
                             del pixel_state[pixel_key]
                     
                     # Start new pixel activation
-                    # Randomize activation time with exponential decay
-                    activation_delay = np.random.exponential(decay_time)
-                    activation_toa = photon_toa + activation_delay
-                    
                     pixel_state[pixel_key] = {
-                        'first_toa': activation_toa,
-                        'last_toa': activation_toa,
-                        'photon_indices': [idx]
+                        'first_toa': activation_time,
+                        'last_toa': activation_time,
+                        'photon_count': 1,
+                        'idx': idx  # Store index of first photon that activated this pixel
                     }
             
             # Finalize all remaining pixel events
@@ -2055,12 +2114,12 @@ class Lens:
             # Print stats
             if verbosity > VerbosityLevel.BASIC:
                 print(f"  Input photons: {len(df)}, Output events: {len(result_df)}")
-                if blob > 0:
+                if actual_blob > 0:
                     ratio = len(result_df) / len(df) if len(df) > 0 else 0
                     print(f"  Expansion ratio (blob effect): {ratio:.2f}x")
                 if 'photon_count' in result_df.columns:
-                    total_photons = result_df['photon_count'].sum()
-                    print(f"  Total photons in output: {total_photons}")
+                    avg_photons = result_df['photon_count'].mean()
+                    print(f"  Average photons per pixel event: {avg_photons:.2f}")
 
             all_results.append(result_df)
 
@@ -2087,21 +2146,18 @@ class Lens:
         Output format for saturate_photons (photons format):
         - pixel_x, pixel_y: integer pixel positions
         - toa2: time of arrival in nanoseconds (first photon)
-        - time_diff: time-over-threshold in nanoseconds (TOT)
-        - photon_count: number of photons
+        - time_diff: time-over-threshold in nanoseconds (first to last photon)
+        - photon_count: number of photon blobs that hit this pixel
         - id, neutron_id, pulse_id, pulse_time_ns: from first photon
         - nz, pz: from first photon
         """
         px_i, py_i = pixel_key
         first_toa = pixel_info['first_toa']
         last_toa = pixel_info['last_toa']
-        photon_indices = pixel_info['photon_indices']
+        photon_count = pixel_info['photon_count']
+        first_idx = pixel_info['idx']
         
         tot_measured = max(last_toa - first_toa, min_tot)
-        photon_count = len(photon_indices)
-        
-        # Use first photon's properties
-        first_idx = photon_indices[0]
         
         result_rows.append({
             'pixel_x': px_i,
@@ -2116,7 +2172,7 @@ class Lens:
             'nz': nz[first_idx],
             'pz': pz[first_idx]
         })
-
+        
     def _add_pixel_event(self, result_rows, px_i, py_i, window_events, df, 
                         photon_ids, neutron_ids, pulse_ids, pulse_times, nz, pz,
                         pixel_size, min_tot, output_format):
