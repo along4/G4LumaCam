@@ -1,7 +1,7 @@
 # G4LumaCam
 A Geant4-based Simulator for LumaCam Event Camera
 
-![screenshot](notebooks/G4LumaCam.png)
+![screenshot](notebooks/lumacam_simulation.png)
 
 ## Overview
 G4LumaCam is a simulation package for the LumaCam event camera that allows reconstruction of neutron events using the same analysis workflow as actual experimental data. This tool enables researchers to simulate, validate, and optimize detection setups before conducting physical experiments.

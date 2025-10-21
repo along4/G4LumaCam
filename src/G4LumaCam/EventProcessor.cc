@@ -50,7 +50,6 @@ G4bool EventProcessor::ProcessHits(G4Step* step, G4TouchableHistory*) {
         if (event && event->GetNumberOfPrimaryVertex() > 0) {
             currentEventTriggerTime = event->GetPrimaryVertex(0)->GetT0() / ns;
             neutronEnergy = particleGen ? particleGen->getParticleEnergy() : track->GetKineticEnergy() / MeV;
-            // Set neutron position from primary vertex as fallback
             G4ThreeVector primaryPos = event->GetPrimaryVertex(0)->GetPosition();
             neutronPos[0] = primaryPos.x();
             neutronPos[1] = primaryPos.y();
@@ -92,13 +91,14 @@ G4bool EventProcessor::ProcessHits(G4Step* step, G4TouchableHistory*) {
         }
     }
 
+    // Track charged particles in scintillator
     if (volName == "ScintPhys" && particleName != "opticalphoton") {
         if (tracks.find(tid) == tracks.end()) {
             G4double energy = track->GetKineticEnergy() / MeV;
             if (parentID != 0 && energy <= 0) {
                 energy = neutronEnergy;
             }
-            tracks[tid] = {particleName, prePos.x(), prePos.y(), prePos.z(), energy, false};
+            tracks[tid] = {particleName, prePos.x(), prePos.y(), prePos.z(), energy, false, 0., 0., 0., 0., 0., 0.};
         }
 
         G4String processName = postStep->GetProcessDefinedStep() ? 
@@ -115,13 +115,33 @@ G4bool EventProcessor::ProcessHits(G4Step* step, G4TouchableHistory*) {
         }
     }
 
+    // NEW: Capture optical photon generation position and direction
+    if (particleName == "opticalphoton" && track->GetCurrentStepNumber() == 1) {
+        // First step of optical photon - record where it was created
+        if (tracks.find(tid) == tracks.end()) {
+            tracks[tid] = {"opticalphoton", 0., 0., 0., 0., false, 
+                          prePos.x(), prePos.y(), prePos.z(), 
+                          preDir.x(), preDir.y(), preDir.z()};
+        } else {
+            // Update generation info
+            tracks[tid].x0 = prePos.x();
+            tracks[tid].y0 = prePos.y();
+            tracks[tid].z0 = prePos.z();
+            tracks[tid].dx0 = preDir.x();
+            tracks[tid].dy0 = preDir.y();
+            tracks[tid].dz0 = preDir.z();
+        }
+    }
+
+    // Process photons that reach the monitor
     if (volName == "MonitorPhys" && particleName == "opticalphoton") {
         lensPos[0] = postStep->GetPosition().x() / mm + 500. * preStep->GetMomentumDirection().x();
         lensPos[1] = postStep->GetPosition().y() / mm + 500. * preStep->GetMomentumDirection().y();
 
+        // Check if photon is within acceptance window
         if (lensPos[0] > -27.5 && lensPos[0] < 27.5 && lensPos[1] > -27.5 && lensPos[1] < 27.5) {
             if (tracks.find(parentID) == tracks.end()) {
-                tracks[parentID] = {"unknown", neutronPos[0], neutronPos[1], neutronPos[2], neutronEnergy, true};
+                tracks[parentID] = {"unknown", neutronPos[0], neutronPos[1], neutronPos[2], neutronEnergy, true, 0., 0., 0., 0., 0., 0.};
             }
             
             if (tracks[parentID].energy <= 0) {
@@ -132,12 +152,29 @@ G4bool EventProcessor::ProcessHits(G4Step* step, G4TouchableHistory*) {
             rec.id = track->GetTrackID();
             rec.parentId = parentID;
             rec.neutronId = neutronCount;
+            
+            // Position and direction at monitor
             rec.x = prePos.x() / mm;
             rec.y = prePos.y() / mm;
             rec.z = 0.; 
             rec.dx = preDir.x();
             rec.dy = preDir.y();
             rec.dz = preDir.z();
+            
+            // Generation position and direction
+            if (tracks.find(tid) != tracks.end()) {
+                rec.x0 = tracks[tid].x0 / mm;
+                rec.y0 = tracks[tid].y0 / mm;
+                rec.z0 = tracks[tid].z0 / mm;
+                rec.dx0 = tracks[tid].dx0;
+                rec.dy0 = tracks[tid].dy0;
+                rec.dz0 = tracks[tid].dz0;
+            } else {
+                // Fallback if generation info not found
+                rec.x0 = rec.y0 = rec.z0 = 0.;
+                rec.dx0 = rec.dy0 = rec.dz0 = 0.;
+            }
+            
             rec.timeOfArrival = track->GetGlobalTime() / ns;
             rec.wavelength = 1240. / (track->GetTotalEnergy() / eV);
             rec.parentType = tracks[parentID].type;
@@ -219,41 +256,57 @@ void EventProcessor::openOutputFile() {
 
     dataFile << std::fixed;
     
-    dataFile << "id,parent_id,neutron_id,pulse_id,pulse_time_ns,x,y,z,dx,dy,dz,toa,wavelength,"
+    // Updated header with generation position (x0,y0,z0) and direction (dx0,dy0,dz0)
+    dataFile << "id,parent_id,neutron_id,pulse_id,pulse_time_ns,"
+             << "x,y,z,dx,dy,dz,"
+            //  << "x0,y0,z0,dx0,dy0,dz0,"
+             << "toa,wavelength,"
              << "parentName,px,py,pz,parentEnergy,nx,ny,nz,neutronEnergy\n";
 }
 
 void EventProcessor::writeData() {
     for (const auto& p : photons) {
-        // Integer columns (no decimal needed)
+        // Integer columns
         dataFile << p.id << "," 
                  << p.parentId << "," 
                  << p.neutronId << ","
                  << p.pulseId << ",";
         
-        // HIGH PRECISION: pulse_time_ns (critical for TDC timing)
-        // Need precision to ~0.001 ns even at 1000 seconds
+        // HIGH PRECISION: pulse_time_ns
         dataFile << std::setprecision(15) << p.pulseTime << ",";
         
-        // MEDIUM PRECISION: position coordinates (mm)
-        // 4 decimal places = 0.0001 mm = 0.1 micron precision
-        dataFile << std::setprecision(4) 
-                 << p.x << "," 
-                 << p.y << "," 
-                 << p.z << ",";
+        // // MEDIUM PRECISION: position at monitor (mm)
+        // dataFile << std::setprecision(4) 
+        //          << p.x << "," 
+        //          << p.y << "," 
+        //          << p.z << ",";
         
-        // MEDIUM PRECISION: direction cosines
-        // 6 decimal places for normalized vectors
+        // // MEDIUM PRECISION: direction at monitor
+        // dataFile << std::setprecision(6)
+        //          << p.dx << "," 
+        //          << p.dy << "," 
+        //          << p.dz << ",";
+        
+
+        // I switched the order of position/direction at monitor and generation position/direction for better clarity
+        // Only the generation position/direction is written below now
+
+        // MEDIUM PRECISION: generation position (mm)
+        dataFile << std::setprecision(4)
+                 << p.x0 << "," 
+                 << p.y0 << "," 
+                 << p.z0 << ",";
+        
+        // MEDIUM PRECISION: generation direction
         dataFile << std::setprecision(6)
-                 << p.dx << "," 
-                 << p.dy << "," 
-                 << p.dz << ",";
+                 << p.dx0 << "," 
+                 << p.dy0 << "," 
+                 << p.dz0 << ",";
         
-        // HIGH PRECISION: timeOfArrival (critical for TDC timing)
+        // HIGH PRECISION: timeOfArrival
         dataFile << std::setprecision(15) << p.timeOfArrival << ",";
         
         // LOW PRECISION: wavelength (nm)
-        // 2 decimal places sufficient for wavelength
         dataFile << std::setprecision(2) << p.wavelength << "," 
                  << p.parentType << ",";
         
@@ -264,7 +317,6 @@ void EventProcessor::writeData() {
                  << p.pz << ",";
         
         // MEDIUM PRECISION: energies (MeV)
-        // 4 decimal places = 0.1 keV precision
         dataFile << std::setprecision(4) << p.parentEnergy << ",";
         
         // MEDIUM PRECISION: neutron position (mm)
