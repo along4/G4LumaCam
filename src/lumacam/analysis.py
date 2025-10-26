@@ -1633,9 +1633,9 @@ class Analysis:
         photon_files_dir = process_dir / "photonFiles"
         event_files_dir = process_dir / "eventFiles"
         final_dir = process_dir / "final"
-        photon_files_dir.mkdir(parents=True, exist_ok=True)
-        event_files_dir.mkdir(parents=True, exist_ok=True)
-        final_dir.mkdir(parents=True, exist_ok=True)
+        # photon_files_dir.mkdir(parents=True, exist_ok=True)
+        # event_files_dir.mkdir(parents=True, exist_ok=True)
+        # final_dir.mkdir(parents=True, exist_ok=True)
 
         if clean:
             for file in photon_files_dir.glob("*.empirphot"):
