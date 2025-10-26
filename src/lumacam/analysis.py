@@ -89,82 +89,15 @@ class Analysis:
             self.executables[attr_name] = file_path
             setattr(self, attr_name, file_path)
 
-        self.default_params = {
-            "in_focus": {
-                "pixel2photon": {
-                    "dSpace": 2,
-                    "dTime": 100e-09,
-                    "nPxMin": 8,
-                    "nPxMax": 100,
-                    "TDC1": True
-                },
-                "photon2event": {
-                    "dSpace_px": 0.001,
-                    "dTime_s": 5e-08,
-                    "durationMax_s": 5e-07,
-                    "dTime_ext": 5
-                },
-                "event2image": {
-                    "size_x": 512,
-                    "size_y": 512,
-                    "nPhotons_min": 1,
-                    "nPhotons_max": 1,
-                    "psd_min": 0,
-                    "time_extTrigger": "reference",
-                    "time_res_s": 1.5625e-9,
-                    "time_limit": 640
-                },
-            },
-            "out_of_focus": {
-                "pixel2photon": {
-                    "dSpace": 2,
-                    "dTime": 5e-08,
-                    "nPxMin": 2,
-                    "nPxMax": 12,
-                    "TDC1": True
-                },
-                "photon2event": {
-                    "dSpace_px": 60,
-                    "dTime_s": 10e-08,
-                    "durationMax_s": 10e-07,
-                    "dTime_ext": 5
-                },
-                "event2image": {
-                    "size_x": 512,
-                    "size_y": 512,
-                    "nPhotons_min": 2,
-                    "nPhotons_max": 9999,
-                    "psd_min": 0,
-                    "time_extTrigger": "reference",
-                    "time_res_s": 1.5625e-9,
-                    "time_limit": 640
-                },
-            },
-            "hitmap": {
-                "pixel2photon": {
-                    "dSpace": 0.001,
-                    "dTime": 1e-9,
-                    "nPxMin": 1,
-                    "TDC1": True
-                },
-                "photon2event": {
-                    "dSpace_px": 0.001,
-                    "dTime_s": 0,
-                    "durationMax_s": 0,
-                    "dTime_ext": 5
-                },
-                "event2image": {
-                    "size_x": 256,
-                    "size_y": 256,
-                    "nPhotons_min": 1,
-                    "nPhotons_max": 9999,
-                    "psd_min": 0,
-                    "time_extTrigger": "reference",
-                    "time_res_s": 1.5625e-9,
-                    "time_limit": 640
-                },
-            }
-        }
+        # Load parameters from config/empir_params.py
+        try:
+            from .config.empir_params import DEFAULT_PARAMS
+            self.default_params = DEFAULT_PARAMS
+        except ImportError:
+            raise ImportError(
+                "Could not import DEFAULT_PARAMS from G4LumaCam.config.empir_params. "
+                "Please ensure empir_params.py exists in the config directory."
+            )
 
 
     def _run_roi_analysis(self, 
@@ -1247,7 +1180,11 @@ class Analysis:
         if verbosity > VerbosityLevel.BASIC:
             print(f"Finished processing {file_cnt} .empirphot files")
 
-    def _run_event2image(self, event_files_dir: Path, final_dir: Path, params_file: Path, n_threads: int, verbosity: VerbosityLevel) -> None:
+
+    def _run_event2image(self, event_files_dir: Path, final_dir: Path, params_file: Path, 
+                        n_threads: int, sum_image: bool = False,
+                        verbosity: VerbosityLevel = VerbosityLevel.BASIC, 
+                        ) -> None:
         """Run event2image processing on all .empirevent files to produce a single image.
         
         Args:
@@ -1255,15 +1192,18 @@ class Analysis:
             final_dir: Directory to save the final .empirimage file.
             params_file: Path to the parameter settings JSON file.
             n_threads: Number of threads to use for parallel processing (not used in this implementation).
+            sum_image: If True, generates both time-binned image and sum image. If False, only generates time-binned image.
             verbosity: Controls the level of output during processing.
+
         """
         empirevent_files = sorted(event_files_dir.glob("*.empirevent"))
         if not empirevent_files:
             raise FileNotFoundError(f"No .empirevent files found in {event_files_dir}")
-
+        
         if verbosity > VerbosityLevel.BASIC:
             print(f"Processing {len(empirevent_files)} .empirevent files into a single image...")
-
+        
+        # Generate the main time-binned image
         output_file = final_dir / "image"
         cmd = [
             str(self.empir_dirpath / "bin/empir_event2image"),
@@ -1280,10 +1220,54 @@ class Analysis:
         
         if process.returncode != 0:
             raise RuntimeError("Error occurred during event2image processing")
-
+        
         if verbosity > VerbosityLevel.BASIC:
-            print(f"Finished producing combined image: {output_file}")
+            print(f"Finished producing time-binned image: {output_file}")
+        
+        # Generate sum image if requested
+        if sum_image:
+            if verbosity > VerbosityLevel.BASIC:
+                print(f"Generating sum image (without time binning)...")
+            
+            # Load params and remove time binning parameters
+            with open(params_file, 'r') as f:
+                params = json.load(f)
+            
+            # Remove time binning parameters if they exist
+            if "event2image" in params:
+                params["event2image"].pop("time_res_s", None)
+                params["event2image"].pop("time_limit", None)
+            
+            # Create temporary params file for sum image
+            sum_params_file = final_dir / ".sum_params_temp.json"
+            with open(sum_params_file, 'w') as f:
+                json.dump(params, f, indent=2)
+            
+            # Generate sum image
+            sum_output_file = final_dir / "sum_image"
+            sum_cmd = [
+                str(self.empir_dirpath / "bin/empir_event2image"),
+                "-I", str(event_files_dir),
+                "-o", str(sum_output_file),
+                "--paramsFile", str(sum_params_file)
+            ]
+            
+            if verbosity >= VerbosityLevel.DETAILED:
+                print(f"Running: {' '.join(sum_cmd)}")
+                sum_process = subprocess.run(sum_cmd, check=True)
+            else:
+                sum_process = subprocess.run(sum_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+            
+            if sum_process.returncode != 0:
+                raise RuntimeError("Error occurred during sum image generation")
+            
+            # Clean up temporary params file
+            sum_params_file.unlink()
+            
+            if verbosity > VerbosityLevel.BASIC:
+                print(f"Finished producing sum image: {sum_output_file}")
 
+            
     def _run_export_photons(self, process_dir: Path, verbosity: VerbosityLevel = VerbosityLevel.QUIET):
         """
         Exports .empirphot files from photonFiles subfolder to CSV files in ExportedPhotons subfolder.
@@ -1412,6 +1396,7 @@ class Analysis:
                 pixel2photon: bool = True,
                 photon2event: bool = True,
                 event2image: bool = False,
+                sum_image: bool = False,
                 export_photons: bool = True,
                 export_events: bool = False,
                 roifile: Optional[str] = None,
@@ -1430,6 +1415,7 @@ class Analysis:
             pixel2photon: If True, runs empir_pixel2photon_tpx3spidr
             photon2event: If True, runs empir_photon2event
             event2image: If True, runs empir_event2image
+            sum_image: If True, generates both time-binned image and sum image
             export_photons: If True, exports photons to CSV
             export_events: If True, exports events to CSV
             roifile: Optional path to roi.zip file for ROI analysis
@@ -1454,6 +1440,7 @@ class Analysis:
                 pixel2photon=pixel2photon,
                 photon2event=photon2event,
                 event2image=event2image,
+                sum_image=sum_image,
                 export_photons=export_photons,
                 export_events=export_events,
                 roifile=roifile,
@@ -1470,6 +1457,7 @@ class Analysis:
             pixel2photon=pixel2photon,
             photon2event=photon2event,
             event2image=event2image,
+            sum_image=sum_image,
             export_photons=export_photons,
             export_events=export_events,
             roifile=roifile,
@@ -1485,6 +1473,7 @@ class Analysis:
                         pixel2photon: bool = True,
                         photon2event: bool = True,
                         event2image: bool = False,
+                        sum_image: bool = False,
                         export_photons: bool = True,
                         export_events: bool = False,
                         roifile: Optional[str] = None,
@@ -1501,6 +1490,7 @@ class Analysis:
             pixel2photon: If True, runs empir_pixel2photon_tpx3spidr
             photon2event: If True, runs empir_photon2event
             event2image: If True, runs empir_event2image
+            sum_image: If True, generates both time-binned image and sum image
             export_photons: If True, exports photons to CSV
             export_events: If True, exports events to CSV
             verbosity: Controls output level
@@ -1563,6 +1553,7 @@ class Analysis:
                     pixel2photon=pixel2photon,
                     photon2event=photon2event,
                     event2image=event2image,
+                    sum_image=sum_image,
                     export_photons=export_photons,
                     export_events=export_events,
                     roifile=roifile,
@@ -1597,6 +1588,7 @@ class Analysis:
                         pixel2photon: bool = True,
                         photon2event: bool = True,
                         event2image: bool = False,
+                        sum_image: bool = False,
                         export_photons: bool = True,
                         export_events: bool = False,
                         roifile: Optional[str] = None,
@@ -1615,6 +1607,7 @@ class Analysis:
             pixel2photon: If True, runs empir_pixel2photon_tpx3spidr
             photon2event: If True, runs empir_photon2event
             event2image: If True, runs empir_event2image
+            sum_image: If True, generates both time-binned image and sum image
             export_photons: If True, exports photons to CSV
             export_events: If True, exports events to CSV
             verbosity: Controls output level
@@ -1705,7 +1698,7 @@ class Analysis:
             self._run_export_events(process_dir, verbosity=verbosity)
         
         if event2image:
-            self._run_event2image(event_files_dir, final_dir, params_file, n_threads, verbosity)
+            self._run_event2image(event_files_dir, final_dir, params_file, n_threads, sum_image, verbosity)
         
         if roifile:
             tiff_path = final_dir / "image"
