@@ -106,7 +106,7 @@ class Lens:
     Lens defining object with integrated data management.
     """
     def __init__(self, archive: str = None, data: "pd.DataFrame" = None,
-                kind: str = "nikkor_58mm", focus: float = None, zmx_file: str = None,
+                kind: str = "nikkor_58mm", zfine: float = 12.75, zmx_file: str = None,
                 focus_gaps: List[Tuple[int, float]] = None, dist_from_obj: float = None,
                 gap_between_lenses: float = 15.0, dist_to_screen: float = 20.0, fnumber: float = 8.0,
                 FOV: float = None, magnification: float = None,
@@ -118,7 +118,7 @@ class Lens:
             archive (str, optional): Directory path for saving results.
             data (pd.DataFrame, optional): Optical photon data table.
             kind (str, optional): Lens type ('nikkor_58mm', 'microscope', 'zmx_file'). Defaults to 'nikkor_58mm'.
-            focus (float, optional): Initial focus adjustment in mm relative to default settings.
+            zfine (float, optional): Initial zfine adjustment in mm relative to default settings.
             zmx_file (str, optional): Path to .zmx file for custom lens (required when kind='zmx_file').
             focus_gaps (List[Tuple[int, float]], optional): List of (gap_index, scaling_factor) for focus adjustment.
             dist_from_obj (float, optional): Distance from object to first lens in mm. Defaults to 35.0.
@@ -132,7 +132,7 @@ class Lens:
             ValueError: If invalid lens kind, missing zmx_file for 'zmx_file', or invalid parameters.
         """
         self.kind = kind
-        self.focus = focus
+        self.zfine = zfine
         self.zmx_file = zmx_file
         self.focus_gaps = focus_gaps
         self.FOV = FOV
@@ -207,18 +207,18 @@ class Lens:
         if self.kind == "nikkor_58mm":
             self.opm0 = self.nikkor_58mm(dist_from_obj=self.dist_from_obj, fnumber=self.fnumber, save=False)
             self.opm = deepcopy(self.opm0)
-            if focus is not None:
-                self.opm = self.refocus(zfine=focus, save=False)
+            if zfine is not None:
+                self.opm = self.refocus(zfine=zfine, save=False)
         elif self.kind == "microscope":
             self.opm0 = self.microscope_nikor_80_200mm_canon_50mm(focus=focus or 0.0, save=False)
             self.opm = deepcopy(self.opm0)
-            if focus is not None:
-                self.opm = self.refocus(zfine=focus, save=False)
+            if zfine is not None:
+                self.opm = self.refocus(zfine=zfine, save=False)
         elif self.kind == "zmx_file":
-            self.opm0 = self.load_zmx_lens(zmx_file, focus=focus, save=False)
+            self.opm0 = self.load_zmx_lens(zmx_file, focus=zfine, save=False)
             self.opm = deepcopy(self.opm0)
-            if focus is not None:
-                self.opm = self.refocus(zfine=focus, save=False)
+            if zfine is not None:
+                self.opm = self.refocus(zfine=zfine, save=False)
         else:
             raise ValueError(f"Unknown lens kind: {self.kind}")
 
@@ -519,14 +519,14 @@ class Lens:
 
         return opm
 
-    def refocus(self, opm: "OpticalModel" = None, zscan: float = 0, zfine: float = 0, fnumber: float = None, save: bool = False) -> OpticalModel:
+    def refocus(self, opm: "OpticalModel" = None, zscan: float = 0, zfine: float = 12.75, fnumber: float = None, save: bool = False) -> OpticalModel:
         """
         Refocus the lens by adjusting gaps relative to default settings.
 
         Args:
             opm (OpticalModel, optional): Optical model to refocus. Defaults to self.opm0.
             zscan (float): Distance to move the lens assembly in mm relative to default object distance. Defaults to 0.
-            zfine (float): Focus adjustment in mm relative to default gap thicknesses (for microscope, gap 24 increases, gap 31 decreases). Defaults to 0.
+            zfine (float): Focus adjustment in mm relative to default gap thicknesses (for microscope, gap 24 increases, gap 31 decreases). Defaults to 12.75
             fnumber (float, optional): New f-number for the lens.
             save (bool): Save the optical model to a file.
 
@@ -619,7 +619,7 @@ class Lens:
         """
         return [rays[i:i+chunk_size] for i in range(0, len(rays), chunk_size)]
 
-    def trace_rays(self, opm=None, opm_file=None, zscan=0, zfine=0, fnumber=None,
+    def trace_rays(self, opm=None, opm_file=None, zscan=0, zfine=12.75, fnumber=None,
                 deadtime=None, blob=0.0, blob_variance=0.0, decay_time=100, 
                 join=False, print_stats=False, n_processes=None, chunk_size=1000, 
                 progress_bar=True, timeout=3600, return_df=False, split_method="auto",
@@ -2394,7 +2394,7 @@ class Lens:
         Plot the lens layout or aberration diagrams.
 
         Args:
-            opm (OpticalModel, optional): Optical model to plot. Defaults to self.opm0.
+            opm (OpticalModel, optional): Optical model to plot. Defaults to self.opm.
             kind (str): Type of plot ('layout', 'ray', 'opd', 'spot'). Defaults to 'layout'.
             scale (float):  Scale factor for the plot. If None, uses Fit.User_Scale or Fit.All_Same.
             is_dark (bool): Use dark theme for plots. Defaults to False.
@@ -2410,9 +2410,9 @@ class Lens:
         Raises:
             ValueError: If opm is None or kind is unsupported.
         """
-        opm = opm if opm is not None else self.opm0
+        opm = opm if opm is not None else self.opm
         if opm is None:
-            raise ValueError("No optical model available to plot (self.opm0 is None).")
+            raise ValueError("No optical model available to plot (self.opm is None).")
 
         # Set default figsize based on plot kind
         figsize = kwargs.pop("figsize", (8, 2) if kind == "layout" else (8, 4))
