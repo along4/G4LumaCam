@@ -92,7 +92,7 @@ class Config:
             sample_material="G4_GRAPHITE",
             scintillator="EJ200",
             sample_thickness=2,
-            csv_batch_size=0,
+            csv_batch_size=1000,
         )
     
     @classmethod
@@ -111,13 +111,13 @@ class Config:
             halfx=60,
             halfy=60,
             shape_unit="mm",
-            num_events=100000,
+            num_events=10000,
             progress_interval=100,
             csv_filename="sim_data.csv",
             sample_material="G4_GRAPHITE",
             scintillator="EJ200",
             sample_thickness=2,
-            csv_batch_size=0,
+            csv_batch_size=1000,
         )
 
     @classmethod
@@ -188,7 +188,7 @@ class Config:
             sample_material="G4_Galactic",
             scintillator="EJ200",
             sample_thickness=2,
-            csv_batch_size=0,
+            csv_batch_size=1000,
         )
 
     @classmethod
@@ -221,7 +221,7 @@ class Config:
             sample_material="G4_Galactic",
             scintillator="EJ200",
             sample_thickness=2,
-            csv_batch_size=0,
+            csv_batch_size=1000,
         )
 
     @classmethod
@@ -240,14 +240,14 @@ class Config:
             halfx=60,
             halfy=60,
             shape_unit="mm",
-            num_events=100000,
+            num_events=10000,
             progress_interval=100,
             csv_filename="sim_data.csv",
             sample_material="G4_TUNGSTEN",
             scintillator="GS20",
             sample_thickness=0.05,
             scintillator_thickness=1,
-            csv_batch_size=0,
+            csv_batch_size=1000,
         )
 
     @classmethod
@@ -271,7 +271,7 @@ class Config:
             sample_material="G4_GRAPHITE",
             scintillator="EJ200",
             sample_thickness=2,
-            csv_batch_size=0,
+            csv_batch_size=1000,
         )
 
     @classmethod
