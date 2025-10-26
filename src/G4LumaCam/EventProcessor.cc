@@ -84,10 +84,10 @@ G4bool EventProcessor::ProcessHits(G4Step* step, G4TouchableHistory*) {
             neutronPos[0] = postPos.x();
             neutronPos[1] = postPos.y();
             neutronPos[2] = postPos.z();
-            G4cout << "Neutron position set in " << volName << " for event " 
-                   << G4RunManager::GetRunManager()->GetCurrentEvent()->GetEventID() 
-                   << ": (" << neutronPos[0] / mm << ", " << neutronPos[1] / mm 
-                   << ", " << neutronPos[2] / mm << ") mm" << G4endl;
+            // G4cout << "Neutron position set in " << volName << " for event " 
+            //        << G4RunManager::GetRunManager()->GetCurrentEvent()->GetEventID() 
+            //        << ": (" << neutronPos[0] / mm << ", " << neutronPos[1] / mm 
+            //        << ", " << neutronPos[2] / mm << ") mm" << G4endl;
         }
     }
 
@@ -196,7 +196,7 @@ G4bool EventProcessor::ProcessHits(G4Step* step, G4TouchableHistory*) {
 
 void EventProcessor::EndOfEvent(G4HCofThisEvent*) {
     if (eventCount == 0 && batchCount == 0) {
-        G4cout << "EventProcessor: Starting new run with batchSize=" << Sim::batchSize << G4endl;
+        // G4cout << "EventProcessor: Starting new run with batchSize=" << Sim::batchSize << G4endl;
         openOutputFile();
     }
     
@@ -204,11 +204,11 @@ void EventProcessor::EndOfEvent(G4HCofThisEvent*) {
     
     if (Sim::batchSize > 0) {
         eventCount++;
-        G4cout << "EventProcessor: eventCount=" << eventCount << ", batchSize=" << Sim::batchSize << G4endl;
+        // G4cout << "EventProcessor: eventCount=" << eventCount << ", batchSize=" << Sim::batchSize << G4endl;
         if (eventCount >= Sim::batchSize) {
             batchCount++;
             eventCount = 0;
-            G4cout << "EventProcessor: Starting new batch " << batchCount << G4endl;
+            // G4cout << "EventProcessor: Starting new batch " << batchCount << G4endl;
             openOutputFile();
         }
     }
@@ -223,7 +223,7 @@ void EventProcessor::openOutputFile() {
     
     try {
         std::filesystem::create_directories(simPhotonsDir);
-        G4cout << "Created/verified directory: " << simPhotonsDir << G4endl;
+        // G4cout << "Created/verified directory: " << simPhotonsDir << G4endl;
     } catch (const std::filesystem::filesystem_error& e) {
         G4cerr << "ERROR: Failed to create directory " << simPhotonsDir << ": " << e.what() << G4endl;
         G4Exception("EventProcessor::openOutputFile()", "IO001", 
@@ -244,7 +244,7 @@ void EventProcessor::openOutputFile() {
     
     std::filesystem::path fullPath = simPhotonsDir / std::string(fileName);
     
-    G4cout << "Opening output file: " << fullPath << G4endl;
+    // G4cout << "Opening output file: " << fullPath << G4endl;
     
     dataFile.open(fullPath);
     
