@@ -75,12 +75,12 @@ df = sim.run(config)
 
 # Trace rays through the lens
 lens = lumacam.Lens(archive="openbeam")
-opm = lens.refocus(zfocus=25/1.58, zfine=13.3)
-openbeam_data = lens.trace_rays(opm=opm, chunk_size=500, n_processes=10)
+lens.trace_rays(blob=1., deadtime=600) # define a blob radius size of 1 px and deadtime of 600 ns
 
 # Analyse and process data using EMPIR
-# Uses EMPIR path from installation config or default
-reconstructed = lumacam.Analysis(archive="archive/test/openbeam").process_data()
+# Uses EMPIR path from installation config or default to run the standard EMPIR workflow to produce a tiff stack of the TOF-dependent images
+analyse = lumacam.Analysis(archive="archive/test/openbeam")
+analyse.process(params="hitmap",event2image=True)
 ```
 
 ## Citation
