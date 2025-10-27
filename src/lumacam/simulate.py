@@ -225,8 +225,11 @@ class Config:
         )
 
     @classmethod
-    def uniform_epithermal_neutrons(cls) -> 'Config':
-        """Neutron configuration with uniform epithermal energy distribution."""
+    def uniform_epithermal_neutrons(cls, pulse_width: float = 1000.0) -> 'Config':
+        """Neutron configuration with uniform epithermal energy distribution.
+        Args:
+            pulse_width (float): Width of the neutron pulse in ns. Default is 1000 ns.
+        """
         return cls(
             particle="neutron",
             energy_type="Lin",
@@ -235,10 +238,14 @@ class Config:
             energy_gradient=0.0,
             energy_intercept=1.0,
             energy_unit="eV",
-            position_z=-1059,
+            position_z=-900,
             position_unit="cm",
             halfx=60,
             halfy=60,
+            flux=1e4,  # Neutron flux in n/cm²/s
+            freq=20,  # Pulse frequency in Hz (20 Hz)
+            tmin=0.0,
+            tmax=pulse_width,
             shape_unit="mm",
             num_events=10000,
             progress_interval=100,
