@@ -620,12 +620,12 @@ class Lens:
         return [rays[i:i+chunk_size] for i in range(0, len(rays), chunk_size)]
 
     def trace_rays(self, opm=None, opm_file=None, zscan=0, zfine=12.75, fnumber=None,
-                deadtime=None, blob=0.0, blob_variance=0.0, decay_time=100, 
-                join=False, print_stats=False, n_processes=None, chunk_size=1000, 
-                progress_bar=True, timeout=3600, return_df=False, split_method="auto",
-                seed: int = None,
-                verbosity=VerbosityLevel.BASIC
-                ) -> Optional[pd.DataFrame]:
+                    source=None, deadtime=None, blob=0.0, blob_variance=0.0, decay_time=100, 
+                    join=False, print_stats=False, n_processes=None, chunk_size=1000, 
+                    progress_bar=True, timeout=3600, return_df=False, split_method="auto",
+                    seed: int = None,
+                    verbosity=VerbosityLevel.BASIC
+                    ) -> Optional[pd.DataFrame]:
         """
         Trace rays from simulation data files and save processed results, optionally applying pixel saturation and blob effect.
         
@@ -634,11 +634,11 @@ class Lens:
 
         This method processes ray data from CSV files in the 'SimPhotons' directory using either
         a provided optical model, a saved optical model file, or by creating a refocused version
-        of the default optical model. If deadtime or blob is provided, it applies the saturate_photons
-        method with output_format="photons" and saves the results directly to the 'TracedPhotons'
-        directory, including photon_count, time_diff, nz, pz, and pulse_id columns. It then calls _write_tpx3
-        to generate TPX3 files, using pulse_time_ns from the input data (converted to ps).
-        Otherwise, it saves raw traced results to 'TracedPhotons' with nz, pz, and pulse_id columns.
+        of the default optical model.
+        
+        The method supports two output workflows controlled by the 'source' parameter:
+        1. "hits" workflow: Applies saturation (if deadtime/blob provided), generates TPX3 files
+        2. "photons" workflow: Saves traced photons directly without saturation, ready for direct import
 
         Parameters:
         -----------
@@ -651,20 +651,26 @@ class Lens:
         zscan : float, default 0
             Distance to move the lens assembly in mm relative to default object distance.
             Only used if neither opm nor opm_file is provided.
-        zfine : float, default 0
+        zfine : float, default 12.75
             Focus adjustment in mm relative to default gap thicknesses. Only used if 
             neither opm nor opm_file is provided.
         fnumber : float, optional
             New f-number for the lens. Applied to refocused model if neither opm nor
             opm_file is provided.
+        source : str, optional
+            Output workflow mode:
+            - None (default): Auto-detect based on deadtime/blob parameters
+            - If deadtime > 0 or blob > 0: uses "hits" workflow
+            - Otherwise: uses "photons" workflow
+            - "hits": Apply saturation and generate TPX3 files (requires deadtime and/or blob)
+            - "photons": Save traced photons directly without saturation for direct import
         deadtime : float, optional
-            Deadtime in nanoseconds for pixel saturation. If provided, applies
-            saturate_photons with output_format="photons" and saves results to
-            'TracedPhotons', followed by _write_tpx3.
+            Deadtime in nanoseconds for pixel saturation. Only used in "hits" workflow.
+            If source=None and deadtime > 0, automatically selects "hits" workflow.
         blob : float, default 0.0
             Interaction radius in pixels for photon hits. If > 0, each photon hit affects
-            all pixels within this radius. If provided, applies saturate_photons and
-            triggers _write_tpx3.
+            all pixels within this radius. Only used in "hits" workflow.
+            If source=None and blob > 0, automatically selects "hits" workflow.
         blob_variance : float, default 0.0
             Radius value subtracted from blob radius (in pixels). Only used if blob > 0.
             Each photon's actual blob radius is drawn uniformly from [blob - blob_variance, blob].
@@ -694,7 +700,7 @@ class Lens:
             If True, returns a combined DataFrame of all processed files.
             If False, returns None (files are still saved to disk).
         split_method : str, default "auto"
-            TPX3 file splitting strategy (only used when deadtime or blob is provided):
+            TPX3 file splitting strategy (only used in "hits" workflow):
             - "auto": Groups neutron events to minimize file count (default)
             - "event": Creates one TPX3 file per neutron_id for event-by-event analysis
         verbosity : VerbosityLevel, default VerbosityLevel.BASIC
@@ -711,12 +717,50 @@ class Lens:
         
         Raises:
         -------
-        ValueError: If both opm and opm_file are provided, or if parameters are
-                    invalid (e.g., negative deadtime or blob).
+        ValueError: If both opm and opm_file are provided, if parameters are invalid,
+                    or if source="hits" but neither deadtime nor blob is provided.
         FileNotFoundError: If opm_file does not exist or if no valid simulation
                             data files are found.
         RuntimeError: If tracing fails for a file.
+        
+        Examples:
+        ---------
+        Hits workflow with saturation (auto-detected):
+        >>> optics.trace_rays(deadtime=100, blob=1.0)  # Auto-detects "hits" workflow
+        
+        Hits workflow with explicit source:
+        >>> optics.trace_rays(source="hits")
+        
+        Photons workflow (auto-detected):
+        >>> optics.trace_rays()  # Auto-detects "photons" workflow (no saturation)
+        
+        Photons workflow with explicit source:
+        >>> optics.trace_rays(source="photons")  # Direct import, no saturation
         """
+        # Auto-detect source if not specified
+        if source is None:
+            if deadtime is not None and deadtime > 0:
+                source = "hits"
+            elif blob > 0:
+                source = "hits"
+            else:
+                source = "photons"
+            
+            if verbosity >= VerbosityLevel.DETAILED:
+                print(f"Auto-detected source: '{source}'")
+        
+        # Validate source parameter
+        if source not in ["hits", "photons"]:
+            raise ValueError(f"Invalid source: '{source}'. Must be 'hits' or 'photons'")
+        
+        # Validate hits workflow requirements
+        if source == "hits":
+            if (deadtime is None or deadtime <= 0) and blob <= 0:
+                raise ValueError(
+                    "source='hits' requires either deadtime > 0 or blob > 0 for saturation. "
+                    "Use source='photons' for direct import without saturation."
+                )
+        
         # Check if groupby was called - if so, delegate to grouped tracing
         if hasattr(self, '_groupby_dir') and hasattr(self, '_groupby_labels'):
             return self._trace_rays_grouped(
@@ -725,6 +769,7 @@ class Lens:
                 zscan=zscan,
                 zfine=zfine,
                 fnumber=fnumber,
+                source=source,
                 deadtime=deadtime,
                 blob=blob,
                 blob_variance=blob_variance,
@@ -748,6 +793,7 @@ class Lens:
             zscan=zscan,
             zfine=zfine,
             fnumber=fnumber,
+            source=source,
             deadtime=deadtime,
             blob=blob,
             blob_variance=blob_variance,
@@ -766,8 +812,8 @@ class Lens:
 
 
     def _trace_rays_single(self, opm=None, opm_file=None, zscan=0, zfine=0, fnumber=None,
-                        deadtime=None, blob=0.0, blob_variance=0.0, decay_time=100, seed: int = None,
-                        join=False, print_stats=False, n_processes=None, chunk_size=1000, 
+                        source="photons", deadtime=None, blob=0.0, blob_variance=0.0, decay_time=100, 
+                        seed: int = None, join=False, print_stats=False, n_processes=None, chunk_size=1000, 
                         progress_bar=True, timeout=3600, return_df=False, 
                         split_method="auto",
                         verbosity=VerbosityLevel.BASIC,  
@@ -779,12 +825,12 @@ class Lens:
         Parameters:
         -----------
         (Same as trace_rays)
+        
         Returns:
         --------
         pd.DataFrame or None
             Combined DataFrame of all processed results if return_df=True,
             otherwise None. Each row represents a traced ray.
-
         """
         # Validate input parameters
         if opm is not None and opm_file is not None:
@@ -792,6 +838,13 @@ class Lens:
         
         if opm_file is not None and not Path(opm_file).exists():
             raise FileNotFoundError(f"Optical model file not found: {opm_file}")
+        
+        if source not in ["hits", "photons"]:
+            raise ValueError(f"Invalid source: '{source}'. Must be 'hits' or 'photons'")
+        
+        if source == "hits":
+            if (deadtime is None or deadtime <= 0) and blob <= 0:
+                raise ValueError("source='hits' requires either deadtime > 0 or blob > 0")
         
         if deadtime is not None and deadtime <= 0:
             raise ValueError(f"deadtime must be positive, got {deadtime}")
@@ -817,6 +870,7 @@ class Lens:
 
         if verbosity > VerbosityLevel.BASIC:
             print(f"Found {len(valid_files)} valid simulation files to process")
+            print(f"Workflow: {source}")
 
         # Handle optical model setup
         temp_opm_file = None
@@ -892,7 +946,7 @@ class Lens:
                     continue
 
                 # Check for pulse_id when split_method="event"
-                if split_method == "event" and 'pulse_id' not in df.columns:
+                if source == "hits" and split_method == "event" and 'pulse_id' not in df.columns:
                     if verbosity > VerbosityLevel.BASIC:
                         print(f"Warning: {csv_file.name} missing pulse_id column required for split_method='event'")
 
@@ -1009,8 +1063,9 @@ class Lens:
                         if id_matches == len(df) and neutron_matches == len(df) and pulse_matches == len(df):
                             print(f"  ✓ Perfect ID alignment verified: all {len(df)} rows match")
 
-                # Apply saturation if deadtime or blob is provided
-                if deadtime is not None or blob > 0:
+                # Process based on source workflow
+                if source == "hits":
+                    # Hits workflow: apply saturation and write TPX3 files
                     # Initialize in_tpx3 column as False (will be marked True for surviving rows)
                     result_df['in_tpx3'] = False
                     
@@ -1044,8 +1099,6 @@ class Lens:
                     if saturated_df is None or saturated_df.empty:
                         if verbosity > VerbosityLevel.QUIET:
                             print(f"  Saturation produced no results for {csv_file.name}")
-                        # Still need to save the result_df with in_tpx3=False for all rows
-                        # Don't continue here - proceed to save the CSV with no rows marked for TPX3
                         result_df['in_tpx3'] = False
                     else:
                         # Mark rows that survived saturation
@@ -1067,37 +1120,27 @@ class Lens:
                             print(f"  After saturation and sorting: {len(result_df)} rows")
                             tpx3_count = result_df['in_tpx3'].sum() if 'in_tpx3' in result_df.columns else len(result_df)
                             print(f"  Rows marked for TPX3: {tpx3_count}")
-                else:
-                    # No saturation applied - mark all rows as in_tpx3=True
-                    result_df['in_tpx3'] = True
+
+                    # Filter columns to keep for hits workflow
+                    desired_columns = ['pixel_x', 'pixel_y', 'toa2', 'photon_count', 'time_diff', 
+                                    'id', 'neutron_id', 'pulse_id', 'pulse_time_ns', 'in_tpx3']
+                    
+                    columns_to_keep = [col for col in desired_columns if col in result_df.columns]
+                    result_df = result_df[columns_to_keep]
+                    
                     if verbosity >= VerbosityLevel.DETAILED:
-                        print(f"  No saturation applied - all {len(result_df)} rows marked for TPX3")
+                        print(f"  Filtered to columns: {columns_to_keep}")
 
-                # Filter columns to keep only desired ones
-                desired_columns = ['pixel_x', 'pixel_y', 'toa2', 'photon_count', 'time_diff', 
-                                   'id', 'neutron_id', 'pulse_id', 'pulse_time_ns', 'in_tpx3']
-                
-                # Keep only columns that exist in the dataframe
-                columns_to_keep = [col for col in desired_columns if col in result_df.columns]
-                result_df = result_df[columns_to_keep]
-                
-                if verbosity >= VerbosityLevel.DETAILED:
-                    print(f"  Filtered to columns: {columns_to_keep}")
+                    # Save results to file
+                    output_file = traced_photons_dir / f"traced_{csv_file.name}"
+                    result_df.to_csv(output_file, index=False)
 
-                # Save results to file
-                output_file = traced_photons_dir / f"traced_{csv_file.name}"
-                result_df.to_csv(output_file, index=False)
-
-                # Call _write_tpx3 if deadtime or blob is provided
-                if deadtime is not None or blob > 0:
-                    # Extract file index from filename (e.g., sim_data_0.csv -> 0)
+                    # Write TPX3 files
                     file_index = int(csv_file.stem.split('_')[-1])
                     
-                    # Only pass rows marked as in_tpx3 (ensure column exists)
                     if 'in_tpx3' in result_df.columns:
                         tpx3_data = result_df[result_df['in_tpx3']].copy()
                     else:
-                        # Fallback: if column doesn't exist, use all rows
                         tpx3_data = result_df.copy()
                         if verbosity >= VerbosityLevel.DETAILED:
                             print(f"  Warning: 'in_tpx3' column not found, using all rows for TPX3")
@@ -1111,9 +1154,39 @@ class Lens:
                         verbosity=verbosity,
                         sensor_size=256,
                         split_method=split_method,
-                        clean=(file_idx == 0),  # Clean directory only for the first file
+                        clean=(file_idx == 0),
                         file_index=file_index
                     )
+                
+                else:  # source == "photons"
+                    # Photons workflow: save traced photons with tof for direct import
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"  Preparing photons for direct import (no saturation)")
+                    
+                    # Calculate tof: time from pulse start to photon arrival, in seconds
+                    if 'pulse_time_ns' in result_df.columns and 'toa2' in result_df.columns:
+                        result_df['tof'] = (result_df['toa2'] - result_df['pulse_time_ns']) / 1e9  # ns to seconds
+                    else:
+                        result_df['tof'] = 0.0  # Fallback if pulse_time_ns not available
+                        if verbosity >= VerbosityLevel.DETAILED:
+                            print(f"  Warning: pulse_time_ns not available, setting tof=0")
+                    
+                    # Filter columns for photons workflow - keep format compatible with empir_import_photons
+                    desired_columns = ['pixel_x', 'pixel_y', 'toa2', 'tof', 
+                                    'id', 'neutron_id', 'pulse_id', 'pulse_time_ns']
+                    
+                    columns_to_keep = [col for col in desired_columns if col in result_df.columns]
+                    result_df = result_df[columns_to_keep]
+                    
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"  Filtered to columns: {columns_to_keep}")
+
+                    # Save results to file
+                    output_file = traced_photons_dir / f"traced_{csv_file.name}"
+                    result_df.to_csv(output_file, index=False)
+                    
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"  Saved {len(result_df)} traced photons ready for import")
 
                 # Print statistics if requested
                 if print_stats and verbosity > VerbosityLevel.BASIC:
@@ -1139,8 +1212,8 @@ class Lens:
 
 
     def _trace_rays_grouped(self, opm=None, opm_file=None, zscan=0, zfine=0, fnumber=None,
-                            deadtime=None, blob=0.0, blob_variance=0.0, decay_time=100, seed: int = None,
-                            join=False, print_stats=False, n_processes=None, chunk_size=1000, 
+                            source="photons", deadtime=None, blob=0.0, blob_variance=0.0, decay_time=100, 
+                            seed: int = None, join=False, print_stats=False, n_processes=None, chunk_size=1000, 
                             progress_bar=True, timeout=3600, return_df=False, split_method="auto",
                             verbosity=VerbosityLevel.BASIC) -> pd.DataFrame or None:
         """
@@ -1161,6 +1234,7 @@ class Lens:
         if verbosity > VerbosityLevel.BASIC:
             print(f"\n{'='*60}")
             print(f"Tracing rays for {len(labels)} groups in: {groupby_dir.name}")
+            print(f"Workflow: {source}")
             print(f"{'='*60}\n")
         
         # Store original archive
@@ -1218,6 +1292,7 @@ class Lens:
                         zscan=zscan,
                         zfine=zfine,
                         fnumber=fnumber,
+                        source=source,
                         deadtime=deadtime,
                         blob=blob,
                         blob_variance=blob_variance,
