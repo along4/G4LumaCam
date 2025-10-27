@@ -619,8 +619,9 @@ class Lens:
         """
         return [rays[i:i+chunk_size] for i in range(0, len(rays), chunk_size)]
 
+
     def trace_rays(self, opm=None, opm_file=None, zscan=0, zfine=12.75, fnumber=None,
-                    source=None, deadtime=None, blob=0.0, blob_variance=0.0, decay_time=100, 
+                    source=None, deadtime=None, blob=0.0, blob_variance=0.0, decay_time=10, 
                     join=False, print_stats=False, n_processes=None, chunk_size=1000, 
                     progress_bar=True, timeout=3600, return_df=False, split_method="auto",
                     seed: int = None,
@@ -726,10 +727,10 @@ class Lens:
         Examples:
         ---------
         Hits workflow with saturation (auto-detected):
-        >>> optics.trace_rays(deadtime=100, blob=1.0)  # Auto-detects "hits" workflow
+        >>> optics.trace_rays(deadtime=100, blob=5.0)  # Auto-detects "hits" workflow
         
         Hits workflow with explicit source:
-        >>> optics.trace_rays(source="hits")
+        >>> optics.trace_rays(source="hits", deadtime=100, blob=5.0)
         
         Photons workflow (auto-detected):
         >>> optics.trace_rays()  # Auto-detects "photons" workflow (no saturation)
@@ -1187,6 +1188,16 @@ class Lens:
                     
                     if verbosity >= VerbosityLevel.DETAILED:
                         print(f"  Saved {len(result_df)} traced photons ready for import")
+                    
+                    # Convert to photonFiles format immediately
+                    photon_files_dir = self.archive / "photonFiles"
+                    photon_files_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    self._run_import_photons(
+                        traced_file=output_file,
+                        photon_files_dir=photon_files_dir,
+                        verbosity=verbosity
+                    )
 
                 # Print statistics if requested
                 if print_stats and verbosity > VerbosityLevel.BASIC:
@@ -1343,6 +1354,86 @@ class Lens:
         
         return None
 
+
+    def _run_import_photons(self, traced_file: Path, photon_files_dir: Path, 
+                                        verbosity: VerbosityLevel) -> None:
+        """
+        Convert a single traced photon CSV file to empirphot format (.empirphot).
+        
+        This method reads a traced photon CSV file and converts it to the format expected
+        by the EMPIR pipeline (empir_photon2event). The conversion creates .empirphot files
+        in the photonFiles directory, ready for further EMPIR processing.
+        
+        The empirphot format contains:
+        - x, y: Pixel coordinates (float64)
+        - toa: Time of arrival in nanoseconds (float64)
+        - tof: Time of flight in seconds (float64)
+        - neutron_id: Preserved if available
+        
+        Args:
+            traced_file: Path to the traced photon CSV file (e.g., traced_sim_data_0.csv)
+            photon_files_dir: Directory where .empirphot files will be saved
+            verbosity: Controls output level
+        
+        Raises:
+            ValueError: If required columns are missing from traced photon file
+        """
+        try:
+            # Read traced photons
+            df = pd.read_csv(traced_file)
+            
+            if df.empty:
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"    Skipping empty traced file: {traced_file.name}")
+                return
+            
+            # Validate required columns
+            required_cols = ['pixel_x', 'pixel_y', 'toa2', 'tof']
+            missing_cols = [col for col in required_cols if col not in df.columns]
+            if missing_cols:
+                raise ValueError(
+                    f"Traced photon file {traced_file.name} missing required columns: {missing_cols}\n"
+                    f"Available columns: {list(df.columns)}\n"
+                    f"Expected columns: {required_cols}"
+                )
+            
+            # Create empirphot format: x, y, toa, tof
+            # Rename columns to match empirphot format
+            empirphot_df = pd.DataFrame({
+                'x': df['pixel_x'].astype(np.float64),
+                'y': df['pixel_y'].astype(np.float64),
+                'toa': df['toa2'].astype(np.float64),  # time of arrival in ns
+                'tof': df['tof'].astype(np.float64)     # time of flight in seconds
+            })
+            
+            # Preserve neutron_id if available (for tracking in EMPIR pipeline)
+            if 'neutron_id' in df.columns:
+                empirphot_df['neutron_id'] = df['neutron_id']
+            
+            # Extract the data index from filename: traced_sim_data_0.csv -> 0
+            # Handle both "traced_sim_data_X.csv" and "traced_data_X.csv" formats
+            stem = traced_file.stem
+            if stem.startswith('traced_sim_data_'):
+                data_index = stem.replace('traced_sim_data_', '')
+            elif stem.startswith('traced_data_'):
+                data_index = stem.replace('traced_data_', '')
+            else:
+                # Fallback: try to extract number from end
+                data_index = ''.join(filter(str.isdigit, stem))
+            
+            # Create output filename matching the convention
+            output_file = photon_files_dir / f"traced_data_{data_index}.empirphot"
+            
+            # Save as empirphot file
+            empirphot_df.to_csv(output_file, index=False)
+            
+            if verbosity >= VerbosityLevel.DETAILED:
+                print(f"    Converted {traced_file.name} → {output_file.name} ({len(empirphot_df)} photons)")
+        
+        except Exception as e:
+            if verbosity > VerbosityLevel.BASIC:
+                print(f"    Error converting {traced_file.name}: {e}")
+            raise
 
 
     def _write_tpx3(
