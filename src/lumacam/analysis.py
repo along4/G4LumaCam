@@ -1627,7 +1627,7 @@ class Analysis:
             process_dir = base_dir
             tpx3_dir = base_dir / "tpx3Files"
 
-        if not tpx3_dir.exists() or not list(tpx3_dir.glob("*.tpx3")):
+        if pixel2photon == True and (not tpx3_dir.exists() or not list(tpx3_dir.glob("*.tpx3"))):
             raise FileNotFoundError(f"No .tpx3 files found in {tpx3_dir}")
 
         photon_files_dir = process_dir / "photonFiles"
@@ -1638,18 +1638,33 @@ class Analysis:
         # final_dir.mkdir(parents=True, exist_ok=True)
 
         if clean:
-            for file in photon_files_dir.glob("*.empirphot"):
-                file.unlink(missing_ok=True)
-                if verbosity >= VerbosityLevel.DETAILED:
-                    print(f"Deleted existing file: {file.name}")
-            for file in event_files_dir.glob("*.empirevent"):
-                file.unlink(missing_ok=True)
-                if verbosity >= VerbosityLevel.DETAILED:
-                    print(f"Deleted existing file: {file.name}")
-            for file in final_dir.glob("*"):
-                file.unlink(missing_ok=True)
-                if verbosity >= VerbosityLevel.DETAILED:
-                    print(f"Deleted existing file: {file.name}")
+            if pixel2photon==True:
+                for file in photon_files_dir.glob("*.empirphot"):
+                    file.unlink(missing_ok=True)
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"Deleted existing file: {file.name}")
+            if photon2event==True:
+                for file in event_files_dir.glob("*.empirevent"):
+                    file.unlink(missing_ok=True)
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"Deleted existing file: {file.name}")
+            if event2image==True:
+                for file in final_dir.glob("*"):
+                    file.unlink(missing_ok=True)
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"Deleted existing file: {file.name}")
+            if export_photons==True:
+                exported_photons_dir = process_dir / "ExportedPhotons"
+                for file in exported_photons_dir.glob("*.csv"):
+                    file.unlink(missing_ok=True)
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"Deleted existing file: {file.name}")
+            if export_events==True:
+                exported_events_dir = process_dir / "ExportedEvents"
+                for file in exported_events_dir.glob("*.csv"):
+                    file.unlink(missing_ok=True)
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"Deleted existing file: {file.name}")
 
         if params is None:
             parameters = self.default_params.get("in_focus", {})
