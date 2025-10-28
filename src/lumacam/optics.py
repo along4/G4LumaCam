@@ -226,7 +226,7 @@ class Lens:
             if zfine is not None:
                 self.opm = self.refocus(zfine=zfine, save=False)
         elif self.kind == "microscope":
-            self.opm0 = self.microscope_nikor_80_200mm_canon_50mm(focus=focus or 0.0, save=False)
+            self.opm0 = self.microscope_nikor_80_200mm_canon_50mm(focus=zfine or 0.0, save=False)
             self.opm = deepcopy(self.opm0)
             if zfine is not None:
                 self.opm = self.refocus(zfine=zfine, save=False)

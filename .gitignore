@@ -21,3 +21,4 @@ notebooks/microscope_data
 notebooks/*.log
 notebooks/gamma_with_LYSO.ipynb
 TriggerTimes/trigger_data_0.csv
+notebooks/tutorial_archive
