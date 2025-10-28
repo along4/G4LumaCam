@@ -22,7 +22,7 @@ G4LumaCam is a Geant4-based simulation package for the LumaCam event camera that
 
 ## Quick Start
 
-Check out our [detailed tutorial](__notebooks/tutorial.ipynb__) for a comprehensive guide covering simulation setup, ray tracing, and data analysis.
+Check out our new [detailed tutorial](__notebooks/G4LumaCam_Tutorial.ipynb__) for a comprehensive guide covering simulation setup, ray tracing, and data analysis.
 
 ### Basic Usage
 
