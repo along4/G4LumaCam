@@ -2,7 +2,7 @@
 
 A Geant4-based Simulator for LumaCam Event Camera
 
-![LumaCam Simulation](notebooks/lumacam_simulation.png)
+![LumaCam Simulation](https://github.com/TsvikiHirsh/G4LumaCam/blob/master/notebooks/lumacam_simulation.png)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -22,7 +22,7 @@ G4LumaCam is a Geant4-based simulation package for the LumaCam event camera that
 
 ## Quick Start
 
-Check out our new [detailed tutorial](notebooks/G4LumaCam_Tutorial.ipynb) for a comprehensive guide covering simulation setup, ray tracing, and data analysis.
+Check out our new [detailed tutorial](https://github.com/TsvikiHirsh/G4LumaCam/blob/master/notebooks/G4LumaCam_Tutorial.ipynb) for a comprehensive guide covering simulation setup, ray tracing, and data analysis.
 
 ### Basic Usage
 
