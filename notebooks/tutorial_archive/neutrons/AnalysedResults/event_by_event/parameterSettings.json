@@ -1,8 +1,0 @@
-{
-    "photon2event": {
-        "dSpace_px": 1,
-        "dTime_s": 5e-08,
-        "durationMax_s": 5e-07,
-        "dTime_ext": 1.0
-    }
-}

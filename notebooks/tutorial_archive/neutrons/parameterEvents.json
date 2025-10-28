@@ -1,9 +1,0 @@
-{
-    "bin_events": {
-        "binning_t": {
-            "nBins": 1000,
-            "resolution_s": 1.5625e-09,
-            "offset_s": 0.0
-        }
-    }
-}

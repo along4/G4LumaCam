@@ -2,11 +2,14 @@
 
 /gps/ene/type Lin
 /gps/ene/min 1 MeV
-/gps/ene/max 10.0 MeV
+/gps/ene/max 10 MeV
 /gps/ene/gradient 0.0
 /gps/ene/intercept 1.0
 
-/gps/position 0 0 -1590 cm
+/lumacam/flux 10000.0
+/lumacam/freq 200000
+
+/gps/position 0 0 -1085 cm
 /gps/direction 0 0 1
 /gps/pos/shape Rectangle
 /gps/pos/halfx 60 mm
@@ -16,6 +19,11 @@
 /gps/ang/maxtheta 0 deg
 /gps/ang/mintheta 0 deg
 /run/printProgress 100
-/lumacam/sampleMaterial G4_Galactic
-/lumacam/batchSize 100
-/run/beamOn 2000
+/lumacam/scintMaterial EJ200
+/lumacam/sampleThickness 7.5 cm
+/lumacam/sampleWidth 12.0 cm
+/lumacam/scintThickness 2 cm
+/lumacam/sampleMaterial G4_GRAPHITE
+/lumacam/batchSize 10000
+/control/verbose 2
+/run/beamOn 10000
