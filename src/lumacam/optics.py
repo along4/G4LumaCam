@@ -2479,41 +2479,64 @@ class Lens:
             })
 
 
-    def groupby(self, column: str, low: float = None, high: float = None, 
-                step: float = None, bins: List[float] = None, 
+    def groupby(self, column: str, low: float = None, high: float = None,
+                step: float = None, bins: List[float] = None,
                 labels: List[str] = None, verbosity: VerbosityLevel = VerbosityLevel.BASIC):
         """
         Group simulation data by a column and create subfolders with filtered data.
-        
+
         Args:
-            column (str): Column name to group by (e.g., 'nz', 'neutronEnergy', 'pulse_id')
-            low (float, optional): Lower bound for binning
-            high (float, optional): Upper bound for binning
-            step (float, optional): Step size for bins
-            bins (List[float], optional): Custom bin edges (alternative to low/high/step)
-            labels (List[str], optional): Custom labels for bins
+            column (str): Column name to group by (e.g., 'nz', 'neutronEnergy', 'pulse_id', 'parentName')
+            low (float, optional): Lower bound for binning (numerical columns only)
+            high (float, optional): Upper bound for binning (numerical columns only)
+            step (float, optional): Step size for bins (numerical columns only)
+            bins (List[float], optional): Custom bin edges (numerical columns only, alternative to low/high/step)
+            labels (List[str], optional): Custom labels for groups/bins
             verbosity (VerbosityLevel): Controls output level
-        
+
         Returns:
             Lens: Self for method chaining
-        
+
         Raises:
             ValueError: If column doesn't exist or invalid parameters
+
+        Note:
+            For categorical/string columns (e.g., parentName), groups are created automatically
+            from unique values. The low/high/step/bins parameters are ignored for such columns.
         """
         if self.data.empty:
             raise ValueError("No simulation data available. Load data first.")
-        
+
         if column not in self.data.columns:
             raise ValueError(f"Column '{column}' not found in data. Available columns: {list(self.data.columns)}")
-        
-        # Create bins
-        if bins is None:
-            if low is None or high is None or step is None:
-                raise ValueError("Must provide either 'bins' or all of 'low', 'high', 'step'")
-            bins = np.arange(low, high + step, step)
-        
-        if verbosity > VerbosityLevel.BASIC:
-            print(f"Grouping by column '{column}' with {len(bins)-1} bins")
+
+        # Determine if column is categorical/string or numerical
+        is_categorical = pd.api.types.is_string_dtype(self.data[column]) or \
+                        pd.api.types.is_object_dtype(self.data[column]) or \
+                        pd.api.types.is_categorical_dtype(self.data[column])
+
+        # Create bins or categories
+        if is_categorical:
+            # For categorical columns, use unique values as groups
+            unique_values = self.data[column].dropna().unique()
+            unique_values = sorted(unique_values)  # Sort for consistency
+
+            if labels is None:
+                labels = [str(val) for val in unique_values]
+
+            if verbosity > VerbosityLevel.BASIC:
+                print(f"Grouping by categorical column '{column}' with {len(labels)} unique values")
+
+            bins = None  # No bins for categorical data
+        else:
+            # For numerical columns, create bins as before
+            if bins is None:
+                if low is None or high is None or step is None:
+                    raise ValueError("For numerical columns, must provide either 'bins' or all of 'low', 'high', 'step'")
+                bins = np.arange(low, high + step, step)
+
+            if verbosity > VerbosityLevel.BASIC:
+                print(f"Grouping by numerical column '{column}' with {len(bins)-1} bins")
         
         # Create groupby folder structure
         groupby_dir = self.archive / column
@@ -2524,32 +2547,33 @@ class Lens:
             "column": column,
             "bins": bins.tolist() if isinstance(bins, np.ndarray) else bins,
             "labels": labels,
+            "is_categorical": is_categorical,
             "created": pd.Timestamp.now().isoformat(),
             "type": "groupby"
         }
-        
+
         metadata_file = groupby_dir / ".groupby_metadata.json"
         with open(metadata_file, 'w') as f:
             json.dump(metadata, f, indent=4)
-        
+
         if verbosity >= VerbosityLevel.DETAILED:
             print(f"Created groupby directory: {groupby_dir}")
             print(f"Saved metadata to: {metadata_file}")
-        
+
         # Load all SimPhotons data if not already loaded
         sim_photons_dir = self.archive / "SimPhotons"
         if not sim_photons_dir.exists():
             raise FileNotFoundError(f"SimPhotons directory not found: {sim_photons_dir}")
-        
+
         csv_files = sorted(sim_photons_dir.glob("sim_data_*.csv"))
         if not csv_files:
             raise FileNotFoundError(f"No sim_data_*.csv files found in {sim_photons_dir}")
-        
+
         # Load all data if self.data is empty or incomplete
         if len(csv_files) > 1 or self.data.empty:
             if verbosity > VerbosityLevel.BASIC:
                 print(f"Loading {len(csv_files)} simulation files...")
-            
+
             all_data = []
             for csv_file in tqdm(csv_files, desc="Loading data", disable=(verbosity == VerbosityLevel.QUIET)):
                 try:
@@ -2561,26 +2585,31 @@ class Lens:
                 except Exception as e:
                     if verbosity >= VerbosityLevel.DETAILED:
                         print(f"Warning: Failed to load {csv_file.name}: {e}")
-            
+
             if not all_data:
                 raise ValueError("No valid data loaded from SimPhotons")
-            
+
             self.data = pd.concat(all_data, ignore_index=True)
             if verbosity >= VerbosityLevel.DETAILED:
                 print(f"Loaded {len(self.data)} total rows from {len(all_data)} files")
-        
-        # Add bin labels
-        if labels is None:
-            labels = [f"{bins[i]:.3f}" for i in range(len(bins)-1)]
-        
-        # Bin the data
-        self.data['_bin_label'] = pd.cut(
-            self.data[column], 
-            bins=bins, 
-            labels=labels, 
-            right=False,
-            include_lowest=True
-        )
+
+        # Create bin/group labels
+        if is_categorical:
+            # For categorical data, map values directly to labels
+            value_to_label = dict(zip(unique_values, labels))
+            self.data['_bin_label'] = self.data[column].map(value_to_label)
+        else:
+            # For numerical data, use binning
+            if labels is None:
+                labels = [f"{bins[i]:.3f}" for i in range(len(bins)-1)]
+
+            self.data['_bin_label'] = pd.cut(
+                self.data[column],
+                bins=bins,
+                labels=labels,
+                right=False,
+                include_lowest=True
+            )
         
         # Count rows per bin
         bin_counts = self.data['_bin_label'].value_counts().sort_index()
