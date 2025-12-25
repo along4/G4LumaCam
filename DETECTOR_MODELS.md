@@ -4,16 +4,24 @@ This guide explains the different physical detector models available in G4LumaCa
 
 ## Overview
 
-The `saturate_photons()` method supports multiple physical models that can be selected via the `detector_model` parameter. Each model simulates different aspects of photon detection physics:
+The `trace_rays()` and `saturate_photons()` methods support multiple physical models that can be selected via the `detector_model` parameter using lowercase strings. Each model simulates different aspects of photon detection physics:
 
 ```python
-from lumacam import Lens, DetectorModel
+from lumacam import Lens
 
 lens = Lens(archive="my_simulation")
 
-# Select model using DetectorModel enum
+# Typical workflow: use trace_rays() with detector model
+lens.trace_rays(
+    deadtime=600.0,
+    blob=2.0,
+    detector_model="gaussian_diffusion",
+    model_params={'charge_coupling': 0.85}
+)
+
+# Or call saturate_photons() directly
 result = lens.saturate_photons(
-    detector_model=DetectorModel.GAUSSIAN_DIFFUSION,
+    detector_model="gaussian_diffusion",
     blob=1.5,
     deadtime=600.0
 )
@@ -21,7 +29,7 @@ result = lens.saturate_photons(
 
 ## Available Models
 
-### 1. IMAGE_INTENSIFIER (Default)
+### 1. image_intensifier (Default)
 
 **Physics:** Simulates a Micro-Channel Plate (MCP) based image intensifier coupled to an event camera.
 
@@ -41,13 +49,13 @@ result = lens.saturate_photons(
 
 **Example:**
 ```python
-result = lens.saturate_photons(
-    detector_model=DetectorModel.IMAGE_INTENSIFIER,
+# Using trace_rays (typical workflow)
+lens.trace_rays(
+    detector_model="image_intensifier",
     blob=2.0,              # ~13 pixels per photon
     blob_variance=0.5,     # radius varies [1.5, 2.0]
     decay_time=100.0,      # 100ns phosphor decay
-    deadtime=600.0,        # 600ns pixel deadtime
-    min_tot=20.0
+    deadtime=600.0         # 600ns pixel deadtime
 )
 ```
 
@@ -55,7 +63,7 @@ result = lens.saturate_photons(
 
 ---
 
-### 2. GAUSSIAN_DIFFUSION
+### 2. gaussian_diffusion
 
 **Physics:** Models charge diffusion in solid-state detectors with Gaussian point-spread function.
 
@@ -75,13 +83,12 @@ result = lens.saturate_photons(
 
 **Example:**
 ```python
-result = lens.saturate_photons(
-    detector_model=DetectorModel.GAUSSIAN_DIFFUSION,
+# Using trace_rays (typical workflow)
+lens.trace_rays(
+    detector_model="gaussian_diffusion",
     blob=1.5,              # σ = 1.5 pixels
     deadtime=400.0,
-    model_params={
-        'charge_coupling': 0.85  # 85% charge collection efficiency
-    }
+    model_params={'charge_coupling': 0.85}
 )
 ```
 
@@ -89,7 +96,7 @@ result = lens.saturate_photons(
 
 ---
 
-### 3. DIRECT_DETECTION
+### 3. direct_detection
 
 **Physics:** Simplest model - direct photon detection without spatial spreading.
 
@@ -105,10 +112,10 @@ result = lens.saturate_photons(
 
 **Example:**
 ```python
-result = lens.saturate_photons(
-    detector_model=DetectorModel.DIRECT_DETECTION,
-    deadtime=300.0,        # Shorter deadtime for fast sensors
-    min_tot=10.0
+# Using trace_rays (typical workflow)
+lens.trace_rays(
+    detector_model="direct_detection",
+    deadtime=300.0         # Shorter deadtime for fast sensors
 )
 ```
 
@@ -116,7 +123,7 @@ result = lens.saturate_photons(
 
 ---
 
-### 4. WAVELENGTH_DEPENDENT
+### 4. wavelength_dependent
 
 **Physics:** Advanced intensifier model with wavelength-dependent quantum efficiency and gain.
 
@@ -139,15 +146,15 @@ result = lens.saturate_photons(
 **Example:**
 ```python
 # Typical bialkali photocathode response
-result = lens.saturate_photons(
-    detector_model=DetectorModel.WAVELENGTH_DEPENDENT,
+lens.trace_rays(
+    detector_model="wavelength_dependent",
     blob=2.0,
     decay_time=100.0,
     deadtime=600.0,
     model_params={
         'qe_wavelength': [300, 350, 400, 450, 500, 550, 600, 650],
         'qe_values':     [0.05, 0.15, 0.25, 0.30, 0.28, 0.20, 0.10, 0.02],
-        'wavelength_scaling': 1.2  # Slightly stronger wavelength dependence
+        'wavelength_scaling': 1.2
     }
 )
 ```
@@ -158,7 +165,7 @@ result = lens.saturate_photons(
 
 ---
 
-### 5. AVALANCHE_GAIN
+### 5. avalanche_gain
 
 **Physics:** Models avalanche photodiodes (APDs) or photomultiplier tubes (PMTs) with stochastic gain.
 
@@ -180,15 +187,15 @@ result = lens.saturate_photons(
 
 **Example:**
 ```python
-result = lens.saturate_photons(
-    detector_model=DetectorModel.AVALANCHE_GAIN,
+lens.trace_rays(
+    detector_model="avalanche_gain",
     blob=0.5,              # Small avalanche region
     deadtime=500.0,
     model_params={
         'mean_gain': 150,
         'gain_variance': 30,
-        'afterpulse_prob': 0.02,      # 2% afterpulsing rate
-        'afterpulse_delay': 250.0     # 250ns average delay
+        'afterpulse_prob': 0.02,
+        'afterpulse_delay': 250.0
     }
 )
 ```
@@ -201,11 +208,11 @@ result = lens.saturate_photons(
 
 | Detector Type | Recommended Model | Key Parameters |
 |---------------|-------------------|----------------|
-| MCP Intensifier + Camera | `IMAGE_INTENSIFIER` | blob=2.0, decay_time=100 |
-| CCD / CMOS Sensor | `GAUSSIAN_DIFFUSION` | blob=1.0-2.0 (σ) |
-| Fast Event Camera | `DIRECT_DETECTION` | deadtime=100-300 |
-| Multi-color Intensifier | `WAVELENGTH_DEPENDENT` | QE curve + wavelength data |
-| APD / SiPM / PMT | `AVALANCHE_GAIN` | mean_gain=100-1000 |
+| MCP Intensifier + Camera | `"image_intensifier"` | blob=2.0, decay_time=100 |
+| CCD / CMOS Sensor | `"gaussian_diffusion"` | blob=1.0-2.0 (σ) |
+| Fast Event Camera | `"direct_detection"` | deadtime=100-300 |
+| Multi-color Intensifier | `"wavelength_dependent"` | QE curve + wavelength data |
+| APD / SiPM / PMT | `"avalanche_gain"` | mean_gain=100-1000 |
 
 ## Common Parameters
 
@@ -246,15 +253,11 @@ All models produce the same output DataFrame structure:
 ### Comparing Models
 
 ```python
-models = [
-    DetectorModel.IMAGE_INTENSIFIER,
-    DetectorModel.GAUSSIAN_DIFFUSION,
-    DetectorModel.DIRECT_DETECTION
-]
+models = ["image_intensifier", "gaussian_diffusion", "direct_detection"]
 
 results = {}
 for model in models:
-    results[model.name] = lens.saturate_photons(
+    results[model] = lens.saturate_photons(
         detector_model=model,
         blob=2.0,
         deadtime=600.0,
@@ -275,9 +278,10 @@ import numpy as np
 wavelengths = np.linspace(300, 700, 50)
 qe = np.exp(-((wavelengths - 450)**2) / (2 * 50**2))  # Gaussian centered at 450nm
 
-result = lens.saturate_photons(
-    detector_model=DetectorModel.WAVELENGTH_DEPENDENT,
+lens.trace_rays(
+    detector_model="wavelength_dependent",
     blob=2.0,
+    deadtime=600.0,
     model_params={
         'qe_wavelength': wavelengths.tolist(),
         'qe_values': qe.tolist()
@@ -289,11 +293,11 @@ result = lens.saturate_photons(
 
 For large datasets, choose models by computational cost:
 
-**Fastest:** `DIRECT_DETECTION` (no blob calculation)
-**Fast:** `IMAGE_INTENSIFIER` (simple circle test)
-**Medium:** `GAUSSIAN_DIFFUSION` (Gaussian evaluation)
-**Slower:** `WAVELENGTH_DEPENDENT` (QE interpolation per photon)
-**Slowest:** `AVALANCHE_GAIN` (stochastic gain + afterpulses)
+**Fastest:** `"direct_detection"` (no blob calculation)
+**Fast:** `"image_intensifier"` (simple circle test)
+**Medium:** `"gaussian_diffusion"` (Gaussian evaluation)
+**Slower:** `"wavelength_dependent"` (QE interpolation per photon)
+**Slowest:** `"avalanche_gain"` (stochastic gain + afterpulses)
 
 ## Physics References
 
@@ -334,18 +338,20 @@ For large datasets, choose models by computational cost:
 
 ## Version History
 
-- **v0.5.0**: Added 5 detector models with selectable physics
-- **v0.4.0**: Original `IMAGE_INTENSIFIER` model only
+- **v0.5.0**: Added 5 detector models with selectable physics using lowercase string arguments
+- **v0.4.0**: Original image_intensifier model only
 
 ## Contributing
 
 To add a new detector model:
 
 1. Add enum value to `DetectorModel` in `optics.py`
-2. Create `_apply_<model_name>_model()` method
-3. Add dispatch case in `saturate_photons()` main loop
-4. Document parameters and physics in this guide
-5. Add tests for validation
+2. Add lowercase string mapping in `saturate_photons()` method
+3. Create `_apply_<model_name>_model()` helper method
+4. Add dispatch case in `saturate_photons()` main loop
+5. Update `trace_rays()` documentation
+6. Document parameters and physics in this guide
+7. Add tests for validation
 
 ---
 

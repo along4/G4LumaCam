@@ -712,8 +712,10 @@ class Lens:
 
 
     def trace_rays(self, opm=None, opm_file=None, zscan=0, zfine=12.75, fnumber=None,
-                    source=None, deadtime=None, blob=0.0, blob_variance=0.0, decay_time=10, 
-                    join=False, print_stats=False, n_processes=None, chunk_size=1000, 
+                    source=None, deadtime=None, blob=0.0, blob_variance=0.0, decay_time=10,
+                    detector_model: Union[str, DetectorModel] = "image_intensifier",
+                    model_params: dict = None,
+                    join=False, print_stats=False, n_processes=None, chunk_size=1000,
                     progress_bar=True, timeout=3600, return_df=False, split_method="auto",
                     seed: int = None,
                     verbosity=VerbosityLevel.BASIC
@@ -770,6 +772,18 @@ class Lens:
         decay_time : float, default 100.0
             Exponential decay time constant in nanoseconds for blob activation timing.
             Single delay drawn per photon, applied to all pixels in its blob.
+        detector_model : str or DetectorModel, default "image_intensifier"
+            Physical model for photon detection (only used in "hits" workflow). Options:
+            - "image_intensifier": MCP intensifier with circular blobs (default)
+            - "gaussian_diffusion": Charge diffusion with Gaussian PSF
+            - "direct_detection": Simple single-pixel detection
+            - "wavelength_dependent": Spectral QE and wavelength-dependent gain
+            - "avalanche_gain": Poisson gain with afterpulsing
+        model_params : dict, optional
+            Model-specific parameters (only used in "hits" workflow). Examples:
+            - gaussian_diffusion: {'charge_coupling': 0.8}
+            - wavelength_dependent: {'qe_wavelength': [400,500,600], 'qe_values': [0.1,0.3,0.2]}
+            - avalanche_gain: {'mean_gain': 100, 'afterpulse_prob': 0.01}
         seed : int, optional
             Random seed for reproducibility. If None, uses random state. If specified, allows
             exact reconstruction of results across multiple runs.
@@ -819,13 +833,22 @@ class Lens:
         ---------
         Hits workflow with saturation (auto-detected):
         >>> optics.trace_rays(deadtime=100, blob=5.0)  # Auto-detects "hits" workflow
-        
-        Hits workflow with explicit source:
-        >>> optics.trace_rays(source="hits", deadtime=100, blob=5.0)
-        
+
+        Hits workflow with Gaussian diffusion model:
+        >>> optics.trace_rays(deadtime=100, blob=2.0, detector_model="gaussian_diffusion",
+        ...                   model_params={'charge_coupling': 0.85})
+
+        Direct detection (no blob):
+        >>> optics.trace_rays(deadtime=300, detector_model="direct_detection")
+
+        Wavelength-dependent QE:
+        >>> optics.trace_rays(deadtime=600, blob=2.0, detector_model="wavelength_dependent",
+        ...                   model_params={'qe_wavelength': [400,500,600],
+        ...                                 'qe_values': [0.1,0.3,0.2]})
+
         Photons workflow (auto-detected):
         >>> optics.trace_rays()  # Auto-detects "photons" workflow (no saturation)
-        
+
         Photons workflow with explicit source:
         >>> optics.trace_rays(source="photons")  # Direct import, no saturation
         """
@@ -1185,6 +1208,8 @@ class Lens:
                         output_format="photons",
                         min_tot=1.0,
                         decay_time=decay_time,
+                        detector_model=detector_model,
+                        model_params=model_params,
                         verbosity=verbosity
                     )
                     
@@ -2368,7 +2393,7 @@ class Lens:
     def saturate_photons(self, data: pd.DataFrame = None, deadtime: float = 600.0, blob: float = 0.0,
                         blob_variance: float = 0.0, output_format: str = "photons", min_tot: float = 20.0,
                         decay_time: float = 100.0, seed: int = None,
-                        detector_model: DetectorModel = DetectorModel.IMAGE_INTENSIFIER,
+                        detector_model: Union[str, DetectorModel] = "image_intensifier",
                         model_params: dict = None,
                         verbosity: VerbosityLevel = VerbosityLevel.BASIC
                         ) -> Union[pd.DataFrame, None]:
@@ -2388,35 +2413,35 @@ class Lens:
             additional photons update TOT but don't create new activation.
         blob : float, default 0.0
             Blob size parameter (interpretation depends on detector_model):
-            - IMAGE_INTENSIFIER: Maximum blob radius in pixels
-            - GAUSSIAN_DIFFUSION: Gaussian sigma in pixels
-            - DIRECT_DETECTION: Ignored
-            - WAVELENGTH_DEPENDENT: Base blob radius (scaled by wavelength)
-            - AVALANCHE_GAIN: Blob radius for gain distribution
+            - image_intensifier: Maximum blob radius in pixels
+            - gaussian_diffusion: Gaussian sigma in pixels
+            - direct_detection: Ignored
+            - wavelength_dependent: Base blob radius (scaled by wavelength)
+            - avalanche_gain: Blob radius for gain distribution
         blob_variance : float, default 0.0
-            Blob radius variance (for IMAGE_INTENSIFIER model).
+            Blob radius variance (for image_intensifier model).
             Actual radius drawn uniformly from [blob - blob_variance, blob].
         output_format : str, default "photons"
             Output format: "photons" for photon-averaged output with nz, pz columns.
         min_tot : float, default 20.0
             Minimum Time-Over-Threshold in nanoseconds.
         decay_time : float, default 100.0
-            Exponential decay time constant in nanoseconds (IMAGE_INTENSIFIER model).
+            Exponential decay time constant in nanoseconds (image_intensifier model).
         seed : int, optional
             Random seed for reproducibility.
-        detector_model : DetectorModel, default DetectorModel.IMAGE_INTENSIFIER
-            Physical model to use for photon detection. Options:
-            - IMAGE_INTENSIFIER: MCP intensifier with circular blobs
-            - GAUSSIAN_DIFFUSION: Charge diffusion with Gaussian PSF
-            - DIRECT_DETECTION: Simple single-pixel detection
-            - WAVELENGTH_DEPENDENT: Spectral QE and wavelength-dependent gain
-            - AVALANCHE_GAIN: Poisson gain with afterpulsing
+        detector_model : str or DetectorModel, default "image_intensifier"
+            Physical model to use for photon detection. String options (lowercase):
+            - "image_intensifier": MCP intensifier with circular blobs (default)
+            - "gaussian_diffusion": Charge diffusion with Gaussian PSF
+            - "direct_detection": Simple single-pixel detection
+            - "wavelength_dependent": Spectral QE and wavelength-dependent gain
+            - "avalanche_gain": Poisson gain with afterpulsing
         model_params : dict, optional
-            Additional model-specific parameters. See DetectorModel enum documentation for details.
+            Additional model-specific parameters. See documentation for details.
             Examples:
-            - GAUSSIAN_DIFFUSION: {'charge_coupling': 0.8}
-            - WAVELENGTH_DEPENDENT: {'qe_wavelength': [400, 500, 600], 'qe_values': [0.1, 0.3, 0.2]}
-            - AVALANCHE_GAIN: {'mean_gain': 100, 'gain_variance': 20, 'afterpulse_prob': 0.01}
+            - gaussian_diffusion: {'charge_coupling': 0.8}
+            - wavelength_dependent: {'qe_wavelength': [400, 500, 600], 'qe_values': [0.1, 0.3, 0.2]}
+            - avalanche_gain: {'mean_gain': 100, 'gain_variance': 20, 'afterpulse_prob': 0.01}
         verbosity : VerbosityLevel, default VerbosityLevel.BASIC
             Controls output detail level.
 
@@ -2436,20 +2461,20 @@ class Lens:
 
         # Gaussian diffusion model
         df = lens.saturate_photons(
-            detector_model=DetectorModel.GAUSSIAN_DIFFUSION,
+            detector_model="gaussian_diffusion",
             blob=1.5,  # sigma
             model_params={'charge_coupling': 0.85}
         )
 
         # Direct detection (no blob)
         df = lens.saturate_photons(
-            detector_model=DetectorModel.DIRECT_DETECTION,
+            detector_model="direct_detection",
             deadtime=300.0
         )
 
         # Wavelength-dependent response
         df = lens.saturate_photons(
-            detector_model=DetectorModel.WAVELENGTH_DEPENDENT,
+            detector_model="wavelength_dependent",
             blob=2.0,
             model_params={
                 'qe_wavelength': [400, 450, 500, 550, 600],
@@ -2457,6 +2482,23 @@ class Lens:
             }
         )
         """
+        # Convert string to DetectorModel enum
+        if isinstance(detector_model, str):
+            model_map = {
+                'image_intensifier': DetectorModel.IMAGE_INTENSIFIER,
+                'gaussian_diffusion': DetectorModel.GAUSSIAN_DIFFUSION,
+                'direct_detection': DetectorModel.DIRECT_DETECTION,
+                'wavelength_dependent': DetectorModel.WAVELENGTH_DEPENDENT,
+                'avalanche_gain': DetectorModel.AVALANCHE_GAIN
+            }
+            detector_model_lower = detector_model.lower()
+            if detector_model_lower not in model_map:
+                raise ValueError(f"Unknown detector model: '{detector_model}'. "
+                               f"Valid options: {list(model_map.keys())}")
+            detector_model = model_map[detector_model_lower]
+        elif not isinstance(detector_model, DetectorModel):
+            raise TypeError(f"detector_model must be a string or DetectorModel enum, got {type(detector_model)}")
+
         if blob < 0:
             raise ValueError(f"blob must be non-negative, got {blob}")
         if blob_variance < 0:
