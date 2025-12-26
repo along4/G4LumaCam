@@ -713,12 +713,13 @@ class Lens:
 
     def trace_rays(self, opm=None, opm_file=None, zscan=0, zfine=12.75, fnumber=None,
                     source=None, deadtime=None, blob=0.0, blob_variance=0.0, decay_time=10,
-                    detector_model: Union[str, DetectorModel] = "image_intensifier",
+                    detector_model: Union[str, DetectorModel] = None,
                     model_params: dict = None,
                     join=False, print_stats=False, n_processes=None, chunk_size=1000,
                     progress_bar=True, timeout=3600, return_df=False, split_method="auto",
                     seed: int = None,
-                    verbosity=VerbosityLevel.BASIC
+                    verbosity=VerbosityLevel.BASIC,
+                    **kwargs  # Additional model parameters passed as kwargs
                     ) -> Optional[pd.DataFrame]:
         """
         Trace rays from simulation data files and save processed results, optionally applying pixel saturation and blob effect.
@@ -1210,7 +1211,8 @@ class Lens:
                         decay_time=decay_time,
                         detector_model=detector_model,
                         model_params=model_params,
-                        verbosity=verbosity
+                        verbosity=verbosity,
+                        **kwargs  # Pass through additional model parameters
                     )
                     
                     if saturated_df is None or saturated_df.empty:
@@ -2393,9 +2395,10 @@ class Lens:
     def saturate_photons(self, data: pd.DataFrame = None, deadtime: float = 600.0, blob: float = 0.0,
                         blob_variance: float = 0.0, output_format: str = "photons", min_tot: float = 20.0,
                         decay_time: float = 100.0, seed: int = None,
-                        detector_model: Union[str, DetectorModel] = "image_intensifier",
+                        detector_model: Union[str, DetectorModel] = None,
                         model_params: dict = None,
-                        verbosity: VerbosityLevel = VerbosityLevel.BASIC
+                        verbosity: VerbosityLevel = VerbosityLevel.BASIC,
+                        **kwargs  # Additional model parameters (e.g., gain=5000, tot_mode="logarithmic")
                         ) -> Union[pd.DataFrame, None]:
         """
         Process traced photons with selectable physical detector models.
@@ -2482,6 +2485,19 @@ class Lens:
             }
         )
         """
+        # Set default detector model if None
+        if detector_model is None:
+            detector_model = "image_intensifier"  # Default model
+
+        # Merge kwargs into model_params
+        if model_params is None:
+            model_params = {}
+        else:
+            model_params = model_params.copy()  # Don't modify original dict
+
+        # Kwargs take precedence over model_params
+        model_params.update(kwargs)
+
         # Convert string to DetectorModel enum
         if isinstance(detector_model, str):
             model_map = {
