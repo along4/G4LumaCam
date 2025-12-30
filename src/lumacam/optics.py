@@ -745,6 +745,7 @@ class Lens:
                     join=False, print_stats=False, n_processes=None, chunk_size=1000,
                     progress_bar=True, timeout=3600, return_df=False, split_method="auto",
                     seed: int = None,
+                    suffix: str = "",
                     verbosity=VerbosityLevel.BASIC,
                     **kwargs  # Additional model parameters passed as kwargs
                     ) -> Optional[pd.DataFrame]:
@@ -928,10 +929,11 @@ class Lens:
                 timeout=timeout,
                 return_df=return_df,
                 split_method=split_method,
+                suffix=suffix,
                 verbosity=verbosity,
                 **kwargs
             )
-        
+
         # Otherwise, perform standard single-archive tracing
         return self._trace_rays_single(
             opm=opm,
@@ -955,6 +957,7 @@ class Lens:
             timeout=timeout,
             return_df=return_df,
             split_method=split_method,
+            suffix=suffix,
             verbosity=verbosity,
             **kwargs
         )
@@ -967,6 +970,7 @@ class Lens:
                         seed: int = None, join=False, print_stats=False, n_processes=None, chunk_size=1000,
                         progress_bar=True, timeout=3600, return_df=False,
                         split_method="auto",
+                        suffix: str = "",
                         verbosity=VerbosityLevel.BASIC,
                         **kwargs  # Additional model parameters passed as kwargs
                         ) -> pd.DataFrame or None:
@@ -1006,7 +1010,10 @@ class Lens:
 
         # Set up directories
         sim_photons_dir = self.archive / "SimPhotons"
-        traced_photons_dir = self.archive / "TracedPhotons"
+        if suffix:
+            traced_photons_dir = self.archive / f"Processed_{suffix}" / "TracedPhotons"
+        else:
+            traced_photons_dir = self.archive / "TracedPhotons"
         traced_photons_dir.mkdir(parents=True, exist_ok=True)
 
         # Find all non-empty sim_data_*.csv files
@@ -1310,7 +1317,8 @@ class Lens:
                         sensor_size=256,
                         split_method=split_method,
                         clean=(file_idx == 0),
-                        file_index=file_index
+                        file_index=file_index,
+                        suffix=suffix
                     )
                 
                 else:  # source == "photons"
@@ -1382,6 +1390,7 @@ class Lens:
                             model_params: dict = None,
                             seed: int = None, join=False, print_stats=False, n_processes=None, chunk_size=1000,
                             progress_bar=True, timeout=3600, return_df=False, split_method="auto",
+                            suffix: str = "",
                             verbosity=VerbosityLevel.BASIC,
                             **kwargs  # Additional model parameters passed as kwargs
                             ) -> pd.DataFrame or None:
@@ -1644,7 +1653,8 @@ class Lens:
         sensor_size: int = 256,
         split_method: str = "auto",
         clean: bool = True,
-        file_index: int = None
+        file_index: int = None,
+        suffix: str = ""
     ):
         """
         Convert traced photon data to valid TPX3 binary files, following the SERVAL TPX3 raw file format.
@@ -1762,7 +1772,10 @@ class Lens:
             return
         
         # Setup output directory
-        out_dir = self.archive / "tpx3Files"
+        if suffix:
+            out_dir = self.archive / f"Processed_{suffix}" / "tpx3Files"
+        else:
+            out_dir = self.archive / "tpx3Files"
         if out_dir.exists() and clean and (file_index is None or file_index == 0):
             shutil.rmtree(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
