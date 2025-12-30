@@ -1384,6 +1384,86 @@ class Lens:
             pass
 
 
+    def _trace_rays_detector_models(self, opm=None, opm_file=None, zscan=0, zfine=0, fnumber=None,
+                                     source="photons", deadtime=None, blob=0.0, blob_variance=0.0,
+                                     decay_time=100, seed: int = None, join=False, print_stats=False,
+                                     n_processes=None, chunk_size=1000, progress_bar=True, timeout=3600,
+                                     return_df=False, split_method="auto", suffix: str = "",
+                                     verbosity=VerbosityLevel.BASIC, **kwargs) -> pd.DataFrame or None:
+        """
+        Internal method for detector model groupby.
+        Trace rays with each detector model configuration to separate folders.
+        """
+        if not hasattr(self, '_detector_model_configs'):
+            raise ValueError("Detector model configurations not found")
+
+        configs = self._detector_model_configs
+        labels = self._groupby_labels
+        groupby_dir = self._groupby_dir
+
+        if verbosity >= VerbosityLevel.BASIC:
+            print(f"Tracing {len(configs)} detector model configurations")
+
+        all_results = []
+
+        # Process each detector model configuration
+        for config_dict, label in zip(configs, labels):
+            # Extract parameters from config
+            config_copy = config_dict.copy()
+            name = config_copy.pop("name", label)
+            model = config_copy.pop("detector_model", "image_intensifier_gain")
+
+            # Create folder for this model
+            model_dir = groupby_dir / label
+            model_dir.mkdir(parents=True, exist_ok=True)
+
+            # Temporarily set archive to model folder
+            original_archive = self.archive
+            self.archive = model_dir
+
+            # Copy SimPhotons to model folder if not exists
+            model_simphotons = model_dir / "SimPhotons"
+            if not model_simphotons.exists():
+                original_simphotons = original_archive / "SimPhotons"
+                if original_simphotons.exists():
+                    shutil.copytree(original_simphotons, model_simphotons)
+
+            try:
+                # Reload data for this model
+                csv_files = sorted(model_simphotons.glob("sim_data_*.csv"))
+                valid_dfs = []
+                for csv_file in csv_files:
+                    if csv_file.stat().st_size > 100:
+                        df = pd.read_csv(csv_file)
+                        if not df.empty:
+                            valid_dfs.append(df)
+
+                if valid_dfs:
+                    self.data = pd.concat(valid_dfs, ignore_index=True)
+
+                    # Trace rays with this model's configuration
+                    result = self._trace_rays_single(
+                        opm=opm, opm_file=opm_file, zscan=zscan, zfine=zfine, fnumber=fnumber,
+                        source=source, deadtime=deadtime, blob=blob, blob_variance=blob_variance,
+                        decay_time=decay_time, detector_model=model, model_params=None,
+                        seed=seed, join=join, print_stats=print_stats, n_processes=n_processes,
+                        chunk_size=chunk_size, progress_bar=progress_bar, timeout=timeout,
+                        return_df=return_df, split_method=split_method, suffix="",
+                        verbosity=verbosity, **config_copy
+                    )
+
+                    if result is not None:
+                        all_results.append(result)
+
+            finally:
+                # Restore original archive
+                self.archive = original_archive
+
+        # Return combined results if requested
+        if return_df and all_results:
+            return pd.concat(all_results, ignore_index=True)
+        return None
+
     def _trace_rays_grouped(self, opm=None, opm_file=None, zscan=0, zfine=0, fnumber=None,
                             source="photons", deadtime=None, blob=0.0, blob_variance=0.0, decay_time=100,
                             detector_model: Union[str, DetectorModel] = "image_intensifier_gain",
@@ -1395,17 +1475,28 @@ class Lens:
                             **kwargs  # Additional model parameters passed as kwargs
                             ) -> pd.DataFrame or None:
         """
-        Internal method for grouped ray tracing. 
+        Internal method for grouped ray tracing.
         Trace rays for each group created by groupby() with all trace_rays options.
-        
+
         All parameters are identical to trace_rays(). See trace_rays() for full documentation.
-        
+
         Raises:
             ValueError: If groupby() hasn't been called first
         """
         if not hasattr(self, '_groupby_dir') or not hasattr(self, '_groupby_labels'):
             raise ValueError("Must call groupby() before trace_rays() for grouped operation")
-        
+
+        # Special handling for detector_model groupby
+        if hasattr(self, '_groupby_mode') and self._groupby_mode == "detector_model":
+            return self._trace_rays_detector_models(
+                opm=opm, opm_file=opm_file, zscan=zscan, zfine=zfine, fnumber=fnumber,
+                source=source, deadtime=deadtime, blob=blob, blob_variance=blob_variance,
+                decay_time=decay_time, seed=seed, join=join, print_stats=print_stats,
+                n_processes=n_processes, chunk_size=chunk_size, progress_bar=progress_bar,
+                timeout=timeout, return_df=return_df, split_method=split_method, suffix=suffix,
+                verbosity=verbosity, **kwargs
+            )
+
         groupby_dir = self._groupby_dir
         labels = self._groupby_labels
         
@@ -3238,30 +3329,80 @@ class Lens:
 
 
     def groupby(self, column: str, low: float = None, high: float = None,
-                step: float = None, bins: List[float] = None,
+                step: float = None, bins: List = None,
                 labels: List[str] = None, verbosity: VerbosityLevel = VerbosityLevel.BASIC):
         """
-        Group simulation data by a column and create subfolders with filtered data.
+        Group simulation data by a column, or group by detector model configurations.
 
         Args:
             column (str): Column name to group by (e.g., 'nz', 'neutronEnergy', 'pulse_id', 'parentName')
+                         OR 'detector_model' for grouping by different detector configurations
             low (float, optional): Lower bound for binning (numerical columns only)
             high (float, optional): Upper bound for binning (numerical columns only)
             step (float, optional): Step size for bins (numerical columns only)
-            bins (List[float], optional): Custom bin edges (numerical columns only, alternative to low/high/step)
+            bins (List, optional): For data columns: bin edges. For 'detector_model': list of model config dicts
             labels (List[str], optional): Custom labels for groups/bins
             verbosity (VerbosityLevel): Controls output level
 
         Returns:
             Lens: Self for method chaining
 
-        Raises:
-            ValueError: If column doesn't exist or invalid parameters
+        Examples:
+            # Group by data column:
+            lens.groupby("neutronEnergy", low=1.0, high=10.0, step=2.0)
+
+            # Group by detector models:
+            lens.groupby("detector_model", bins=[
+                {"name": "img_int_gain", "detector_model": "image_intensifier_gain", "gain": 5000, "deadtime": 475},
+                {"name": "phys_mcp", "detector_model": "physical_mcp", "gain": 8000, "phosphor_type": "p47", "deadtime": 475}
+            ])
 
         Note:
             For categorical/string columns (e.g., parentName), groups are created automatically
-            from unique values. The low/high/step/bins parameters are ignored for such columns.
+            from unique values. For 'detector_model', bins must be a list of configuration dictionaries.
         """
+        # Special handling for detector_model grouping
+        if column == "detector_model":
+            if bins is None or not isinstance(bins, list):
+                raise ValueError("For detector_model grouping, must provide bins as a list of model configuration dicts")
+
+            # Store detector model configurations
+            self._detector_model_configs = bins
+            self._groupby_mode = "detector_model"
+
+            # Extract labels from configs if not provided
+            if labels is None:
+                labels = [config.get("name", f"model_{i}") for i, config in enumerate(bins)]
+
+            self._groupby_labels = labels
+
+            # Create groupby folder
+            groupby_dir = self.archive / "detector_model"
+            groupby_dir.mkdir(parents=True, exist_ok=True)
+            self._groupby_dir = groupby_dir
+
+            # Save metadata
+            metadata = {
+                "column": "detector_model",
+                "configurations": bins,
+                "labels": labels,
+                "created": pd.Timestamp.now().isoformat(),
+                "type": "detector_model_groupby"
+            }
+
+            metadata_file = groupby_dir / ".groupby_metadata.json"
+            with open(metadata_file, 'w') as f:
+                json.dump(metadata, f, indent=4)
+
+            if verbosity >= VerbosityLevel.BASIC:
+                print(f"Grouped by detector_model with {len(bins)} configurations")
+                for label, config in zip(labels, bins):
+                    model = config.get('detector_model', 'unknown')
+                    print(f"  - {label}: {model}")
+
+            return self
+
+        # Original data-based groupby logic
         if self.data.empty:
             raise ValueError("No simulation data available. Load data first.")
 
