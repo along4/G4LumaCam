@@ -233,7 +233,8 @@ lens.trace_rays(
     sigma_0=1.0,           # Base blob size
     gain_exponent=0.4,     # From MCP literature
     decay_time=100.0,      # P47 phosphor (~100ns)
-    deadtime=475.0         # Timepix3 spec
+    deadtime=475.0,        # Timepix3 spec
+    blob=0                 # IMPORTANT: blob=0 enables gain-dependent calculation!
 )
 
 # Chevron MCP with higher gain
@@ -242,7 +243,8 @@ lens.trace_rays(
     gain=10000,            # Chevron MCP @ 1200V
     sigma_0=0.8,           # Smaller base size (better resolution)
     decay_time=70.0,       # Fast P47 component
-    deadtime=475.0
+    deadtime=475.0,
+    blob=0                 # Enable gain-dependent blob
 )
 ```
 
@@ -253,6 +255,7 @@ lens.trace_rays(
 - Higher gain → larger blob (more electron multiplication → more spatial spreading)
 - Gaussian distribution more accurately models phosphor screen emission
 - Timepix3 has 475ns deadtime (see Poikela et al. 2014)
+- **IMPORTANT:** Set `blob=0` to enable automatic gain-dependent blob calculation. If `blob > 0`, it overrides the gain calculation!
 
 ---
 

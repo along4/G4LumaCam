@@ -36,9 +36,11 @@ lens.trace_rays(
     gain_exponent=0.4,      # From MCP literature
     decay_time=100.0,       # P47 phosphor (~100ns)
     deadtime=475.0,         # Timepix3 spec
-    blob=1                  # Used for simulation, overridden by gain
+    blob=0                  # IMPORTANT: blob=0 for gain-dependent calculation!
 )
 ```
+
+⚠️ **CRITICAL:** Set `blob=0` to enable automatic gain-dependent blob calculation. If `blob > 0`, it overrides the gain!
 
 **Why this model?**
 - ✅ Gain-dependent blob scaling: σ ∝ (gain)^0.4
@@ -55,7 +57,7 @@ lens.trace_rays(
     sigma_0=0.8,            # Smaller base (better resolution)
     decay_time=70.0,        # Fast P47 component
     deadtime=475.0,
-    blob=1
+    blob=0                  # Enable gain-dependent blob!
 )
 ```
 
