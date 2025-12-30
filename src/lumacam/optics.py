@@ -1455,9 +1455,10 @@ class Lens:
                     self.data = pd.concat(valid_dfs, ignore_index=True)
 
                     # Trace rays with this model's configuration
+                    # Pass source=None to let each model auto-detect based on its parameters
                     result = self._trace_rays_single(
                         opm=opm, opm_file=opm_file, zscan=zscan, zfine=zfine, fnumber=fnumber,
-                        source=source, deadtime=model_deadtime, blob=model_blob,
+                        source=None, deadtime=model_deadtime, blob=model_blob,
                         blob_variance=model_blob_variance, decay_time=model_decay_time,
                         detector_model=model, model_params=None,
                         seed=seed, join=join, print_stats=print_stats, n_processes=n_processes,
@@ -3227,7 +3228,7 @@ class Lens:
             # Print stats
             if verbosity > VerbosityLevel.BASIC:
                 print(f"  Input photons: {len(df)}, Output events: {len(result_df)}")
-                if actual_blob > 0:
+                if blob > 0:
                     ratio = len(result_df) / len(df) if len(df) > 0 else 0
                     print(f"  Expansion ratio (blob effect): {ratio:.2f}x")
                 if 'photon_count' in result_df.columns:

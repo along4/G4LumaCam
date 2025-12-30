@@ -1,0 +1,24 @@
+{
+    "column": "detector_model",
+    "configurations": [
+        {
+            "name": "test1",
+            "detector_model": "image_intensifier",
+            "blob": 2.0,
+            "deadtime": 600
+        },
+        {
+            "name": "test2",
+            "detector_model": "image_intensifier_gain",
+            "gain": 5000,
+            "blob": 0,
+            "deadtime": 475
+        }
+    ],
+    "labels": [
+        "test1",
+        "test2"
+    ],
+    "created": "2025-12-30T14:25:14.079347",
+    "type": "detector_model_groupby"
+}
