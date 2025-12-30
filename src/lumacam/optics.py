@@ -1413,6 +1413,12 @@ class Lens:
             name = config_copy.pop("name", label)
             model = config_copy.pop("detector_model", "image_intensifier_gain")
 
+            # Extract common parameters from config, use trace_rays defaults if not specified
+            model_deadtime = config_copy.pop("deadtime", deadtime)
+            model_blob = config_copy.pop("blob", blob)
+            model_blob_variance = config_copy.pop("blob_variance", blob_variance)
+            model_decay_time = config_copy.pop("decay_time", decay_time)
+
             # Create folder for this model
             model_dir = groupby_dir / label
             model_dir.mkdir(parents=True, exist_ok=True)
@@ -1444,8 +1450,9 @@ class Lens:
                     # Trace rays with this model's configuration
                     result = self._trace_rays_single(
                         opm=opm, opm_file=opm_file, zscan=zscan, zfine=zfine, fnumber=fnumber,
-                        source=source, deadtime=deadtime, blob=blob, blob_variance=blob_variance,
-                        decay_time=decay_time, detector_model=model, model_params=None,
+                        source=source, deadtime=model_deadtime, blob=model_blob,
+                        blob_variance=model_blob_variance, decay_time=model_decay_time,
+                        detector_model=model, model_params=None,
                         seed=seed, join=join, print_stats=print_stats, n_processes=n_processes,
                         chunk_size=chunk_size, progress_bar=progress_bar, timeout=timeout,
                         return_df=return_df, split_method=split_method, suffix="",
