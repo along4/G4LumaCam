@@ -1667,9 +1667,9 @@ class Analysis:
                         print(f"Deleted existing file: {file.name}")
 
         if params is None:
-            parameters = self.default_params.get("in_focus", {})
+            parameters = self.default_params.get("fast_neutrons", {})
         elif isinstance(params, str):
-            if params in ["in_focus", "out_of_focus", "hitmap"]:
+            if params in ["in_focus", "out_of_focus", "hitmap","fast_neutrons"]:
                 parameters = self.default_params.get(params, {})
             elif params.endswith('.json'):
                 if not os.path.exists(params):

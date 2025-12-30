@@ -740,7 +740,7 @@ class Lens:
 
     def trace_rays(self, opm=None, opm_file=None, zscan=0, zfine=12.75, fnumber=None,
                     source=None, deadtime=None, blob=0.0, blob_variance=0.0, decay_time=10,
-                    detector_model: Union[str, DetectorModel] = None,
+                    detector_model: Union[str, DetectorModel] = "image_intensifier",
                     model_params: dict = None,
                     join=False, print_stats=False, n_processes=None, chunk_size=1000,
                     progress_bar=True, timeout=3600, return_df=False, split_method="auto",
@@ -917,6 +917,8 @@ class Lens:
                 blob=blob,
                 blob_variance=blob_variance,
                 decay_time=decay_time,
+                detector_model=detector_model,
+                model_params=model_params,
                 seed=seed,
                 join=join,
                 print_stats=print_stats,
@@ -926,7 +928,8 @@ class Lens:
                 timeout=timeout,
                 return_df=return_df,
                 split_method=split_method,
-                verbosity=verbosity
+                verbosity=verbosity,
+                **kwargs
             )
         
         # Otherwise, perform standard single-archive tracing
@@ -940,8 +943,10 @@ class Lens:
             deadtime=deadtime,
             blob=blob,
             blob_variance=blob_variance,
-            decay_time=decay_time,        
-            seed=seed,    
+            decay_time=decay_time,
+            detector_model=detector_model,
+            model_params=model_params,
+            seed=seed,
             join=join,
             print_stats=print_stats,
             n_processes=n_processes,
@@ -949,17 +954,21 @@ class Lens:
             progress_bar=progress_bar,
             timeout=timeout,
             return_df=return_df,
-            split_method=split_method,        
-            verbosity=verbosity
+            split_method=split_method,
+            verbosity=verbosity,
+            **kwargs
         )
 
 
     def _trace_rays_single(self, opm=None, opm_file=None, zscan=0, zfine=0, fnumber=None,
-                        source="photons", deadtime=None, blob=0.0, blob_variance=0.0, decay_time=100, 
-                        seed: int = None, join=False, print_stats=False, n_processes=None, chunk_size=1000, 
-                        progress_bar=True, timeout=3600, return_df=False, 
+                        source="photons", deadtime=None, blob=0.0, blob_variance=0.0, decay_time=100,
+                        detector_model: Union[str, DetectorModel] = "image_intensifier",
+                        model_params: dict = None,
+                        seed: int = None, join=False, print_stats=False, n_processes=None, chunk_size=1000,
+                        progress_bar=True, timeout=3600, return_df=False,
                         split_method="auto",
-                        verbosity=VerbosityLevel.BASIC,  
+                        verbosity=VerbosityLevel.BASIC,
+                        **kwargs  # Additional model parameters passed as kwargs
                         ) -> pd.DataFrame or None:
         """
         Internal method for single-archive ray tracing (non-grouped).
@@ -1368,10 +1377,14 @@ class Lens:
 
 
     def _trace_rays_grouped(self, opm=None, opm_file=None, zscan=0, zfine=0, fnumber=None,
-                            source="photons", deadtime=None, blob=0.0, blob_variance=0.0, decay_time=100, 
-                            seed: int = None, join=False, print_stats=False, n_processes=None, chunk_size=1000, 
+                            source="photons", deadtime=None, blob=0.0, blob_variance=0.0, decay_time=100,
+                            detector_model: Union[str, DetectorModel] = "image_intensifier",
+                            model_params: dict = None,
+                            seed: int = None, join=False, print_stats=False, n_processes=None, chunk_size=1000,
                             progress_bar=True, timeout=3600, return_df=False, split_method="auto",
-                            verbosity=VerbosityLevel.BASIC) -> pd.DataFrame or None:
+                            verbosity=VerbosityLevel.BASIC,
+                            **kwargs  # Additional model parameters passed as kwargs
+                            ) -> pd.DataFrame or None:
         """
         Internal method for grouped ray tracing. 
         Trace rays for each group created by groupby() with all trace_rays options.
@@ -1452,8 +1465,10 @@ class Lens:
                         deadtime=deadtime,
                         blob=blob,
                         blob_variance=blob_variance,
-                        decay_time=decay_time,          
-                        seed=seed,              
+                        decay_time=decay_time,
+                        detector_model=detector_model,
+                        model_params=model_params,
+                        seed=seed,
                         join=join,
                         print_stats=print_stats,
                         n_processes=n_processes,
@@ -1462,7 +1477,8 @@ class Lens:
                         timeout=timeout,
                         return_df=return_df,
                         split_method=split_method,
-                        verbosity=verbosity
+                        verbosity=verbosity,
+                        **kwargs
                     )
                     
                     if return_df and group_result is not None:
