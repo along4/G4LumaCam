@@ -964,7 +964,7 @@ class Lens:
 
 
     def _trace_rays_single(self, opm=None, opm_file=None, zscan=0, zfine=0, fnumber=None,
-                        source="photons", deadtime=None, blob=0.0, blob_variance=0.0, decay_time=100,
+                        source=None, deadtime=None, blob=0.0, blob_variance=0.0, decay_time=100,
                         detector_model: Union[str, DetectorModel] = "image_intensifier_gain",
                         model_params: dict = None,
                         seed: int = None, join=False, print_stats=False, n_processes=None, chunk_size=1000,
@@ -981,7 +981,7 @@ class Lens:
         Parameters:
         -----------
         (Same as trace_rays)
-        
+
         Returns:
         --------
         pd.DataFrame or None
@@ -991,13 +991,20 @@ class Lens:
         # Validate input parameters
         if opm is not None and opm_file is not None:
             raise ValueError("Cannot specify both 'opm' and 'opm_file' parameters. Choose one.")
-        
+
         if opm_file is not None and not Path(opm_file).exists():
             raise FileNotFoundError(f"Optical model file not found: {opm_file}")
-        
+
+        # Auto-detect source based on deadtime/blob if not specified
+        if source is None:
+            if (deadtime is not None and deadtime > 0) or blob > 0:
+                source = "hits"
+            else:
+                source = "photons"
+
         if source not in ["hits", "photons"]:
             raise ValueError(f"Invalid source: '{source}'. Must be 'hits' or 'photons'")
-        
+
         if source == "hits":
             if (deadtime is None or deadtime <= 0) and blob <= 0:
                 raise ValueError("source='hits' requires either deadtime > 0 or blob > 0")
@@ -1385,7 +1392,7 @@ class Lens:
 
 
     def _trace_rays_detector_models(self, opm=None, opm_file=None, zscan=0, zfine=0, fnumber=None,
-                                     source="photons", deadtime=None, blob=0.0, blob_variance=0.0,
+                                     source=None, deadtime=None, blob=0.0, blob_variance=0.0,
                                      decay_time=100, seed: int = None, join=False, print_stats=False,
                                      n_processes=None, chunk_size=1000, progress_bar=True, timeout=3600,
                                      return_df=False, split_method="auto", suffix: str = "",
@@ -1472,7 +1479,7 @@ class Lens:
         return None
 
     def _trace_rays_grouped(self, opm=None, opm_file=None, zscan=0, zfine=0, fnumber=None,
-                            source="photons", deadtime=None, blob=0.0, blob_variance=0.0, decay_time=100,
+                            source=None, deadtime=None, blob=0.0, blob_variance=0.0, decay_time=100,
                             detector_model: Union[str, DetectorModel] = "image_intensifier_gain",
                             model_params: dict = None,
                             seed: int = None, join=False, print_stats=False, n_processes=None, chunk_size=1000,
