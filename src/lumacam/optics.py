@@ -93,10 +93,10 @@ class DetectorModel(IntEnum):
     PHYSICAL_MCP : Full physics simulation
         High-fidelity MCP simulation with complete physics.
         - Poisson gain statistics
-        - Multi-exponential phosphor decay
-        - Energy-dependent QE
+        - Multi-exponential phosphor decay (P20/P43/P46/P47)
+        - Energy-dependent QE (future)
         - MCP pore-level simulation
-        Parameters: gain, gain_noise_factor, phosphor_type, decay_fast, decay_slow, mcp_voltage
+        Parameters: gain, gain_noise_factor, phosphor_type ('p47' default), decay_fast, decay_slow, fast_fraction
     """
     IMAGE_INTENSIFIER = 0      # Default: circular blob + exponential decay
     GAUSSIAN_DIFFUSION = 1     # Gaussian charge spreading
@@ -2575,6 +2575,12 @@ class Lens:
         - Multi-exponential phosphor decay
         - Energy-dependent effects
 
+        Phosphor Types:
+        - P20 (ZnCdS:Ag): Green, decay ~100ns + 1ms tail
+        - P43 (Gd₂O₂S:Tb): Yellow-green, decay ~1ms (traditional Gen 2/3)
+        - P46 (Y₂SiO₅:Ce): Blue, fast decay ~70ns
+        - P47 (YAG:Ce): Yellow, fast decay ~70-100ns (modern Chevron MCPs)
+
         Returns:
         --------
         tuple: (covered_x, covered_y, activation_time, pixel_weights)
@@ -2582,10 +2588,27 @@ class Lens:
         # Model parameters
         gain_mean = model_params.get('gain', 5000)
         gain_noise_factor = model_params.get('gain_noise_factor', 1.3)  # Excess noise factor
-        phosphor_type = model_params.get('phosphor_type', 'p43')  # P20, P43, P46
-        decay_fast = model_params.get('decay_fast', 50.0)  # Fast component (ns)
-        decay_slow = model_params.get('decay_slow', 500.0)  # Slow component (ns)
-        fast_fraction = model_params.get('fast_fraction', 0.7)  # Fraction in fast component
+        phosphor_type = model_params.get('phosphor_type', 'p47').lower()  # Default to P47
+
+        # Phosphor-specific decay parameters (from literature)
+        phosphor_params = {
+            'p20': {'decay_fast': 100.0, 'decay_slow': 1000.0, 'fast_fraction': 0.6},
+            'p43': {'decay_fast': 100.0, 'decay_slow': 1000.0, 'fast_fraction': 0.6},
+            'p46': {'decay_fast': 70.0, 'decay_slow': 150.0, 'fast_fraction': 0.85},
+            'p47': {'decay_fast': 70.0, 'decay_slow': 200.0, 'fast_fraction': 0.9}
+        }
+
+        # Get phosphor defaults or use custom values
+        if phosphor_type in phosphor_params:
+            defaults = phosphor_params[phosphor_type]
+            decay_fast = model_params.get('decay_fast', defaults['decay_fast'])
+            decay_slow = model_params.get('decay_slow', defaults['decay_slow'])
+            fast_fraction = model_params.get('fast_fraction', defaults['fast_fraction'])
+        else:
+            # Fallback to user-provided or generic defaults
+            decay_fast = model_params.get('decay_fast', 70.0)
+            decay_slow = model_params.get('decay_slow', 200.0)
+            fast_fraction = model_params.get('fast_fraction', 0.8)
 
         # Poisson gain with excess noise
         # Use Gamma distribution: mean=gain_mean, variance=gain_mean*noise_factor

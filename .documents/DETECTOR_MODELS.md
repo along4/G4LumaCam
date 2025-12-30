@@ -204,15 +204,219 @@ lens.trace_rays(
 
 ---
 
+### 6. image_intensifier_gain (⭐ RECOMMENDED for Timepix3)
+
+**Physics:** Realistic MCP image intensifier with gain-dependent blob scaling and Gaussian photon distribution.
+
+**Behavior:**
+- Blob size scales with MCP gain: σ ∝ (gain/gain_ref)^exponent
+- Gaussian photon distribution (more realistic than uniform circular blob)
+- Charge-weighted TOT calculation
+- Exponential phosphor decay
+- Based on MCP physics literature (Photonis specs, Siegmund et al.)
+
+**Parameters:**
+- `gain`: MCP gain (default: 5000, typical range: 1000-20000)
+- `sigma_0`: Base blob sigma at reference gain (default: 1.0 pixels)
+- `gain_ref`: Reference gain for scaling (default: 1000)
+- `gain_exponent`: Blob scaling exponent (default: 0.4, from literature: 0.3-0.5)
+- `decay_time`: Phosphor decay time constant (ns, default: 100)
+- `deadtime`: Pixel saturation window (ns, default: 475 for TPX3)
+- `min_tot`: Minimum time-over-threshold (ns)
+
+**Example:**
+```python
+# Typical Timepix3 + MCP intensifier setup
+lens.trace_rays(
+    detector_model="image_intensifier_gain",
+    gain=5000,             # MCP gain at 1000V
+    sigma_0=1.0,           # Base blob size
+    gain_exponent=0.4,     # From MCP literature
+    decay_time=100.0,      # P47 phosphor (~100ns)
+    deadtime=475.0         # Timepix3 spec
+)
+
+# Chevron MCP with higher gain
+lens.trace_rays(
+    detector_model="image_intensifier_gain",
+    gain=10000,            # Chevron MCP @ 1200V
+    sigma_0=0.8,           # Smaller base size (better resolution)
+    decay_time=70.0,       # Fast P47 component
+    deadtime=475.0
+)
+```
+
+**Best for:** Modern image intensifiers with event cameras (Timepix3, CCD), chevron MCPs
+
+**Physics Notes:**
+- Blob size scaling: σ = σ₀ × (gain/1000)^0.4
+- Higher gain → larger blob (more electron multiplication → more spatial spreading)
+- Gaussian distribution more accurately models phosphor screen emission
+- Timepix3 has 475ns deadtime (see Poikela et al. 2014)
+
+---
+
+### 7. timepix3_calibrated
+
+**Physics:** Timepix3-specific model with calibrated logarithmic TOT response.
+
+**Behavior:**
+- Logarithmic TOT: TOT = a + b × ln(Q/Q_ref) based on Poikela et al. 2014
+- Per-pixel calibration variation (simulates detector non-uniformity)
+- Gaussian blob for intensified detection
+- No phosphor delay (assumes fast direct detection or pre-processed signal)
+- 475 ns deadtime (Timepix3 specification)
+
+**Parameters:**
+- `gain`: Effective gain/charge scale (default: 5000)
+- `sigma_pixels`: Blob sigma (default: 1.5 pixels)
+- `tot_a`: TOT offset parameter (ns, default: 30.0)
+- `tot_b`: TOT slope parameter (ns/decade, default: 50.0)
+- `pixel_variation`: Per-pixel calibration variation (default: 0.05 = 5%)
+- `deadtime`: Fixed at 475 ns (Timepix3 spec)
+- `min_tot`: Minimum time-over-threshold (ns)
+
+**Example:**
+```python
+# Standard Timepix3 calibration
+lens.trace_rays(
+    detector_model="timepix3_calibrated",
+    gain=5000,
+    sigma_pixels=1.5,
+    tot_a=30.0,            # From TPX3 calibration
+    tot_b=50.0,            # From TPX3 calibration
+    deadtime=475.0,        # TPX3 spec
+    pixel_variation=0.05   # 5% pixel-to-pixel variation
+)
+
+# Custom calibration after measurement
+lens.trace_rays(
+    detector_model="timepix3_calibrated",
+    gain=5000,
+    tot_a=28.5,            # Your calibrated a
+    tot_b=52.3,            # Your calibrated b
+    pixel_variation=0.03
+)
+```
+
+**Best for:** Calibrated Timepix3 simulations with measured TOT response curves
+
+**Physics Notes:**
+- TOT(Q) = a + b × ln(Q) is the standard TPX3 response
+- Parameters a and b vary per pixel (factory calibration typically provided)
+- This model is useful when you have actual calibration data from your detector
+
+---
+
+### 8. physical_mcp (Full Physics Simulation)
+
+**Physics:** High-fidelity MCP simulation with complete physics models.
+
+**Behavior:**
+- Poisson electron multiplication with excess noise factor
+- Multi-exponential phosphor decay (fast + slow components)
+- Gain-dependent blob size: σ ∝ (gain)^0.4
+- Energy-dependent quantum efficiency (future extension)
+- MCP pore-level simulation parameters
+
+**Parameters:**
+- `gain`: Mean MCP gain (default: 5000, typical: 1000-20000)
+- `gain_noise_factor`: Excess noise factor (default: 1.3, range: 1.0-2.0)
+- `phosphor_type`: Phosphor material (default: 'p43', options: 'p20', 'p43', 'p46', 'p47')
+- `decay_fast`: Fast decay component (ns, default: 50)
+- `decay_slow`: Slow decay component (ns, default: 500)
+- `fast_fraction`: Fraction in fast component (default: 0.7)
+- `deadtime`: Pixel saturation window (ns)
+- `min_tot`: Minimum time-over-threshold (ns)
+
+**Phosphor Types:**
+- **P20** (ZnCdS:Ag): decay ~100ns fast + 1ms slow, green emission
+- **P43** (Gd₂O₂S:Tb): decay ~1ms, yellow-green emission (common in Gen 2/3)
+- **P46** (Y₂SiO₅:Ce): decay ~70ns, blue emission (fast, modern)
+- **P47** (Y₃Al₅O₁₂:Ce, YAG:Ce): decay ~70-100ns, yellow emission (fast, modern, Chevron MCPs)
+
+**Example:**
+```python
+# P47 phosphor with Chevron MCP (modern fast intensifier)
+lens.trace_rays(
+    detector_model="physical_mcp",
+    gain=8000,                    # Chevron MCP
+    gain_noise_factor=1.3,        # Realistic noise
+    phosphor_type='p47',          # Fast YAG:Ce phosphor
+    decay_fast=70.0,              # P47 fast component
+    decay_slow=200.0,             # P47 slow tail
+    fast_fraction=0.9,            # Mostly fast emission
+    deadtime=475.0
+)
+
+# P43 phosphor (traditional Gen 2/3 intensifier)
+lens.trace_rays(
+    detector_model="physical_mcp",
+    gain=5000,
+    phosphor_type='p43',
+    decay_fast=100.0,
+    decay_slow=1000.0,            # Long tail
+    fast_fraction=0.6,
+    deadtime=600.0
+)
+
+# Very fast P46 for high frame rate
+lens.trace_rays(
+    detector_model="physical_mcp",
+    gain=6000,
+    phosphor_type='p46',
+    decay_fast=50.0,
+    decay_slow=150.0,
+    fast_fraction=0.85,
+    deadtime=300.0
+)
+```
+
+**Best for:** High-fidelity simulations, matching experimental data, phosphor comparison studies
+
+**Physics Notes:**
+- Gain statistics: Uses Gamma distribution (mean=gain, variance=gain×noise_factor)
+- Multi-exponential decay models real phosphor behavior
+- P47 is increasingly common in modern fast intensifiers
+- Chevron MCPs have higher gain and better signal-to-noise
+
+---
+
 ## Model Selection Guide
 
 | Detector Type | Recommended Model | Key Parameters |
 |---------------|-------------------|----------------|
-| MCP Intensifier + Camera | `"image_intensifier"` | blob=2.0, decay_time=100 |
+| **Timepix3 + MCP Intensifier** | `"image_intensifier_gain"` ⭐ | gain=5000, deadtime=475 |
+| MCP Intensifier + Camera (simple) | `"image_intensifier"` | blob=2.0, decay_time=100 |
+| **Calibrated Timepix3** | `"timepix3_calibrated"` | tot_a=30, tot_b=50 |
+| **High-Fidelity MCP Simulation** | `"physical_mcp"` | gain=5000, phosphor_type='p47' |
 | CCD / CMOS Sensor | `"gaussian_diffusion"` | blob=1.0-2.0 (σ) |
 | Fast Event Camera | `"direct_detection"` | deadtime=100-300 |
 | Multi-color Intensifier | `"wavelength_dependent"` | QE curve + wavelength data |
 | APD / SiPM / PMT | `"avalanche_gain"` | mean_gain=100-1000 |
+
+### Recommended Workflow
+
+**For most Timepix3 users:**
+```python
+lens.trace_rays(
+    detector_model="image_intensifier_gain",
+    gain=5000,              # Adjust to your MCP voltage
+    decay_time=100.0,       # P47 phosphor
+    deadtime=475.0          # TPX3 spec
+)
+```
+
+**For matching experimental data:**
+```python
+lens.trace_rays(
+    detector_model="physical_mcp",
+    gain=5000,
+    phosphor_type='p47',
+    decay_fast=70.0,
+    decay_slow=200.0
+)
+```
 
 ## Common Parameters
 
