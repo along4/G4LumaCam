@@ -5,6 +5,48 @@ All notable changes to G4LumaCam will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2025-12-30
+
+### Added
+- **Advanced Detector Models**: 3 new physics-based detector models for high-fidelity simulation
+  - `image_intensifier_gain`: Gain-dependent blob sizing (σ ∝ gain^0.4) - **RECOMMENDED for Timepix3+MCP**
+  - `timepix3_calibrated`: Logarithmic TOT response with per-pixel variation (TOT = a + b × ln(Q))
+  - `physical_mcp`: Full MCP physics with Poisson gain statistics and bi-exponential phosphor decay
+- **Phosphor Screen Database**: Support for 4 phosphor types with auto-configuration
+  - P47 (YAG:Ce): 70-100ns decay, modern Chevron MCPs (default)
+  - P46 (Y₂SiO₅:Ce): ~70ns, high frame rate applications
+  - P43 (Gd₂O₂S:Tb): ~1ms, traditional Gen 2/3 intensifiers
+  - P20 (ZnCdS:Ag): 100ns + 1ms tail, legacy systems
+- **Export Pixels Functionality**: `export_pixels()` method for exporting pixel activation data
+  - Generates CSV files in `ExportedPixels` subfolder
+  - Complementary to `export_photons()` method
+  - Configurable via `export_pixels=False` parameter in Analysis
+- **Comprehensive Documentation**:
+  - [DETECTOR_MODELS.md](.documents/DETECTOR_MODELS.md): Complete guide to all 8 detector models
+  - [DETECTOR_MODELS_SUMMARY.md](.documents/DETECTOR_MODELS_SUMMARY.md): Quick reference guide
+  - [BLOB_VS_GAIN.md](.documents/BLOB_VS_GAIN.md): Explains difference between blob and gain parameters
+  - [detector_models_comparison.ipynb](notebooks/detector_models_comparison.ipynb): Interactive demo notebook
+- **Visualization**: Single event visualization using [visualize_pixel_map](https://github.com/TsvikiHirsh/visualize_pixel_map)
+
+### Changed
+- **Default Detector Model**: Changed from `image_intensifier` to `image_intensifier_gain`
+  - Provides physics-based gain control and automatic blob sizing
+  - Better matches real MCP+Timepix3 detector behavior
+- **Default Parameters**:
+  - `decay_time`: Changed from 10ns to 100ns (P47 phosphor standard)
+  - Models now use gain-dependent blob calculation by default (blob=0)
+- **Timepix3 Specifications**: Updated deadtime from 600ns to accurate 475ns spec
+- **Model Interface**: Enhanced parameter passing through trace_rays() call chain
+  - Added `detector_model` and `model_params` to all internal methods
+  - Consistent parameter handling across single and grouped tracing
+
+### Fixed
+- **Gain Scaling Bug**: Fixed issue where `blob > 0` was overriding gain-dependent calculation
+  - Setting `blob=0` now correctly enables automatic gain-based blob sizing
+  - Critical for `image_intensifier_gain` and `physical_mcp` models
+- **NameError Fix**: Resolved `detector_model` and `model_params` not being passed to internal methods
+- **Simulation Workflow**: Corrected notebook examples to use `Simulate(archive).run(config)` pattern
+
 ## [0.4.0] - 2025-10-28
 
 ### Added
@@ -105,5 +147,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[0.5.0]: https://github.com/TsvikiHirsh/G4LumaCam/releases/tag/v0.5.0
 [0.4.0]: https://github.com/TsvikiHirsh/G4LumaCam/releases/tag/v0.4.0
 [0.3.0]: https://github.com/TsvikiHirsh/G4LumaCam/releases/tag/v0.3.0

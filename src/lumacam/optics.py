@@ -739,8 +739,8 @@ class Lens:
 
 
     def trace_rays(self, opm=None, opm_file=None, zscan=0, zfine=12.75, fnumber=None,
-                    source=None, deadtime=None, blob=0.0, blob_variance=0.0, decay_time=10,
-                    detector_model: Union[str, DetectorModel] = "image_intensifier",
+                    source=None, deadtime=None, blob=0.0, blob_variance=0.0, decay_time=100,
+                    detector_model: Union[str, DetectorModel] = "image_intensifier_gain",
                     model_params: dict = None,
                     join=False, print_stats=False, n_processes=None, chunk_size=1000,
                     progress_bar=True, timeout=3600, return_df=False, split_method="auto",
@@ -962,7 +962,7 @@ class Lens:
 
     def _trace_rays_single(self, opm=None, opm_file=None, zscan=0, zfine=0, fnumber=None,
                         source="photons", deadtime=None, blob=0.0, blob_variance=0.0, decay_time=100,
-                        detector_model: Union[str, DetectorModel] = "image_intensifier",
+                        detector_model: Union[str, DetectorModel] = "image_intensifier_gain",
                         model_params: dict = None,
                         seed: int = None, join=False, print_stats=False, n_processes=None, chunk_size=1000,
                         progress_bar=True, timeout=3600, return_df=False,
@@ -1378,7 +1378,7 @@ class Lens:
 
     def _trace_rays_grouped(self, opm=None, opm_file=None, zscan=0, zfine=0, fnumber=None,
                             source="photons", deadtime=None, blob=0.0, blob_variance=0.0, decay_time=100,
-                            detector_model: Union[str, DetectorModel] = "image_intensifier",
+                            detector_model: Union[str, DetectorModel] = "image_intensifier_gain",
                             model_params: dict = None,
                             seed: int = None, join=False, print_stats=False, n_processes=None, chunk_size=1000,
                             progress_bar=True, timeout=3600, return_df=False, split_method="auto",
