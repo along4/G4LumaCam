@@ -34,3 +34,7 @@ notebooks/tutorial_archive
 src/lumacam/config/.ipynb_checkpoints/empir_params-checkpoint.py
 notebooks/demo_detector_models
 notebooks/demo_models
+
+# Test artifacts
+test_groupby/
+test_detector_groupby.py
