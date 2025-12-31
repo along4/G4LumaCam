@@ -23,3 +23,5 @@ notebooks/gamma_with_LYSO.ipynb
 TriggerTimes/trigger_data_0.csv
 notebooks/tutorial_archive
 src/lumacam/config/.ipynb_checkpoints/empir_params-checkpoint.py
+notebooks/demo_detector_models
+notebooks/demo_models
