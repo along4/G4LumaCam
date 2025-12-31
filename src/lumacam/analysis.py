@@ -76,6 +76,7 @@ class Analysis:
         required_files = {
             "empir_export_events": "empir_export_events",
             "empir_export_photons": "empir_export_photons",
+            "empir_export_pixelActivations": "empir_export_pixelActivations",
             "empir_pixel2photon_tpx3spidr": "bin/empir_pixel2photon_tpx3spidr",
             "empir_photon2event": "bin/empir_photon2event",
             "empir_event2image": "bin/empir_event2image"
@@ -1329,6 +1330,65 @@ class Analysis:
         if verbosity > VerbosityLevel.BASIC:
             print("✅ Finished exporting and modifying all photon files!")
 
+    def _run_export_pixels(self, process_dir: Path, verbosity: VerbosityLevel = VerbosityLevel.QUIET):
+        """
+        Exports .tpx3 files from tpx3Files subfolder to CSV files in ExportedPixels subfolder.
+
+        Args:
+            process_dir: Path to the processing directory (supports suffix).
+            verbosity: Controls the level of output during processing.
+        """
+        # For non-grouped structure, tpx3Files is in the parent directory of process_dir
+        # For grouped structure, tpx3Files is in the same directory as process_dir
+        tpx3_dir = process_dir.parent / "tpx3Files" if (process_dir.parent / "tpx3Files").exists() else process_dir / "tpx3Files"
+
+        if not tpx3_dir.exists():
+            raise FileNotFoundError(f"{tpx3_dir} does not exist.")
+
+        exported_pixels_dir = process_dir / "ExportedPixels"
+        exported_pixels_dir.mkdir(parents=True, exist_ok=True)
+
+        tpx3_files = sorted(tpx3_dir.glob("*.tpx3"))
+        if not tpx3_files:
+            raise FileNotFoundError(f"No .tpx3 files found in {tpx3_dir}")
+
+        if verbosity > VerbosityLevel.BASIC:
+            print(f"Exporting {len(tpx3_files)} .tpx3 files to CSV...")
+
+        for tpx3_file in tqdm(tpx3_files, desc="Exporting pixels", disable=(verbosity == VerbosityLevel.QUIET)):
+            try:
+                pixel_result_csv = exported_pixels_dir / f"exported_{tpx3_file.stem}.csv"
+                cmd = [
+                    str(self.empir_dirpath / "empir_export_pixelActivations"),
+                    str(tpx3_file),
+                    str(pixel_result_csv),
+                    "csv"
+                ]
+
+                if verbosity >= VerbosityLevel.DETAILED:
+                    print(f"Running: {' '.join(cmd)}")
+                    subprocess.run(cmd, check=True)
+                else:
+                    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+
+                try:
+                    df = pd.read_csv(pixel_result_csv)
+                    # Note: Column names may vary depending on empir_export_pixelActivations output
+                    # Update column names if needed based on actual output
+                    if verbosity > VerbosityLevel.BASIC:
+                        print(f"✔ Exported {tpx3_file.name} → {pixel_result_csv.name}")
+
+                except Exception as e:
+                    if verbosity > VerbosityLevel.BASIC:
+                        print(f"⚠️ Error reading/modifying headers for {pixel_result_csv.name}: {e}")
+
+            except Exception as e:
+                if verbosity > VerbosityLevel.BASIC:
+                    print(f"❌ Error exporting {tpx3_file.name}: {e}")
+
+        if verbosity > VerbosityLevel.BASIC:
+            print("✅ Finished exporting all pixel files!")
+
     def _run_export_events(self, process_dir: Path, verbosity: VerbosityLevel = VerbosityLevel.QUIET):
         """
         Exports .empirevent files from eventFiles subfolder to CSV files in ExportedEvents subfolder.
@@ -1389,7 +1449,7 @@ class Analysis:
         if verbosity > VerbosityLevel.BASIC:
             print("✅ Finished exporting and modifying all event files!")
 
-    def process(self, 
+    def process(self,
                 params: Union[str, Dict[str, Any]] = None,
                 n_threads: int = 1,
                 suffix: str = "",
@@ -1398,6 +1458,7 @@ class Analysis:
                 event2image: bool = False,
                 sum_image: bool = False,
                 export_photons: bool = True,
+                export_pixels: bool = False,
                 export_events: bool = False,
                 roifile: Optional[str] = None,
                 verbosity: VerbosityLevel = VerbosityLevel.BASIC,
@@ -1405,9 +1466,9 @@ class Analysis:
                 **kwargs) -> None:
         """
         Process TPX3 files through the EMPIR pipeline.
-        
+
         If roifile is provided, sets event2image=True and runs _run_roi_analysis on the output TIFF.
-        
+
         Args:
             params: Either a path to a parameterSettings.json file, a JSON string, or a dictionary
             n_threads: Number of threads for parallel processing
@@ -1417,6 +1478,7 @@ class Analysis:
             event2image: If True, runs empir_event2image
             sum_image: If True, generates both time-binned image and sum image
             export_photons: If True, exports photons to CSV
+            export_pixels: If True, exports pixels to CSV
             export_events: If True, exports events to CSV
             roifile: Optional path to roi.zip file for ROI analysis
             verbosity: Controls output level
@@ -1442,13 +1504,14 @@ class Analysis:
                 event2image=event2image,
                 sum_image=sum_image,
                 export_photons=export_photons,
+                export_pixels=export_pixels,
                 export_events=export_events,
                 roifile=roifile,
                 verbosity=verbosity,
                 clean=clean,
                 **kwargs
             )
-        
+
         # Call the single processing method
         return self._process_single(
             params=params,
@@ -1459,6 +1522,7 @@ class Analysis:
             event2image=event2image,
             sum_image=sum_image,
             export_photons=export_photons,
+            export_pixels=export_pixels,
             export_events=export_events,
             roifile=roifile,
             verbosity=verbosity,
@@ -1466,7 +1530,7 @@ class Analysis:
             **kwargs
         )
 
-    def _process_grouped(self, 
+    def _process_grouped(self,
                         params: Union[str, Dict[str, Any]] = None,
                         n_threads: int = 1,
                         suffix: str = "",
@@ -1475,6 +1539,7 @@ class Analysis:
                         event2image: bool = False,
                         sum_image: bool = False,
                         export_photons: bool = True,
+                        export_pixels: bool = False,
                         export_events: bool = False,
                         roifile: Optional[str] = None,
                         verbosity: VerbosityLevel = VerbosityLevel.BASIC,
@@ -1482,7 +1547,7 @@ class Analysis:
                         **kwargs) -> None:
         """
         Process TPX3 files for all groups in a groupby structure.
-        
+
         Args:
             params: Parameters for processing (same as process())
             n_threads: Number of threads for parallel processing
@@ -1492,11 +1557,12 @@ class Analysis:
             event2image: If True, runs empir_event2image
             sum_image: If True, generates both time-binned image and sum image
             export_photons: If True, exports photons to CSV
+            export_pixels: If True, exports pixels to CSV
             export_events: If True, exports events to CSV
             verbosity: Controls output level
             clean: If True, deletes existing processed files before processing
             **kwargs: Additional parameters
-        
+
         Raises:
             ValueError: If not a groupby structure
         """
@@ -1555,6 +1621,7 @@ class Analysis:
                     event2image=event2image,
                     sum_image=sum_image,
                     export_photons=export_photons,
+                    export_pixels=export_pixels,
                     export_events=export_events,
                     roifile=roifile,
                     verbosity=VerbosityLevel.QUIET,
@@ -1581,7 +1648,7 @@ class Analysis:
             print(f"✓ Completed all {len(self._groupby_subfolders)} groups")
             print(f"{'='*60}\n")
 
-    def _process_single(self, 
+    def _process_single(self,
                         params: Union[str, Dict[str, Any]] = None,
                         n_threads: int = 1,
                         suffix: str = "",
@@ -1590,6 +1657,7 @@ class Analysis:
                         event2image: bool = False,
                         sum_image: bool = False,
                         export_photons: bool = True,
+                        export_pixels: bool = False,
                         export_events: bool = False,
                         roifile: Optional[str] = None,
                         verbosity: VerbosityLevel = VerbosityLevel.BASIC,
@@ -1597,9 +1665,9 @@ class Analysis:
                         **kwargs) -> None:
         """
         Process TPX3 files through the EMPIR pipeline.
-        
+
         Automatically detects groupby structures and processes all groups if found.
-        
+
         Args:
             params: Either a path to a parameterSettings.json file, a JSON string, or a dictionary
             n_threads: Number of threads for parallel processing
@@ -1609,6 +1677,7 @@ class Analysis:
             event2image: If True, runs empir_event2image
             sum_image: If True, generates both time-binned image and sum image
             export_photons: If True, exports photons to CSV
+            export_pixels: If True, exports pixels to CSV
             export_events: If True, exports events to CSV
             verbosity: Controls output level
             clean: If True, deletes existing processed files
@@ -1659,6 +1728,12 @@ class Analysis:
                     file.unlink(missing_ok=True)
                     if verbosity >= VerbosityLevel.DETAILED:
                         print(f"Deleted existing file: {file.name}")
+            if export_pixels==True:
+                exported_pixels_dir = process_dir / "ExportedPixels"
+                for file in exported_pixels_dir.glob("*.csv"):
+                    file.unlink(missing_ok=True)
+                    if verbosity >= VerbosityLevel.DETAILED:
+                        print(f"Deleted existing file: {file.name}")
             if export_events==True:
                 exported_events_dir = process_dir / "ExportedEvents"
                 for file in exported_events_dir.glob("*.csv"):
@@ -1667,9 +1742,9 @@ class Analysis:
                         print(f"Deleted existing file: {file.name}")
 
         if params is None:
-            parameters = self.default_params.get("in_focus", {})
+            parameters = self.default_params.get("fast_neutrons", {})
         elif isinstance(params, str):
-            if params in ["in_focus", "out_of_focus", "hitmap"]:
+            if params in ["in_focus", "out_of_focus", "hitmap","fast_neutrons"]:
                 parameters = self.default_params.get(params, {})
             elif params.endswith('.json'):
                 if not os.path.exists(params):
@@ -1705,10 +1780,13 @@ class Analysis:
         
         if photon2event:
             self._run_photon2event(photon_files_dir, event_files_dir, params_file, n_threads, verbosity)
-        
+
         if export_photons:
             self._run_export_photons(process_dir, verbosity=verbosity)
-        
+
+        if export_pixels:
+            self._run_export_pixels(process_dir, verbosity=verbosity)
+
         if export_events:
             self._run_export_events(process_dir, verbosity=verbosity)
         

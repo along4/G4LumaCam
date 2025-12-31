@@ -14,6 +14,7 @@ G4LumaCam is a Geant4-based simulation package for the LumaCam event camera that
 
 - **High-Fidelity Physics**: Neutron interaction simulation based on Geant4 10.6 physics models
 - **Realistic Optics**: Accurate optical ray tracing through the LumaCam lens system
+- **Advanced Detector Models**: 8 physics-based detector models including MCP+intensifier, Timepix3, and customizable phosphor screens (P20/P43/P46/P47)
 - **Standard Output Format**: Generates TPX3 files compatible with multiple reconstruction tools
 - **Flexible Reconstruction**: Use EMPIR for official workflow - just like in a real experiment!
 - **Configurable Sources**: Customizable neutron source properties (energy, spatial distribution, flux, etc.)
@@ -34,9 +35,14 @@ sim = lumacam.Simulate("openbeam")
 config = lumacam.Config.neutrons_uniform_energy()
 df = sim.run(config)
 
-# 2. Trace rays through the optical system
+# 2. Trace rays through the optical system with physics-based detector model
 lens = lumacam.Lens(archive="openbeam")
-lens.trace_rays(blob=1.0, deadtime=600)  # 1px blob, 600ns deadtime
+lens.trace_rays(
+    detector_model="image_intensifier_gain",  # Recommended: Gain-dependent MCP model
+    gain=5000,                                 # MCP gain (typical at 1000V)
+    decay_time=100,                            # P47 phosphor decay (~100ns)
+    deadtime=475                               # Timepix3 deadtime (475ns)
+)
 # This generates TPX3 files compatible with various reconstruction tools
 
 # 3. Reconstruct using EMPIR (requires EMPIR license)
@@ -112,6 +118,10 @@ If unspecified, G4LumaCam searches for EMPIR in `./empir` relative to your worki
 ## Documentation
 
 - **[Tutorial Notebook](__notebooks/tutorial.ipynb__)**: Step-by-step guide with examples
+- **[Detector Models Guide](.documents/DETECTOR_MODELS_SUMMARY.md)**: Quick reference for 8 available detector models
+- **[Full Detector Documentation](.documents/DETECTOR_MODELS.md)**: Complete documentation with physics background
+- **[Blob vs Gain Explained](.documents/BLOB_VS_GAIN.md)**: Understanding gain-dependent blob sizing
+- **[Detector Models Demo Notebook](notebooks/detector_models_comparison.ipynb)**: Interactive comparison of all models
 
 For additional support, please [open an issue](https://github.com/TsvikiHirsh/G4LumaCam/issues).
 

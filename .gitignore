@@ -1,5 +1,14 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
 src/G4LumaCam.egg-info/*
 build/*
+
+# Jupyter
 notebooks/.ipynb_checkpoints/*
 notebooks/data
 empir
@@ -25,3 +34,7 @@ notebooks/tutorial_archive
 src/lumacam/config/.ipynb_checkpoints/empir_params-checkpoint.py
 notebooks/demo_detector_models
 notebooks/demo_models
+
+# Test artifacts
+test_groupby/
+test_detector_groupby.py
