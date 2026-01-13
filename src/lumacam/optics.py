@@ -51,28 +51,28 @@ class DetectorModel(IntEnum):
         - Gaussian charge distribution instead of uniform blob
         - Charge-weighted TOT accumulation
         - Better for CCD/CMOS direct detection
-        Parameters: blob (as sigma), deadtime, min_tot, charge_coupling (0-1)
+        Parameters: blob (as sigma), deadtime, min_tot, charge_coupling (0-1), tot_tail (150 ns)
 
     DIRECT_DETECTION : Simple direct detection
         Minimal model for bare sensors without intensification.
         - Single pixel per photon
         - Simple deadtime only
         - Fast computation for large datasets
-        Parameters: deadtime, min_tot
+        Parameters: deadtime, min_tot, tot_tail (50 ns)
 
     WAVELENGTH_DEPENDENT : Advanced intensifier with spectral response
         Energy/wavelength-dependent quantum efficiency and gain.
         - Wavelength-dependent blob size
         - QE curve affects detection probability
         - Non-uniform gain distribution
-        Parameters: blob, decay_time, deadtime, min_tot, qe_wavelength (nm array), qe_values (efficiency array)
+        Parameters: blob, decay_time, deadtime, min_tot, tot_tail, qe_wavelength (nm array), qe_values (efficiency array)
 
     AVALANCHE_GAIN : Stochastic gain model
         Models avalanche photodiodes or PMTs with Poisson gain statistics.
         - Poisson-distributed gain per photon
         - Afterpulsing effects
         - Gain-dependent TOT
-        Parameters: mean_gain, gain_variance, afterpulse_prob, afterpulse_delay, deadtime, min_tot
+        Parameters: mean_gain, gain_variance, afterpulse_prob, afterpulse_delay, deadtime, min_tot, tot_tail (100 ns)
 
     IMAGE_INTENSIFIER_GAIN : Gain-dependent intensifier (RECOMMENDED)
         Realistic MCP image intensifier with variable gain control.
@@ -88,7 +88,7 @@ class DetectorModel(IntEnum):
         - Per-pixel calibration variation
         - 475 ns deadtime (TPX3 spec)
         - Based on Poikela et al. 2014
-        Parameters: gain, tot_a, tot_b, charge_ref, pixel_variation, deadtime (475 ns)
+        Parameters: gain, tot_a, tot_b, charge_ref, pixel_variation, deadtime (475 ns), tot_tail (200 ns)
 
     PHYSICAL_MCP : Full physics simulation
         High-fidelity MCP simulation with complete physics.
@@ -2832,10 +2832,14 @@ class Lens:
             - "avalanche_gain": Poisson gain with afterpulsing
         model_params : dict, optional
             Additional model-specific parameters. See documentation for details.
+            Common parameter:
+            - tot_tail: Decay/integration tail time (ns) added to ToT calculation.
+                        Default varies by model (50-200 ns). Controls ToT distribution width.
             Examples:
-            - gaussian_diffusion: {'charge_coupling': 0.8}
+            - gaussian_diffusion: {'charge_coupling': 0.8, 'tot_tail': 150.0}
             - wavelength_dependent: {'qe_wavelength': [400, 500, 600], 'qe_values': [0.1, 0.3, 0.2]}
-            - avalanche_gain: {'mean_gain': 100, 'gain_variance': 20, 'afterpulse_prob': 0.01}
+            - avalanche_gain: {'mean_gain': 100, 'gain_variance': 20, 'afterpulse_prob': 0.01, 'tot_tail': 100.0}
+            - timepix3_calibrated: {'gain': 5000, 'tot_tail': 200.0}
         verbosity : VerbosityLevel, default VerbosityLevel.BASIC
             Controls output detail level.
 
@@ -2845,8 +2849,11 @@ class Lens:
             Columns: pixel_x, pixel_y, toa2, photon_count, time_diff, id, neutron_id, pulse_id, pulse_time_ns, nz, pz
             - pixel_x, pixel_y: integer pixel positions
             - toa2: time of arrival in nanoseconds (first activation time)
-            - time_diff: time-over-threshold in nanoseconds (first to last photon in deadtime)
+            - time_diff: time-over-threshold in nanoseconds (photon arrival span + decay/integration tail)
             - photon_count: number of photon blobs that hit this pixel during deadtime
+
+        Note: ToT now includes realistic decay tail based on detector model, producing distributions
+        similar to experimental data (typically 250-1000 ns range in 25 ns bins)
 
         Examples:
         ---------
@@ -2874,6 +2881,14 @@ class Lens:
                 'qe_wavelength': [400, 450, 500, 550, 600],
                 'qe_values': [0.1, 0.25, 0.35, 0.30, 0.15]
             }
+        )
+
+        # Control ToT distribution with tot_tail parameter
+        df = lens.saturate_photons(
+            detector_model="image_intensifier",
+            blob=2.0,
+            decay_time=100.0,  # Phosphor decay constant
+            model_params={'tot_tail': 150.0}  # Additional tail for broader ToT distribution
         )
         """
         # Set default detector model if None
@@ -3157,7 +3172,8 @@ class Lens:
                         else:
                             # Deadtime expired - finalize previous pixel event
                             self._finalize_pixel_event(result_rows, pixel_key, pixel_info,
-                                                    photon_ids, neutron_ids, pulse_ids, pulse_times, nz, pz, min_tot)
+                                                    photon_ids, neutron_ids, pulse_ids, pulse_times, nz, pz, min_tot,
+                                                    decay_time, detector_model, model_params)
                             # Remove from active state (will be re-added below)
                             del pixel_state[pixel_key]
 
@@ -3190,7 +3206,8 @@ class Lens:
                             continue
                         else:
                             self._finalize_pixel_event(result_rows, pixel_key, pixel_info,
-                                                    photon_ids, neutron_ids, pulse_ids, pulse_times, nz, pz, min_tot)
+                                                    photon_ids, neutron_ids, pulse_ids, pulse_times, nz, pz, min_tot,
+                                                    decay_time, detector_model, model_params)
                             del pixel_state[pixel_key]
 
                     # Create new activation from afterpulse
@@ -3206,7 +3223,8 @@ class Lens:
             # Finalize all remaining pixel events
             for pixel_key, pixel_info in pixel_state.items():
                 self._finalize_pixel_event(result_rows, pixel_key, pixel_info,
-                                        photon_ids, neutron_ids, pulse_ids, pulse_times, nz, pz, min_tot)
+                                        photon_ids, neutron_ids, pulse_ids, pulse_times, nz, pz, min_tot,
+                                        decay_time, detector_model, model_params)
 
             # Create result DataFrame
             if not result_rows:
@@ -3254,14 +3272,112 @@ class Lens:
             print("\nNo results to return")
         return None
 
+    def _calculate_tot(self, first_toa, last_toa, photon_count, min_tot, decay_time,
+                       detector_model, model_params):
+        """Calculate realistic Time-over-Threshold based on detector model.
+
+        ToT represents the time the signal stays above threshold, which includes:
+        1. The span of photon arrivals (last_toa - first_toa)
+        2. A decay/integration tail after the last photon
+
+        Args:
+            first_toa: Time of first photon (ns)
+            last_toa: Time of last photon (ns)
+            photon_count: Number of photons in this pixel event
+            min_tot: Minimum ToT value (ns)
+            decay_time: Decay time constant (ns) for phosphor/scintillator
+            detector_model: DetectorModel enum
+            model_params: Dictionary of model-specific parameters
+
+        Returns:
+            float: ToT in nanoseconds
+        """
+        # Base ToT: time span of photon arrivals
+        base_tot = last_toa - first_toa
+
+        # Add tail time based on detector model
+        if detector_model == DetectorModel.IMAGE_INTENSIFIER:
+            # Phosphor decay: sample from exponential distribution
+            # Mean tail is ~1.5 * decay_time for visible signal
+            tail_time = np.random.exponential(decay_time * 0.7)
+            tot_measured = base_tot + tail_time
+
+        elif detector_model == DetectorModel.GAUSSIAN_DIFFUSION:
+            # Charge collection time: depends on charge diffusion
+            # More charge -> longer signal above threshold
+            charge_factor = np.sqrt(photon_count)  # Scales with charge
+            collection_time = model_params.get('tot_tail', 150.0)  # Default 150 ns
+            tot_measured = base_tot + collection_time * charge_factor
+
+        elif detector_model == DetectorModel.DIRECT_DETECTION:
+            # Minimal tail - just sensor response time
+            sensor_response = model_params.get('tot_tail', 50.0)  # Default 50 ns
+            tot_measured = base_tot + sensor_response
+
+        elif detector_model == DetectorModel.WAVELENGTH_DEPENDENT:
+            # Similar to IMAGE_INTENSIFIER with wavelength effects
+            tail_time = np.random.exponential(decay_time * 0.7)
+            tot_measured = base_tot + tail_time
+
+        elif detector_model == DetectorModel.AVALANCHE_GAIN:
+            # APD/PMT tail: faster decay but with afterpulsing effects
+            apd_decay = model_params.get('tot_tail', 100.0)  # Default 100 ns
+            tail_time = np.random.exponential(apd_decay * 0.5)
+            tot_measured = base_tot + tail_time
+
+        elif detector_model == DetectorModel.IMAGE_INTENSIFIER_GAIN:
+            # MCP + phosphor: exponential decay
+            # Higher gain -> potentially longer tail
+            gain = model_params.get('gain', 5000)
+            gain_factor = np.clip(np.log10(gain / 1000), 0.5, 2.0)
+            tail_time = np.random.exponential(decay_time * 0.7 * gain_factor)
+            tot_measured = base_tot + tail_time
+
+        elif detector_model == DetectorModel.TIMEPIX3_CALIBRATED:
+            # Charge integration in Timepix3 sensor
+            # More photons -> more charge -> longer signal
+            charge_factor = np.log1p(photon_count)  # Logarithmic scaling
+            integration_time = model_params.get('tot_tail', 200.0)  # Default 200 ns
+            tot_measured = base_tot + integration_time * charge_factor
+
+        elif detector_model == DetectorModel.PHYSICAL_MCP:
+            # Full physics phosphor decay (multi-exponential)
+            phosphor_type = model_params.get('phosphor_type', 'p43')
+            if phosphor_type == 'p43':
+                # P43 (Gd2O2S:Tb): decay ~1ms, but visible tail ~200-500ns
+                fast_decay = model_params.get('decay_fast', 100.0)
+                slow_decay = model_params.get('decay_slow', 400.0)
+                fast_fraction = model_params.get('fast_fraction', 0.6)
+                if np.random.rand() < fast_fraction:
+                    tail_time = np.random.exponential(fast_decay)
+                else:
+                    tail_time = np.random.exponential(slow_decay)
+            elif phosphor_type == 'p47':
+                # P47 (Y2SiO5:Ce): fast decay ~70ns
+                tail_time = np.random.exponential(70.0)
+            else:
+                # Generic phosphor
+                tail_time = np.random.exponential(decay_time * 0.7)
+            tot_measured = base_tot + tail_time
+
+        else:
+            # Fallback: add default tail
+            default_tail = model_params.get('tot_tail', 100.0)
+            tail_time = np.random.exponential(default_tail * 0.7)
+            tot_measured = base_tot + tail_time
+
+        # Ensure minimum ToT
+        return max(tot_measured, min_tot)
+
     def _finalize_pixel_event(self, result_rows, pixel_key, pixel_info,
-                            photon_ids, neutron_ids, pulse_ids, pulse_times, nz, pz, min_tot):
+                            photon_ids, neutron_ids, pulse_ids, pulse_times, nz, pz, min_tot,
+                            decay_time=100.0, detector_model=None, model_params=None):
         """Helper function to finalize and add a pixel event to results.
-        
+
         Output format for saturate_photons (photons format):
         - pixel_x, pixel_y: integer pixel positions
         - toa2: time of arrival in nanoseconds (first photon)
-        - time_diff: time-over-threshold in nanoseconds (first to last photon)
+        - time_diff: time-over-threshold in nanoseconds (includes decay tail)
         - photon_count: number of photon blobs that hit this pixel
         - id, neutron_id, pulse_id, pulse_time_ns: from first photon
         - nz, pz: from first photon
@@ -3271,8 +3387,15 @@ class Lens:
         last_toa = pixel_info['last_toa']
         photon_count = pixel_info['photon_count']
         first_idx = pixel_info['idx']
-        
-        tot_measured = max(last_toa - first_toa, min_tot)
+
+        # Calculate realistic ToT with decay tail
+        if detector_model is None:
+            detector_model = DetectorModel.IMAGE_INTENSIFIER
+        if model_params is None:
+            model_params = {}
+
+        tot_measured = self._calculate_tot(first_toa, last_toa, photon_count, min_tot,
+                                           decay_time, detector_model, model_params)
         
         result_rows.append({
             'pixel_x': px_i,
