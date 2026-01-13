@@ -1767,6 +1767,7 @@ class Lens:
         """
         # Constants
         TICK_NS = 1.5625  # ToA tick size (1.5625 ns)
+        TOT_TICK_NS = 25.0  # ToT tick size (25 ns per TPX3 spec)
         MAX_TDC_TIMESTAMP_S = (2**32) * 25e-9  # ~107.37 seconds
         MAX_CHUNK_BYTES = 65535
         TIMER_TICK_NS = 409.6  # GTS timer tick
@@ -1921,8 +1922,8 @@ class Lens:
         ftoa = (15 - (toa_ticks & 0xF)).astype(np.int64)
         ftoa = np.clip(ftoa, 0, 15)
         
-        # Convert ToT to ticks (10-bit, ~1ns resolution)
-        tot_ticks = np.clip(np.round(tot_ns).astype(np.int64), 1, 0x3FF)
+        # Convert ToT to ticks (10-bit, 25ns resolution per TPX3 spec)
+        tot_ticks = np.clip(np.round(tot_ns / TOT_TICK_NS).astype(np.int64), 1, 0x3FF)
         
         # Encode PixAddr using TPX3 hierarchical addressing scheme
         # C++ decoder extracts from 64-bit word at these positions:
