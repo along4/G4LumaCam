@@ -38,3 +38,4 @@ notebooks/demo_models
 # Test artifacts
 test_groupby/
 test_detector_groupby.py
+notebooks/detector_models_comparison.ipynb
