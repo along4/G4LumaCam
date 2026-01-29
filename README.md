@@ -86,6 +86,21 @@ EMPIR is a proprietary reconstruction code for Timepix-3 detector data, availabl
    pip install .
    ```
 
+### Pixi environment (conda-forge Geant4)
+
+The repo ships a `pixi.toml` that provisions Geant4 10.6 with OpenGL/Qt, data sets, and a build task.
+
+```bash
+pixi install                      # create/solve env and set Geant4 data env vars
+pixi run build-sim                # configure, build, and copy build/lumacam to src/G4LumaCam/bin
+pixi run ./build/lumacam          # run the C++ binary inside the env
+```
+
+Notes:
+- The pixi activation sets the Geant4 data variables (G4ENSDFSTATEDATA, G4NEUTRONHPDATA, etc.) to the copies in `.pixi/envs/default/share/Geant4/data`.
+- The build task also places the executable at `src/G4LumaCam/bin/lumacam` so the Python wrapper `lumacam.Simulate` can find it.
+- For headless runs, the default viewer in code uses file-based drivers; you can switch to OGL when a GLX-capable display is available.
+
 ## Simulation Output & Reconstruction with EMPIR
 
 G4LumaCam generates standard **TPX3 files** from the simulation, which are compatible with various Timepix-3 reconstruction tools.
