@@ -1,0 +1,43 @@
+[workspace]
+name = "G4LumaCam"
+version = "0.5.0"
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+[dependencies]
+python = "3.11.*"
+pip = "*"
+cmake = "*"
+make = "*"
+cxx-compiler = "*"
+geant4 = "10.6.*"
+qt = "5.12.*"
+xorg-libx11 = "*"
+xorg-libxext = "*"
+xorg-libxmu = "*"
+xorg-libxrandr = "*"
+freeglut = "*"
+numpy = "<2"
+pandas = "*"
+scikit-learn = "*"
+lmfit = "*"
+matplotlib-base = "3.8.*"
+tifffile = "*"
+roifile = "*"
+tqdm = "*"
+pytest = "*"
+jupyterlab = "*"
+ipykernel = "*"
+
+[pypi-dependencies]
+rayoptics = "*"
+
+[activation.env]
+# Path to EMPIR executables so the package can find empir_event2image etc.
+EMPIR_PATH = "/opt/empir/v1.0.0/bin"
+
+[tasks]
+install = "python -m pip install -e ."
+test = "pytest"
+build-sim = "cmake -S src/G4LumaCam -B build -DCMAKE_SYSROOT=$CONDA_PREFIX/x86_64-conda-linux-gnu/sysroot && cmake --build build && mkdir -p src/G4LumaCam/bin && cp build/lumacam src/G4LumaCam/bin/"
+clean-sim = "test ! -d build || cmake --build build --target clean"
