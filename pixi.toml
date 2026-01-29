@@ -2,7 +2,7 @@
 name = "G4LumaCam"
 version = "0.5.0"
 channels = ["conda-forge"]
-# This project currently supports only 64-bit Linux; other platforms (e.g. macOS, Windows) are not targeted.
+# This project currently targets 64-bit Linux.
 platforms = ["linux-64"]
 
 [dependencies]
@@ -11,9 +11,7 @@ pip = "*"
 cmake = "*"
 make = "*"
 cxx-compiler = "*"
-# NOTE: Geant4 is pinned to 10.6.* to preserve validated physics behavior and
-# reproducibility of existing simulations. Newer Geant4 releases (10.7.x/11.x)
-# may change physics lists or defaults and have not yet been validated for G4LumaCam.
+sysroot_linux-64 = "*"
 geant4 = "10.6.*"
 qt = "5.12.*"
 xorg-libx11 = "*"
@@ -37,11 +35,29 @@ ipykernel = "*"
 rayoptics = "*"
 
 [activation.env]
-# Path to EMPIR executables so the package can find empir_event2image etc.
+# EMPIR executables and exports
 EMPIR_PATH = "/opt/empir/v1.0.0/bin"
+EMPIR_EXPORT_PATH = "/opt/empir/v1.0.0/empir_export"
+PATH = "${EMPIR_EXPORT_PATH}:${EMPIR_PATH}:${PATH}"
+
+# Simulation executable location for the Python wrapper
+LUMACAM_EXECUTABLE = "${CONDA_PREFIX}/bin/lumacam"
+
+# Geant4 data libraries (matching conda-forge Geant4 10.6 datasets)
+G4ABLADATA = "${CONDA_PREFIX}/share/Geant4/data/G4ABLA3.1"
+G4ENSDFSTATEDATA = "${CONDA_PREFIX}/share/Geant4/data/G4ENSDFSTATE2.2"
+G4LEDATA = "${CONDA_PREFIX}/share/Geant4/data/G4EMLOW7.9.1"
+G4LEVELGAMMADATA = "${CONDA_PREFIX}/share/Geant4/data/PhotonEvaporation5.5"
+G4NEUTRONHPDATA = "${CONDA_PREFIX}/share/Geant4/data/G4NDL4.6"
+G4PARTICLEXSDATA = "${CONDA_PREFIX}/share/Geant4/data/G4PARTICLEXS2.1"
+G4PIIDATA = "${CONDA_PREFIX}/share/Geant4/data/G4PII1.3"
+G4RADIOACTIVEDATA = "${CONDA_PREFIX}/share/Geant4/data/RadioactiveDecay5.4"
+G4REALSURFACEDATA = "${CONDA_PREFIX}/share/Geant4/data/RealSurface2.1.1"
+G4SAIDXSDATA = "${CONDA_PREFIX}/share/Geant4/data/G4SAIDDATA2.0"
+G4INCLDATA = "${CONDA_PREFIX}/share/Geant4/data/G4INCL1.0"
 
 [tasks]
 install = "python -m pip install -e ."
 test = "pytest"
-build-sim = "SYSROOT_FLAG=; if [ -n \"$CONDA_PREFIX\" ] && [ -d \"$CONDA_PREFIX/x86_64-conda-linux-gnu/sysroot\" ]; then SYSROOT_FLAG=-DCMAKE_SYSROOT=$CONDA_PREFIX/x86_64-conda-linux-gnu/sysroot; fi; cmake -S src/G4LumaCam -B build $SYSROOT_FLAG && cmake --build build && mkdir -p src/G4LumaCam/bin && cp build/lumacam src/G4LumaCam/bin/"
+build-sim = "cmake -S src/G4LumaCam -B build -DCMAKE_SYSROOT=$CONDA_PREFIX/x86_64-conda-linux-gnu/sysroot && cmake --build build && install -m 755 build/lumacam $CONDA_PREFIX/bin/lumacam"
 clean-sim = "test ! -d build || cmake --build build --target clean"
