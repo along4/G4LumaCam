@@ -39,5 +39,5 @@ EMPIR_PATH = "/opt/empir/v1.0.0/bin"
 [tasks]
 install = "python -m pip install -e ."
 test = "pytest"
-build-sim = "cmake -S src/G4LumaCam -B build -DCMAKE_SYSROOT=$CONDA_PREFIX/x86_64-conda-linux-gnu/sysroot && cmake --build build && mkdir -p src/G4LumaCam/bin && cp build/lumacam src/G4LumaCam/bin/"
+build-sim = "SYSROOT_FLAG=; if [ -n \"$CONDA_PREFIX\" ] && [ -d \"$CONDA_PREFIX/x86_64-conda-linux-gnu/sysroot\" ]; then SYSROOT_FLAG=-DCMAKE_SYSROOT=$CONDA_PREFIX/x86_64-conda-linux-gnu/sysroot; fi; cmake -S src/G4LumaCam -B build $SYSROOT_FLAG && cmake --build build && mkdir -p src/G4LumaCam/bin && cp build/lumacam src/G4LumaCam/bin/"
 clean-sim = "test ! -d build || cmake --build build --target clean"
