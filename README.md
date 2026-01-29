@@ -93,7 +93,7 @@ The repo ships a `pixi.toml` that provisions Geant4 10.6 with OpenGL/Qt, data se
 ```bash
 pixi install                      # create/solve env and set Geant4 data env vars
 pixi run build-sim                # configure, build, and copy build/lumacam to src/G4LumaCam/bin
-pixi run ./build/lumacam          # run the C++ binary inside the env
+./build/lumacam                   # run the C++ binary inside the pixi env (e.g. after `pixi shell`)
 ```
 
 Notes:
