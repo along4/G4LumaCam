@@ -91,7 +91,7 @@ EMPIR is a proprietary reconstruction code for Timepix-3 detector data, availabl
 The repo ships a `pixi.toml` that provisions Geant4 10.6 with OpenGL/Qt, data sets, and a build task.
 
 ```bash
-pixi install                      # create/solve env and set Geant4 data env vars
+pixi install                      # create/solve env; Geant4 data env vars are set via pixi run/shell
 pixi run build-sim                # configure, build, and copy build/lumacam to src/G4LumaCam/bin
 ./build/lumacam                   # run the C++ binary inside the pixi env (e.g. after `pixi shell`)
 ```
