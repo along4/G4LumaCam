@@ -2,6 +2,7 @@
 name = "G4LumaCam"
 version = "0.5.0"
 channels = ["conda-forge"]
+# This project currently supports only 64-bit Linux; other platforms (e.g. macOS, Windows) are not targeted.
 platforms = ["linux-64"]
 
 [dependencies]
