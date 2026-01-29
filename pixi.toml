@@ -10,6 +10,9 @@ pip = "*"
 cmake = "*"
 make = "*"
 cxx-compiler = "*"
+# NOTE: Geant4 is pinned to 10.6.* to preserve validated physics behavior and
+# reproducibility of existing simulations. Newer Geant4 releases (10.7.x/11.x)
+# may change physics lists or defaults and have not yet been validated for G4LumaCam.
 geant4 = "10.6.*"
 qt = "5.12.*"
 xorg-libx11 = "*"
