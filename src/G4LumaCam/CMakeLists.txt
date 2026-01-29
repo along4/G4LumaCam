@@ -36,5 +36,3 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 # Force-include shim for timespec_get on older sysroots
 target_compile_options(lumacam PRIVATE -include ${CMAKE_CURRENT_SOURCE_DIR}/compat_timespec_get.hh)
 
-project(lumacam)
-
