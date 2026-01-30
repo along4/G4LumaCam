@@ -317,14 +317,11 @@ class Lens:
         else:
             self.reduction_ratio = self.get_first_order_parameters().loc["Reduction Ratio","Value"]
 
-        if empir_dirpath is not None:
-            self.empir_dirpath = Path(empir_dirpath)
-        else:
-            try:
-                from G4LumaCam.config.paths import EMPIR_PATH
-                self.empir_dirpath = Path(EMPIR_PATH)
-            except ImportError:
-                self.empir_dirpath = Path("./empir")
+        from lumacam.empir import resolve_empir_dir
+        try:
+            self.empir_dirpath = resolve_empir_dir(empir_dirpath)
+        except FileNotFoundError:
+            self.empir_dirpath = None
 
 
     def get_first_order_parameters(self, opm: "OpticalModel" = None) -> pd.DataFrame:

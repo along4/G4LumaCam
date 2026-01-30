@@ -14,6 +14,7 @@ from lmfit.models import Model
 from scipy.special import erfc
 from matplotlib import pyplot as plt
 import glob
+from lumacam.empir import resolve_empir_dir, find_binaries
 
 class VerbosityLevel(IntEnum):
     """Verbosity levels for simulation output."""
@@ -29,40 +30,35 @@ class Analysis:
 
         Args:
             archive: The directory containing TPX3 data or a groupby subfolder.
-            empir_dirpath: Path to the EMPIR directory. If None, defaults to "./empir".
+            empir_dirpath: Path to the EMPIR directory. If None, uses ``EMPIR_PATH``
+                environment variable, then falls back to ``./empir``.
         """
         self.archive = Path(archive)
-        
+
         # Check if this is a groupby folder
         self._is_groupby = False
         self._groupby_metadata = None
         self._groupby_subfolders = []
-        
+
         # Look for groupby metadata in the archive or parent
         metadata_file = self.archive / ".groupby_metadata.json"
         if metadata_file.exists():
             self._is_groupby = True
             with open(metadata_file, 'r') as f:
                 self._groupby_metadata = json.load(f)
-            
+
             # Find all subfolders with SimPhotons or tpx3Files
             for subfolder in sorted(self.archive.iterdir()):
                 if subfolder.is_dir() and not subfolder.name.startswith('.'):
                     if (subfolder / "SimPhotons").exists() or (subfolder / "tpx3Files").exists():
                         self._groupby_subfolders.append(subfolder)
-            
+
             print(f"Detected groupby structure: {len(self._groupby_subfolders)} groups")
             print(f"Groupby column: {self._groupby_metadata.get('column', 'unknown')}")
-        
-        if empir_dirpath is not None:
-            self.empir_dirpath = Path(empir_dirpath)
-        else:
-            try:
-                from G4LumaCam.config.paths import EMPIR_PATH
-                self.empir_dirpath = Path(EMPIR_PATH)
-            except ImportError:
-                self.empir_dirpath = Path("./empir")
-        
+
+        # Resolve EMPIR directory and locate binaries
+        self.empir_dirpath = resolve_empir_dir(empir_dirpath)
+
         # Set photon_files_dir only for non-groupby structures
         if not self._is_groupby:
             self.photon_files_dir = self.archive / "photonFiles"
@@ -70,25 +66,18 @@ class Analysis:
         else:
             self.photon_files_dir = None
 
-        if not self.empir_dirpath.exists():
-            raise FileNotFoundError(f"{self.empir_dirpath} does not exist.")
-        
-        required_files = {
-            "empir_export_events": "empir_export_events",
-            "empir_export_photons": "empir_export_photons",
-            "empir_export_pixelActivations": "empir_export_pixelActivations",
-            "empir_pixel2photon_tpx3spidr": "bin/empir_pixel2photon_tpx3spidr",
-            "empir_photon2event": "bin/empir_photon2event",
-            "empir_event2image": "bin/empir_event2image"
-        }
-        
-        self.executables = {}
-        for attr_name, filename in required_files.items():
-            file_path = self.empir_dirpath / filename
-            if not file_path.exists():
-                raise FileNotFoundError(f"{filename} not found in {self.empir_dirpath}")
-            self.executables[attr_name] = file_path
-            setattr(self, attr_name, file_path)
+        _REQUIRED_BINARIES = [
+            "empir_export_events",
+            "empir_export_photons",
+            "empir_export_pixelActivations",
+            "empir_pixel2photon_tpx3spidr",
+            "empir_photon2event",
+            "empir_event2image",
+        ]
+
+        self.executables = find_binaries(self.empir_dirpath, _REQUIRED_BINARIES)
+        for name, path in self.executables.items():
+            setattr(self, name, path)
 
         # Load parameters from config/empir_params.py
         try:
