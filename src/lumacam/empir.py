@@ -20,7 +20,6 @@ _SEARCH_SUBDIRS = [
     ".",
     "bin",
     "empir_export",
-    "empir_binning",
 ]
 
 

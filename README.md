@@ -94,26 +94,35 @@ The `lumacam.Analysis` class provides seamless integration with EMPIR for the co
 
 ## EMPIR Configuration
 
-G4LumaCam offers three methods to specify the EMPIR executable path:
+G4LumaCam automatically discovers EMPIR binaries within the specified directory,
+searching the root as well as common subdirectories (`bin/`, `empir_export/`).
 
-### 1. Environment Variable (Global Configuration)
-Set before installation for system-wide configuration:
+### 1. Environment Variable (Recommended)
+Set `EMPIR_PATH` once in your shell profile or conda/micromamba environment:
 ```bash
-export EMPIR_PATH=/path/to/empir/executables
-pip install .
+# Shell profile (~/.bashrc, ~/.zshrc)
+export EMPIR_PATH=/path/to/empir
+
+# Or persist in a conda/micromamba environment
+micromamba env config vars set EMPIR_PATH=/path/to/empir -n base
+```
+
+In a Jupyter notebook:
+```python
+%env EMPIR_PATH /path/to/empir
 ```
 
 ### 2. Runtime Parameter (Per-Session)
-Specify when creating an Analysis object:
+Pass explicitly when creating an Analysis or Lens object:
 ```python
 analysis = lumacam.Analysis(
     archive="your_archive",
-    empir_dirpath="/path/to/empir/executables"
+    empir_dirpath="/path/to/empir"
 )
 ```
 
 ### 3. Default Path (Fallback)
-If unspecified, G4LumaCam searches for EMPIR in `./empir` relative to your working directory.
+If neither is set, G4LumaCam falls back to `./empir` relative to the working directory.
 
 ## Documentation
 
