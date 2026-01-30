@@ -317,33 +317,14 @@ class Lens:
         else:
             self.reduction_ratio = self.get_first_order_parameters().loc["Reduction Ratio","Value"]
 
-        try:
-            if empir_dirpath is not None:
-                self.empir_dirpath = Path(empir_dirpath)
-            else:
-                try:
-                    from G4LumaCam.config.paths import EMPIR_PATH
-                    self.empir_dirpath = Path(EMPIR_PATH)
-                except ImportError:
-                    self.empir_dirpath = Path("./empir")
-
-            # if not self.empir_dirpath.exists():
-            #     raise FileNotFoundError(f"{self.empir_dirpath} does not exist.")
-            
-            required_files = {
-                "empir_import_photons": "empir_import_photons",
-            }
-            
-            self.executables = {}
-            for attr_name, filename in required_files.items():
-                file_path = self.empir_dirpath / filename
-                if not file_path.exists():
-                    raise FileNotFoundError(f"{filename} not found in {self.empir_dirpath}")
-                self.executables[attr_name] = file_path
-                setattr(self, attr_name, file_path)
-        except Exception as e:
-            if verbosity >= VerbosityLevel.BASIC:
-                print(f"⚠️ Warning: Could not set empir_dirpath or find required files: {e}")
+        if empir_dirpath is not None:
+            self.empir_dirpath = Path(empir_dirpath)
+        else:
+            try:
+                from G4LumaCam.config.paths import EMPIR_PATH
+                self.empir_dirpath = Path(EMPIR_PATH)
+            except ImportError:
+                self.empir_dirpath = Path("./empir")
 
 
     def get_first_order_parameters(self, opm: "OpticalModel" = None) -> pd.DataFrame:
@@ -1341,7 +1322,7 @@ class Lens:
                         if verbosity >= VerbosityLevel.DETAILED:
                             print(f"  Warning: pulse_time_ns not available, setting tof=0")
                     
-                    # Filter columns for photons workflow - keep format compatible with empir_import_photons
+                    # Filter columns for photons workflow
                     desired_columns = ['pixel_x', 'pixel_y', 'toa2', 'tof', 
                                     'id', 'neutron_id', 'pulse_id', 'pulse_time_ns']
                     
@@ -1356,17 +1337,7 @@ class Lens:
                     result_df.to_csv(output_file, index=False)
                     
                     if verbosity >= VerbosityLevel.DETAILED:
-                        print(f"  Saved {len(result_df)} traced photons ready for import")
-                    
-                    # Convert to photonFiles format immediately
-                    photon_files_dir = self.archive / "photonFiles"
-                    photon_files_dir.mkdir(parents=True, exist_ok=True)
-                    
-                    self._run_import_photons(
-                        traced_file=output_file,
-                        photon_files_dir=photon_files_dir,
-                        verbosity=verbosity
-                    )
+                        print(f"  Saved {len(result_df)} traced photons")
 
                 # Print statistics if requested
                 if print_stats and verbosity > VerbosityLevel.BASIC:
@@ -1630,126 +1601,6 @@ class Lens:
         
         return None
 
-
-    def _run_import_photons(self, traced_file: Path, photon_files_dir: Path, 
-                                        verbosity: VerbosityLevel) -> None:
-        """
-        Convert a single traced photon CSV file to empirphot binary format (.empirphot).
-        
-        This method reads a traced photon CSV file, formats it according to EMPIR requirements,
-        and uses empir_import_photons to create the binary .empirphot file.
-        
-        The input format expects:
-        - pixel_x, pixel_y: Pixel coordinates (already in pixels)
-        - toa2: Time of arrival in nanoseconds (will be converted to seconds)
-        - pulse_time_ns: Trigger/pulse time in nanoseconds (for calculating t_relToExtTrigger)
-        
-        Args:
-            traced_file: Path to the traced photon CSV file (e.g., traced_sim_data_0.csv)
-            photon_files_dir: Directory where .empirphot files will be saved
-            verbosity: Controls output level
-        
-        Raises:
-            ValueError: If required columns are missing from traced photon file
-        """
-        try:
-            # Read traced photons
-            df = pd.read_csv(traced_file)
-            
-            if df.empty:
-                if verbosity >= VerbosityLevel.DETAILED:
-                    print(f"    Skipping empty traced file: {traced_file.name}")
-                return
-            
-            # Validate required columns
-            required_cols = ['pixel_x', 'pixel_y', 'toa2']
-            missing_cols = [col for col in required_cols if col not in df.columns]
-            if missing_cols:
-                raise ValueError(
-                    f"Traced photon file {traced_file.name} missing required columns: {missing_cols}\n"
-                    f"Available columns: {list(df.columns)}\n"
-                    f"Expected columns: {required_cols}"
-                )
-            
-            # Drop rows with NaN in essential columns
-            df = df[['pixel_x', 'pixel_y', 'toa2', 'pulse_time_ns']].dropna()
-            
-            # Convert times from nanoseconds to seconds
-            df['t_s'] = df['toa2'] * 1e-9
-            
-            # Calculate time relative to external trigger (pulse_time_ns)
-            if 'pulse_time_ns' in df.columns:
-                df['t_relToExtTrigger_s'] = (df['toa2'] - df['pulse_time_ns']) * 1e-9
-            else:
-                # Fallback: use absolute time if pulse_time_ns not available
-                df['t_relToExtTrigger_s'] = df['t_s']
-                if verbosity >= VerbosityLevel.DETAILED:
-                    print(f"    Warning: pulse_time_ns not found, using absolute time for t_relToExtTrigger")
-            
-            # Prepare DataFrame in EMPIR import format
-            # Column names must match exactly what empir_import_photons expects
-            import_df = pd.DataFrame({
-                'x [px]': df['pixel_x'].astype(np.float64),
-                'y [px]': df['pixel_y'].astype(np.float64),
-                't [s]': df['t_s'].astype(np.float64),
-                't_relToExtTrigger [s]': df['t_relToExtTrigger_s'].astype(np.float64)
-            })
-            
-            
-            if import_df.empty:
-                if verbosity >= VerbosityLevel.DETAILED:
-                    print(f"    No photons in valid time range (0-1s) for {traced_file.name}")
-                return
-            
-            # Sort by time
-            import_df = import_df.sort_values('t [s]')
-            
-            # Create ImportedPhotons directory for intermediate CSV
-            imported_photons_dir = self.archive / "ImportedPhotons"
-            imported_photons_dir.mkdir(exist_ok=True)
-            
-            # Extract the data index from filename
-            stem = traced_file.stem
-            if stem.startswith('traced_sim_data_'):
-                data_index = stem.replace('traced_sim_data_', '')
-            elif stem.startswith('traced_data_'):
-                data_index = stem.replace('traced_data_', '')
-            else:
-                # Fallback: try to extract number from end
-                data_index = ''.join(filter(str.isdigit, stem))
-            
-            # Save intermediate CSV for empir_import_photons
-            output_csv = imported_photons_dir / f"imported_traced_data_{data_index}.csv"
-            import_df.to_csv(output_csv, index=False)
-            
-            # Output empirphot binary file
-            output_file = photon_files_dir / f"traced_data_{data_index}.empirphot"
-            
-            # Use empir_import_photons to create the binary .empirphot file
-            import subprocess
-            cmd = [
-                str(self.empir_import_photons),
-                str(output_csv),
-                str(output_file),
-                "csv"
-            ]
-            
-            if verbosity >= VerbosityLevel.DETAILED:
-                print(f"    Running: {' '.join(cmd)}")
-                result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-            else:
-                result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-            
-            if result.returncode != 0:
-                raise RuntimeError(f"empir_import_photons failed for {traced_file.name}")
-            
-            if verbosity >= VerbosityLevel.DETAILED:
-                print(f"    ✓ Converted {traced_file.name} → {output_file.name} ({len(import_df)} photons)")
-        
-        except Exception as e:
-            if verbosity > VerbosityLevel.BASIC:
-                print(f"    ✗ Error converting {traced_file.name}: {e}")
-            raise
 
     def _write_tpx3(
         self,
