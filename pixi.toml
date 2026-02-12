@@ -35,7 +35,7 @@ ipykernel = "*"
 rayoptics = "*"
 
 [activation.env]
-# EMPIR executables and exports
+# EMPIR executables and exports; detect_empir.py will override if it finds better paths
 EMPIR_PATH = "/opt/empir/v1.0.0/bin"
 EMPIR_EXPORT_PATH = "/opt/empir/v1.0.0/empir_export"
 PATH = "${EMPIR_EXPORT_PATH}:${EMPIR_PATH}:${PATH}"
@@ -56,8 +56,13 @@ G4REALSURFACEDATA = "${CONDA_PREFIX}/share/Geant4/data/RealSurface2.1.1"
 G4SAIDXSDATA = "${CONDA_PREFIX}/share/Geant4/data/SAIDDATA2.0"
 G4INCLDATA = "${CONDA_PREFIX}/share/Geant4/data/INCL1.0"
 
+[activation]
+# Run EMPIR detector to set EMPIR_PATH/EMPIR_EXPORT_PATH if present
+scripts = ["./scripts/detect_empir.sh"]
+
 [tasks]
 install = "python -m pip install -e ."
 test = "pytest"
-build-sim = "cmake -S src/G4LumaCam -B build -DCMAKE_SYSROOT=$CONDA_PREFIX/x86_64-conda-linux-gnu/sysroot && cmake --build build && install -m 755 build/lumacam $CONDA_PREFIX/bin/lumacam"
+build-sim = "bash scripts/build_simulation.sh"
 clean-sim = "test ! -d build || cmake --build build --target clean"
+detect-empir = "bash scripts/detect_empir.sh"
