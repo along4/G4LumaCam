@@ -29,7 +29,7 @@ roifile = "*"
 tqdm = "*"
 pytest = "*"
 jupyterlab = "*"
-ipykernel = "*"
+ipykernel = ">=7.2.0,<8"
 
 [pypi-dependencies]
 rayoptics = "*"
