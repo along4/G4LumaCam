@@ -28,15 +28,18 @@ Check out our new [detailed tutorial](https://github.com/TsvikiHirsh/G4LumaCam/b
 ### Basic Usage
 
 ```python
-import lumacam
+from lumacam.analysis import Analysis
+from lumacam.simulations.g4config import Config
+from lumacam.simulations.g4runner import Simulate
+from lumacam.simulations.optics import Lens
 
 # 1. Run neutron source simulation
-sim = lumacam.Simulate("openbeam")
-config = lumacam.Config.neutrons_uniform_energy()
+sim = Simulate("openbeam")
+config = Config.neutrons_uniform_energy()
 df = sim.run(config)
 
 # 2. Trace rays through the optical system with physics-based detector model
-lens = lumacam.Lens(archive="openbeam")
+lens = Lens(archive="openbeam")
 lens.trace_rays(
     detector_model="image_intensifier_gain",  # Recommended: Gain-dependent MCP model
     gain=5000,                                 # MCP gain (typical at 1000V)
@@ -46,7 +49,7 @@ lens.trace_rays(
 # This generates TPX3 files compatible with various reconstruction tools
 
 # 3. Reconstruct using EMPIR (requires EMPIR license)
-analysis = lumacam.Analysis(archive="archive/test/openbeam")
+analysis = Analysis(archive="archive/test/openbeam")
 analysis.process(params="hitmap", event2image=True)
 ```
 
@@ -66,7 +69,7 @@ docker pull jeffersonlab/geant4:g4v10.6.2-ubuntu24
 
 **EMPIR** (optional - for official analysis workflow):
 
-EMPIR is a proprietary reconstruction code for Timepix-3 detector data, available from [LoskoVision Ltd.](https://amscins.com/product/chronos-series/neutron-imaging/). **Note**: EMPIR is only required if you want to use the `lumacam.Analysis` workflow. The simulation generates standard TPX3 files that can be processed with alternative, open-source Timepix-3 reconstruction tools
+EMPIR is a proprietary reconstruction code for Timepix-3 detector data, available from [LoskoVision Ltd.](https://amscins.com/product/chronos-series/neutron-imaging/). **Note**: EMPIR is only required if you want to use the `Analysis` workflow. The simulation generates standard TPX3 files that can be processed with alternative, open-source Timepix-3 reconstruction tools
 
 ### Installation Steps
 
@@ -98,14 +101,14 @@ pixi run build-sim                # configure, build, and copy build/lumacam to 
 
 Notes:
 - The pixi activation sets the Geant4 data variables (G4ENSDFSTATEDATA, G4NEUTRONHPDATA, etc.) to the copies in `.pixi/envs/default/share/Geant4/data`.
-- The build task also places the executable at `src/G4LumaCam/bin/lumacam` so the Python wrapper `lumacam.Simulate` can find it.
+- The build task also places the executable at `src/G4LumaCam/bin/lumacam` so `lumacam.simulations.g4runner.Simulate` can find it.
 - For headless runs, the default viewer in code uses file-based drivers; you can switch to OGL when a GLX-capable display is available.
 
 ## Simulation Output & Reconstruction with EMPIR
 
 G4LumaCam generates standard **TPX3 files** from the simulation, which are compatible with various Timepix-3 reconstruction tools.
 ### EMPIR (Official Workflow)
-The `lumacam.Analysis` class provides seamless integration with EMPIR for the complete LumaCam reconstruction pipeline. This requires EMPIR licensing (see EMPIR Configuration below).
+The `Analysis` class provides seamless integration with EMPIR for the complete LumaCam reconstruction pipeline. This requires EMPIR licensing (see EMPIR Configuration below).
 
 ## EMPIR Configuration
 
@@ -121,7 +124,7 @@ pip install .
 ### 2. Runtime Parameter (Per-Session)
 Specify when creating an Analysis object:
 ```python
-analysis = lumacam.Analysis(
+analysis = Analysis(
     archive="your_archive",
     empir_dirpath="/path/to/empir/executables"
 )

@@ -12,7 +12,7 @@ sys.path.insert(0, 'src')
 
 import numpy as np
 import pandas as pd
-from lumacam.optics import Lens, DetectorModel, VerbosityLevel
+from lumacam.simulations.optics import Lens, DetectorModel, VerbosityLevel
 
 def test_detector_model_enum():
     """Test that DetectorModel enum has all expected values."""
