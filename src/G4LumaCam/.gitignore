@@ -1,4 +1,4 @@
 # ignore build directories and generated files
-.build/
-.build-*/
-.build/*
+./build
+./build-*/
+./build/*
