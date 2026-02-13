@@ -22,8 +22,8 @@ namespace Sim {
     G4double COATING_THICKNESS = 0.01 * cm;
     
     // Distances from scintillator to mirror and mirror to sensor
-    G4double SCINT_TO_MIRROR_DIST = 20.0 * cm;
-    G4double MIRROR_TO_SENSOR_DIST = 20.0 * cm;
+    G4double SCINT_TO_MIRROR_DIST = 5.0 * cm;
+    G4double MIRROR_TO_SENSOR_DIST = 5.0 * cm;
 
     // Timing parameters for pulsed neutron sources
     G4double TMIN = 0.0 * ns;
