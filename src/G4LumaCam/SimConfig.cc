@@ -10,11 +10,22 @@ namespace Sim {
     G4int batchSize = 0;
     std::default_random_engine randomEngine(time(nullptr));
     G4double WORLD_SIZE = 50.0 * m;
+
+    // Scintillator geometry parameters
     G4double SCINT_THICKNESS = 2.0 * cm;
+    G4double SCINT_SIZE = 5.0 * cm;
+
+    // Sample geometry parameters
     G4double SAMPLE_THICKNESS = 7.5 * cm;
-    G4double SCINT_SIZE = 12.0 * cm;
     G4double SAMPLE_WIDTH = 12.0 * cm; // Full width
+    G4double SAMPLE_CENTER_Z = -25.76 * cm;
     G4double COATING_THICKNESS = 0.01 * cm;
+    
+    // Distances from scintillator to mirror and mirror to sensor
+    G4double SCINT_TO_MIRROR_DIST = 20.0 * cm;
+    G4double MIRROR_TO_SENSOR_DIST = 20.0 * cm;
+
+    // Timing parameters for pulsed neutron sources
     G4double TMIN = 0.0 * ns;
     G4double TMAX = 0.0 * ns;
     G4double FLUX = 0.0; // Default: no pulsed structure
@@ -46,6 +57,24 @@ namespace Sim {
             G4cout << "Sample width set to: " << width / cm << " cm" << G4endl;
         } else {
             G4cerr << "ERROR: Sample width must be positive!" << G4endl;
+        }
+    }
+
+    void SetScintToMirrorDist(G4double distance) {
+        if (distance >= 0) {
+            SCINT_TO_MIRROR_DIST = distance;
+            G4cout << "Scintillator-to-mirror distance set to: " << distance / cm << " cm" << G4endl;
+        } else {
+            G4cerr << "ERROR: Scintillator-to-mirror distance must be non-negative!" << G4endl;
+        }
+    }
+
+    void SetMirrorToSensorDist(G4double distance) {
+        if (distance >= 0) {
+            MIRROR_TO_SENSOR_DIST = distance;
+            G4cout << "Mirror-to-sensor distance set to: " << distance / cm << " cm" << G4endl;
+        } else {
+            G4cerr << "ERROR: Mirror-to-sensor distance must be non-negative!" << G4endl;
         }
     }
 
