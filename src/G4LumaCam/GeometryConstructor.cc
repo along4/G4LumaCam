@@ -14,12 +14,14 @@
 #include "G4SDManager.hh"
 #include "LumaCamMessenger.hh"
 #include "G4PhysicalVolumeStore.hh"
+#include "G4LogicalVolumeStore.hh"
 #include "G4RunManager.hh"
 #include <algorithm>
 
 namespace {
 constexpr G4double kLensRadius = 10.0 * mm;
 constexpr G4double kFrameMargin = 1.0 * mm;
+int gLShapeSolidCounter = 0;
 }
 
 GeometryConstructor::GeometryConstructor(ParticleGenerator* gen) 
@@ -61,6 +63,22 @@ G4double GeometryConstructor::GetSampleCenterZ() const {
 
 G4double GeometryConstructor::GetMonitorZ(G4double thickness) const {
     return GetScintBackZ() + thickness + 0.5 * um;
+}
+
+G4VSolid* GeometryConstructor::CreateLShapeSolid() const {
+    const G4double armZLength =
+        std::max(1.0 * mm, Sim::SCINT_TO_MIRROR_DIST + Sim::SCINT_THICKNESS / 2.0 + kFrameMargin);
+    const G4double armXLength =
+        std::max(1.0 * mm, Sim::MIRROR_TO_SENSOR_DIST + kLensRadius + kFrameMargin);
+    const G4double armHalfThickness = GetArmHalfThickness();
+    const G4double armZCenterLocal = -Sim::SCINT_TO_MIRROR_DIST / 2.0;
+
+    const G4String suffix = "_" + std::to_string(gLShapeSolidCounter++);
+    G4Box* armZ = new G4Box("ArmZ" + suffix, armHalfThickness, armHalfThickness, armZLength / 2.0);
+    G4Box* armX = new G4Box("ArmX" + suffix, armXLength / 2.0, armHalfThickness, armHalfThickness);
+    G4DisplacedSolid* armZShifted = new G4DisplacedSolid(
+        "ArmZShifted" + suffix, armZ, nullptr, G4ThreeVector(0, 0, armZCenterLocal));
+    return new G4UnionSolid("LShapeSolid" + suffix, armZShifted, armX, nullptr, G4ThreeVector(armXLength / 2.0, 0, 0));
 }
 
 G4VPhysicalVolume* GeometryConstructor::Construct() {
@@ -261,22 +279,7 @@ G4VPhysicalVolume* GeometryConstructor::createWorld() {
 
 G4LogicalVolume* GeometryConstructor::buildLShape(G4LogicalVolume* worldLog) {
     G4cout << "GeometryConstructor: Building L-shape volume..." << G4endl;
-
-    const G4double armZLength =
-        std::max(1.0 * mm, Sim::SCINT_TO_MIRROR_DIST + Sim::SCINT_THICKNESS / 2.0 + kFrameMargin);
-    const G4double armXLength =
-        std::max(1.0 * mm, Sim::MIRROR_TO_SENSOR_DIST + kLensRadius + kFrameMargin);
-    const G4double armHalfThickness = GetArmHalfThickness();
-    const G4double armZCenterLocal = -Sim::SCINT_TO_MIRROR_DIST / 2.0;
-
-    G4Box* armZ = new G4Box("ArmZ", armHalfThickness, armHalfThickness, armZLength / 2.0);
-    G4Box* armX = new G4Box("ArmX", armXLength / 2.0, armHalfThickness, armHalfThickness);
-    G4DisplacedSolid* armZShifted = new G4DisplacedSolid(
-        "ArmZShifted", armZ, nullptr, G4ThreeVector(0, 0, armZCenterLocal));
-    G4UnionSolid* lShapeSolid = new G4UnionSolid(
-        "LShapeSolid", armZShifted, armX, nullptr, G4ThreeVector(armXLength / 2.0, 0, 0));
-
-    G4LogicalVolume* lShapeLog = new G4LogicalVolume(lShapeSolid, matBuilder->getAir(), "LShapeLog");
+    G4LogicalVolume* lShapeLog = new G4LogicalVolume(CreateLShapeSolid(), matBuilder->getAir(), "LShapeLog");
     new G4PVPlacement(nullptr, G4ThreeVector(0, 0, mirrorCenterZ), lShapeLog, "LShapePhys", worldLog, false, 0, true);
 
     G4OpticalSurface* blackSurf = new G4OpticalSurface("DarkSurface");
@@ -299,6 +302,25 @@ G4LogicalVolume* GeometryConstructor::buildLShape(G4LogicalVolume* worldLog) {
     lShapeLog->SetVisAttributes(visAttr);
 
     return lShapeLog;
+}
+
+void GeometryConstructor::UpdateLShapeGeometry() {
+    G4LogicalVolumeStore* logVolStore = G4LogicalVolumeStore::GetInstance();
+    G4PhysicalVolumeStore* physVolStore = G4PhysicalVolumeStore::GetInstance();
+
+    G4LogicalVolume* lShapeLog = logVolStore->GetVolume("LShapeLog", false);
+    if (!lShapeLog) {
+        G4cerr << "ERROR: LShapeLog not found in logical volume store!" << G4endl;
+        return;
+    }
+    lShapeLog->SetSolid(CreateLShapeSolid());
+
+    G4VPhysicalVolume* sensorPhys = physVolStore->GetVolume("SensorPhys", false);
+    if (sensorPhys) {
+        sensorPhys->SetTranslation(G4ThreeVector(Sim::MIRROR_TO_SENSOR_DIST, 0, 0));
+    }
+
+    G4RunManager::GetRunManager()->GeometryHasBeenModified();
 }
 
 void GeometryConstructor::addComponents(G4LogicalVolume* parentLog) {
