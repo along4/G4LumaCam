@@ -15,7 +15,10 @@ namespace Sim {
     extern G4double SAMPLE_THICKNESS;
     extern G4double SCINT_SIZE;
     extern G4double SAMPLE_WIDTH; // Full width
+    extern G4double SAMPLE_CENTER_Z;
     extern G4double COATING_THICKNESS;
+    extern G4double SCINT_TO_MIRROR_DIST; // scint_to_mirror_dist: scintillator back face to mirror center
+    extern G4double MIRROR_TO_SENSOR_DIST; // mirror_to_sensor_dist: mirror center to sensor center (sensor axis)
     static G4String sampleMaterial = "G4_GRAPHITE";
     static G4String scintillatorMaterial = "ScintillatorPVT";
     extern G4double TMIN;
@@ -28,6 +31,8 @@ namespace Sim {
     void SetScintThickness(G4double thickness);
     void SetSampleThickness(G4double thickness);
     void SetSampleWidth(G4double width);
+    void SetScintToMirrorDist(G4double distance);
+    void SetMirrorToSensorDist(G4double distance);
     void ComputePulseStructure(G4int totalNeutrons); // Compute pulse times and neutrons per pulse
 }
 
