@@ -18,6 +18,8 @@ public:
     void SetMaterial(const G4String& materialName);
     void SetScintillatorMaterial(const G4String& materialName);
     void SetScintThickness(G4double thickness);
+    void SetScintToMirrorDist(G4double distance);
+    void SetMirrorToSensorDist(G4double distance);
     void SetSampleThickness(G4double thickness);
     void SetSampleWidth(G4double width);
     void SetFlux(G4double flux);

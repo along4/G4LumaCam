@@ -47,6 +47,18 @@ LumaCamMessenger::LumaCamMessenger(G4String* filename, G4LogicalVolume* sampleLo
         .SetParameterName("thickness", false)
         .SetDefaultValue("1.0");
 
+    // Scintillator-to-mirror distance
+    messenger->DeclareMethod("scintToMirrorDist", &LumaCamMessenger::SetScintToMirrorDist)
+        .SetGuidance("Set scintillator back face to mirror center distance in cm")
+        .SetParameterName("distance", false)
+        .SetDefaultValue("20.0");
+
+    // Mirror-to-sensor distance
+    messenger->DeclareMethod("mirrorToSensorDist", &LumaCamMessenger::SetMirrorToSensorDist)
+        .SetGuidance("Set mirror center to sensor center distance in cm")
+        .SetParameterName("distance", false)
+        .SetDefaultValue("20.0");
+
     // Sample thickness
     messenger->DeclareMethod("sampleThickness", &LumaCamMessenger::SetSampleThickness)
         .SetGuidance("Set the sample thickness in cm")
@@ -194,6 +206,43 @@ void LumaCamMessenger::SetScintThickness(G4double thickness) {
         G4RunManager::GetRunManager()->GeometryHasBeenModified();
     } else {
         G4cerr << "ERROR: Failed to cast to GeometryConstructor or scintLog is nullptr!" << G4endl;
+    }
+}
+
+void LumaCamMessenger::SetScintToMirrorDist(G4double distance) {
+    if (distance < 0) {
+        G4cerr << "ERROR: Scintillator-to-mirror distance must be non-negative!" << G4endl;
+        return;
+    }
+
+    G4cout << "Setting scintillator-to-mirror distance to: " << distance << " cm" << G4endl;
+    Sim::SetScintToMirrorDist(distance * cm);
+    GeometryConstructor* geom = dynamic_cast<GeometryConstructor*>(
+        const_cast<G4VUserDetectorConstruction*>(
+            G4RunManager::GetRunManager()->GetUserDetectorConstruction()));
+    if (geom) {
+        geom->UpdateLShapeGeometry();
+        geom->UpdateScintillatorGeometry(Sim::SCINT_THICKNESS);
+    } else {
+        G4cerr << "ERROR: Failed to cast to GeometryConstructor!" << G4endl;
+    }
+}
+
+void LumaCamMessenger::SetMirrorToSensorDist(G4double distance) {
+    if (distance < 0) {
+        G4cerr << "ERROR: Mirror-to-sensor distance must be non-negative!" << G4endl;
+        return;
+    }
+
+    G4cout << "Setting mirror-to-sensor distance to: " << distance << " cm" << G4endl;
+    Sim::SetMirrorToSensorDist(distance * cm);
+    GeometryConstructor* geom = dynamic_cast<GeometryConstructor*>(
+        const_cast<G4VUserDetectorConstruction*>(
+            G4RunManager::GetRunManager()->GetUserDetectorConstruction()));
+    if (geom) {
+        geom->UpdateLShapeGeometry();
+    } else {
+        G4cerr << "ERROR: Failed to cast to GeometryConstructor!" << G4endl;
     }
 }
 
