@@ -17,8 +17,12 @@ public:
     virtual G4VPhysicalVolume* Construct();
     void UpdateScintillatorGeometry(G4double thickness);
     void UpdateSampleGeometry(G4double thickness, G4Material* material, G4double width = Sim::SAMPLE_WIDTH);
+    void UpdateOpticalGeometry();
 
 private:
+    G4double ComputeMirrorLocalZ(G4double scintThickness) const;
+    G4double ComputeLShapeWorldShiftZ(G4double scintThickness) const;
+    G4double ComputeSampleWorldZ(G4double scintThickness, G4double sampleThickness) const;
     G4VPhysicalVolume* createWorld();
     G4LogicalVolume* buildLShape(G4LogicalVolume* worldLog);
     void addComponents(G4LogicalVolume* lShapeLog);

@@ -63,6 +63,8 @@ class Config:
     sample_thickness: float = 0.2  # Sample thickness in cm (default 0.2 cm = 200 microns)
     sample_width: float = 12.0  # Sample width in cm (default 12 cm)  
     scintillator_thickness: float = 20  # Scintillator thickness in mm (default is 20 mm)
+    scint_to_mirror_dist: float = 19.0  # Center-to-center distance in cm
+    mirror_to_sensor_dist: float = 30.0  # Center-to-center distance in cm
     csv_batch_size: int = 0
     # Ion parameters for radioactive decay
     ion_z: Optional[int] = None  # Atomic number
@@ -399,6 +401,8 @@ class Config:
 /lumacam/sampleThickness {self.sample_thickness} cm
 /lumacam/sampleWidth {self.sample_width} cm
 /lumacam/scintThickness {self.scintillator_thickness} cm
+/lumacam/scintToMirrorDist {self.scint_to_mirror_dist} cm
+/lumacam/mirrorToSensorDist {self.mirror_to_sensor_dist} cm
 /lumacam/sampleMaterial {self.sample_material}
 /lumacam/batchSize {self.csv_batch_size}
 /control/verbose 2
@@ -452,6 +456,8 @@ class Config:
             f"  Sample Thickness: {self.sample_thickness} cm\n"
             f"  Scintillator: {self.scintillator}\n"
             f"  Scintillator Thickness: {self.scintillator_thickness} cm\n"
+            f"  Scintillator-to-Mirror Distance: {self.scint_to_mirror_dist} cm\n"
+            f"  Mirror-to-Sensor Distance: {self.mirror_to_sensor_dist} cm\n"
             f"  CSV Batch Size: {self.csv_batch_size}\n"
             f"  Progress Interval: {self.progress_interval}\n"
             f"  Events: {self.num_events}\n"

@@ -15,6 +15,8 @@ namespace Sim {
     G4double SCINT_SIZE = 12.0 * cm;
     G4double SAMPLE_WIDTH = 12.0 * cm; // Full width
     G4double COATING_THICKNESS = 0.01 * cm;
+    G4double SCINT_TO_MIRROR_DIST = 19.0 * cm;
+    G4double MIRROR_TO_SENSOR_DIST = 30.0 * cm;
     G4double TMIN = 0.0 * ns;
     G4double TMAX = 0.0 * ns;
     G4double FLUX = 0.0; // Default: no pulsed structure
@@ -46,6 +48,26 @@ namespace Sim {
             G4cout << "Sample width set to: " << width / cm << " cm" << G4endl;
         } else {
             G4cerr << "ERROR: Sample width must be positive!" << G4endl;
+        }
+    }
+
+    void SetScintToMirrorDistance(G4double distance) {
+        if (distance > 0) {
+            SCINT_TO_MIRROR_DIST = distance;
+            G4cout << "Scintillator-to-mirror distance set to: "
+                   << distance / cm << " cm" << G4endl;
+        } else {
+            G4cerr << "ERROR: Scintillator-to-mirror distance must be positive!" << G4endl;
+        }
+    }
+
+    void SetMirrorToSensorDistance(G4double distance) {
+        if (distance > 0) {
+            MIRROR_TO_SENSOR_DIST = distance;
+            G4cout << "Mirror-to-sensor distance set to: "
+                   << distance / cm << " cm" << G4endl;
+        } else {
+            G4cerr << "ERROR: Mirror-to-sensor distance must be positive!" << G4endl;
         }
     }
 

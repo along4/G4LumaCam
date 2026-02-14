@@ -35,6 +35,18 @@ GeometryConstructor::~GeometryConstructor() {
     // delete eventProc; // Commented out to avoid double deletion
 }
 
+G4double GeometryConstructor::ComputeMirrorLocalZ(G4double scintThickness) const {
+    return Sim::SCINT_TO_MIRROR_DIST + scintThickness / 2.0;
+}
+
+G4double GeometryConstructor::ComputeLShapeWorldShiftZ(G4double scintThickness) const {
+    return -ComputeMirrorLocalZ(scintThickness);
+}
+
+G4double GeometryConstructor::ComputeSampleWorldZ(G4double scintThickness, G4double sampleThickness) const {
+    return ComputeLShapeWorldShiftZ(scintThickness) - scintThickness - Sim::COATING_THICKNESS - sampleThickness / 2.0;
+}
+
 G4VPhysicalVolume* GeometryConstructor::Construct() {
     G4cout << "GeometryConstructor: Constructing geometry..." << G4endl;
     G4PhysicalVolumeStore* physVolStore = G4PhysicalVolumeStore::GetInstance();
@@ -65,7 +77,7 @@ G4VPhysicalVolume* GeometryConstructor::Construct() {
     G4VisAttributes* sampleVisAttributes = new G4VisAttributes(G4Colour(0.15, 0.2, 0.8, 0.5));
     sampleVisAttributes->SetForceSolid(true);
     sampleVisAttributes->SetVisibility(true);
-    new G4PVPlacement(nullptr, G4ThreeVector(-Sim::SCINT_SIZE/2 + Sim::SAMPLE_WIDTH/2, 0, -Sim::SCINT_THICKNESS - Sim::COATING_THICKNESS - Sim::SAMPLE_THICKNESS/2), 
+    new G4PVPlacement(nullptr, G4ThreeVector(-Sim::SCINT_SIZE/2 + Sim::SAMPLE_WIDTH/2, 0, ComputeSampleWorldZ(Sim::SCINT_THICKNESS, Sim::SAMPLE_THICKNESS)), 
                       sampleLog, "SamplePhys", worldLog, false, 0, true);
     sampleLog->SetVisAttributes(sampleVisAttributes);
 
@@ -116,6 +128,31 @@ void GeometryConstructor::UpdateScintillatorGeometry(G4double thickness) {
         G4cout << "GeometryConstructor: Scintillator placement updated" << G4endl;
     } else {
         G4cerr << "ERROR: ScintPhys not found in volume store!" << G4endl;
+    }
+
+    G4VPhysicalVolume* lShapePhys = physVolStore->GetVolume("LShapePhys", false);
+    if (lShapePhys) {
+        lShapePhys->SetTranslation(G4ThreeVector(0, 0, ComputeLShapeWorldShiftZ(thickness)));
+        G4cout << "GeometryConstructor: L-shape world placement updated" << G4endl;
+    } else {
+        G4cerr << "ERROR: LShapePhys not found in volume store!" << G4endl;
+    }
+
+    G4double mirrorLocalZ = ComputeMirrorLocalZ(thickness);
+    G4VPhysicalVolume* mirrorPhys = physVolStore->GetVolume("MirrorPhys", false);
+    if (mirrorPhys) {
+        mirrorPhys->SetTranslation(G4ThreeVector(0, 0, mirrorLocalZ));
+        G4cout << "GeometryConstructor: Mirror placement updated" << G4endl;
+    } else {
+        G4cerr << "ERROR: MirrorPhys not found in volume store!" << G4endl;
+    }
+
+    G4VPhysicalVolume* sensorPhys = physVolStore->GetVolume("SensorPhys", false);
+    if (sensorPhys) {
+        sensorPhys->SetTranslation(G4ThreeVector(Sim::MIRROR_TO_SENSOR_DIST, 0, mirrorLocalZ));
+        G4cout << "GeometryConstructor: Sensor placement updated" << G4endl;
+    } else {
+        G4cerr << "ERROR: SensorPhys not found in volume store!" << G4endl;
     }
 
     // Update coating (black tape side and back boxes)
@@ -169,7 +206,9 @@ void GeometryConstructor::UpdateScintillatorGeometry(G4double thickness) {
     // Update sample position to maintain alignment
     G4VPhysicalVolume* samplePhys = physVolStore->GetVolume("SamplePhys", false);
     if (samplePhys) {
-        samplePhys->SetTranslation(G4ThreeVector(0, 0, -thickness - Sim::COATING_THICKNESS - Sim::SAMPLE_THICKNESS/2));
+        samplePhys->SetTranslation(
+            G4ThreeVector(-Sim::SCINT_SIZE/2 + Sim::SAMPLE_WIDTH/2, 0, ComputeSampleWorldZ(thickness, Sim::SAMPLE_THICKNESS))
+        );
         G4cout << "GeometryConstructor: Sample placement updated" << G4endl;
     } else {
         G4cerr << "ERROR: SamplePhys not found in volume store!" << G4endl;
@@ -210,7 +249,9 @@ void GeometryConstructor::UpdateSampleGeometry(G4double thickness, G4Material* m
 
     G4VPhysicalVolume* samplePhys = physVolStore->GetVolume("SamplePhys", false);
     if (samplePhys) {
-        samplePhys->SetTranslation(G4ThreeVector(-Sim::SCINT_SIZE/2 + width/2, 0, -Sim::SCINT_THICKNESS - Sim::COATING_THICKNESS - thickness/2));
+        samplePhys->SetTranslation(
+            G4ThreeVector(-Sim::SCINT_SIZE/2 + width/2, 0, ComputeSampleWorldZ(Sim::SCINT_THICKNESS, thickness))
+        );
         G4cout << "GeometryConstructor: Sample placement updated" << G4endl;
     } else {
         G4cerr << "ERROR: SamplePhys not found in volume store!" << G4endl;
@@ -243,7 +284,16 @@ G4LogicalVolume* GeometryConstructor::buildLShape(G4LogicalVolume* worldLog) {
     G4SubtractionSolid* trimmedLShape = new G4SubtractionSolid("TrimmedLShape", lShapeSolid, cutBox, 
                                                                nullptr, G4ThreeVector(0, 0, -100.5*cm));
     G4LogicalVolume* lShapeLog = new G4LogicalVolume(trimmedLShape, matBuilder->getAir(), "LShapeLog");
-    new G4PVPlacement(nullptr, G4ThreeVector(), lShapeLog, "LShapePhys", worldLog, false, 0, true);
+    new G4PVPlacement(
+        nullptr,
+        G4ThreeVector(0, 0, ComputeLShapeWorldShiftZ(Sim::SCINT_THICKNESS)),
+        lShapeLog,
+        "LShapePhys",
+        worldLog,
+        false,
+        0,
+        true
+    );
 
     G4OpticalSurface* blackSurf = new G4OpticalSurface("DarkSurface");
     blackSurf->SetType(dielectric_metal);
@@ -355,7 +405,8 @@ void GeometryConstructor::addComponents(G4LogicalVolume* lShapeLog) {
     mirrorVisAttributes->SetVisibility(true);
     G4RotationMatrix* rot = new G4RotationMatrix();
     rot->rotateY(45*deg);
-    new G4PVPlacement(rot, G4ThreeVector(0, 0, 20*cm), mirrorLog, "MirrorPhys", lShapeLog, false, 0, true);
+    G4double mirrorLocalZ = ComputeMirrorLocalZ(Sim::SCINT_THICKNESS);
+    new G4PVPlacement(rot, G4ThreeVector(0, 0, mirrorLocalZ), mirrorLog, "MirrorPhys", lShapeLog, false, 0, true);
     G4OpticalSurface* mirrorSurf = new G4OpticalSurface("ReflectiveSurface");
     mirrorSurf->SetType(dielectric_metal);
     mirrorSurf->SetFinish(polished);
@@ -372,7 +423,16 @@ void GeometryConstructor::addComponents(G4LogicalVolume* lShapeLog) {
     sensorVisAttributes->SetVisibility(true);
     rot = new G4RotationMatrix();
     rot->rotateY(90*deg);
-    new G4PVPlacement(rot, G4ThreeVector(30*cm, 0, 20*cm), sensorLog, "SensorPhys", lShapeLog, false, 0, true);
+    new G4PVPlacement(
+        rot,
+        G4ThreeVector(Sim::MIRROR_TO_SENSOR_DIST, 0, mirrorLocalZ),
+        sensorLog,
+        "SensorPhys",
+        lShapeLog,
+        false,
+        0,
+        true
+    );
     sensorLog->SetVisAttributes(sensorVisAttributes);
     sensorLog->SetSensitiveDetector(eventProc);
 
@@ -395,4 +455,42 @@ void GeometryConstructor::addComponents(G4LogicalVolume* lShapeLog) {
     monitorSurfProp->AddProperty("REFLECTIVITY", PhotonEnergyPVT, reflectivity, 12);
     monitorSurf->SetMaterialPropertiesTable(monitorSurfProp);
     new G4LogicalSkinSurface("MonitorSkinSurface", monitorLog, monitorSurf);
+}
+
+void GeometryConstructor::UpdateOpticalGeometry() {
+    G4cout << "GeometryConstructor: Updating optical geometry distances..." << G4endl;
+    G4PhysicalVolumeStore* physVolStore = G4PhysicalVolumeStore::GetInstance();
+
+    G4VPhysicalVolume* lShapePhys = physVolStore->GetVolume("LShapePhys", false);
+    if (lShapePhys) {
+        lShapePhys->SetTranslation(G4ThreeVector(0, 0, ComputeLShapeWorldShiftZ(Sim::SCINT_THICKNESS)));
+    } else {
+        G4cerr << "ERROR: LShapePhys not found in volume store!" << G4endl;
+    }
+
+    G4double mirrorLocalZ = ComputeMirrorLocalZ(Sim::SCINT_THICKNESS);
+    G4VPhysicalVolume* mirrorPhys = physVolStore->GetVolume("MirrorPhys", false);
+    if (mirrorPhys) {
+        mirrorPhys->SetTranslation(G4ThreeVector(0, 0, mirrorLocalZ));
+    } else {
+        G4cerr << "ERROR: MirrorPhys not found in volume store!" << G4endl;
+    }
+
+    G4VPhysicalVolume* sensorPhys = physVolStore->GetVolume("SensorPhys", false);
+    if (sensorPhys) {
+        sensorPhys->SetTranslation(G4ThreeVector(Sim::MIRROR_TO_SENSOR_DIST, 0, mirrorLocalZ));
+    } else {
+        G4cerr << "ERROR: SensorPhys not found in volume store!" << G4endl;
+    }
+
+    G4VPhysicalVolume* samplePhys = physVolStore->GetVolume("SamplePhys", false);
+    if (samplePhys) {
+        samplePhys->SetTranslation(
+            G4ThreeVector(-Sim::SCINT_SIZE/2 + Sim::SAMPLE_WIDTH/2, 0, ComputeSampleWorldZ(Sim::SCINT_THICKNESS, Sim::SAMPLE_THICKNESS))
+        );
+    } else {
+        G4cerr << "ERROR: SamplePhys not found in volume store!" << G4endl;
+    }
+
+    G4RunManager::GetRunManager()->GeometryHasBeenModified();
 }
