@@ -35,7 +35,7 @@ class Config:
     energy_histogram: Optional[List[Tuple[float, float]]] = None  # Used for Hist distribution: (energy, intensity)
     position_x: float = 0
     position_y: float = 0
-    position_z: float = -1059
+    source_position_z: float = -1059  # Source z position
     position_unit: str = "cm"
     direction_x: float = 0
     direction_y: float = 0
@@ -81,7 +81,7 @@ class Config:
             particle="neutron",
             energy=10.0,
             energy_unit="MeV",
-            position_z=-1059,
+            source_position_z=-1059,
             position_unit="cm",
             halfx=60,
             halfy=60,
@@ -106,7 +106,7 @@ class Config:
             energy_gradient=0.0,
             energy_intercept=1.0,
             energy_unit="MeV",
-            position_z=-1059,
+            source_position_z=-1059,
             position_unit="cm",
             halfx=60,
             halfy=60,
@@ -127,7 +127,7 @@ class Config:
             particle="opticalphoton",
             energy=3,
             energy_unit="eV",
-            position_z=20.,
+            source_position_z=20.,
             position_unit="mm",
             halfx=0.0001,
             halfy=0.0001,
@@ -150,7 +150,7 @@ class Config:
             particle="opticalphoton",
             energy=3,
             energy_unit="eV",
-            position_z=20,
+            source_position_z=20,
             position_unit="mm",
             halfx=60,
             halfy=60,
@@ -174,7 +174,7 @@ class Config:
             ion_z=ion_z,
             ion_a=ion_a,
             ion_excitation=ion_excitation,
-            position_z=0,
+            source_position_z=0,
             position_unit="mm",
             halfx=0.0001,
             halfy=0.0001,
@@ -207,7 +207,7 @@ class Config:
             energy_type="Hist",
             energy_histogram=normalized_lines,
             energy_unit="MeV",
-            position_z=0,
+            source_position_z=0,
             position_unit="mm",
             halfx=0.0001,
             halfy=0.0001,
@@ -238,7 +238,7 @@ class Config:
             energy_gradient=0.0,
             energy_intercept=1.0,
             energy_unit="eV",
-            position_z=-900,
+            source_position_z=-900,
             position_unit="cm",
             halfx=60,
             halfy=60,
@@ -264,7 +264,7 @@ class Config:
             particle="neutron",
             energy=10.0,
             energy_unit="MeV",
-            position_z=-1059,
+            source_position_z=-1059,
             position_unit="cm",
             halfx=60,
             halfy=60,
@@ -294,7 +294,7 @@ class Config:
                 energy_gradient=0.0,
                 energy_intercept=1.0,
                 energy_unit="MeV",
-                position_z=-1085,  # Flight path of 10.85 m
+                source_position_z=-1085,  # Flight path of 10.85 m
                 position_unit="cm",
                 halfx=60,  # 12 cm FOV = 120 mm, halfx = 60 mm
                 halfy=60,  # 12 cm FOV = 120 mm, halfy = 60 mm
@@ -318,7 +318,7 @@ class Config:
                 energy=10.0,
                 energy_type="Mono",
                 energy_unit="MeV",
-                position_z=-1085,  # Flight path of 10.85 m
+                source_position_z=-1085,  # Flight path of 10.85 m
                 position_unit="cm",
                 halfx=60,  # 12 cm FOV = 120 mm, halfx = 60 mm
                 halfy=60,  # 12 cm FOV = 120 mm, halfy = 60 mm
@@ -385,7 +385,7 @@ class Config:
 """
 
         macro_content += f"""
-/gps/position {self.position_x} {self.position_y} {self.position_z} {self.position_unit}
+/gps/position {self.position_x} {self.position_y} {self.source_position_z} {self.position_unit}
 /gps/direction {self.direction_x} {self.direction_y} {self.direction_z}
 /gps/pos/shape {self.shape}
 /gps/pos/halfx {self.halfx} {self.shape_unit}
@@ -444,7 +444,7 @@ class Config:
             f"  {source_info}"
             f"{time_info}"
             f"{pulse_info}"
-            f"  Position: ({self.position_x}, {self.position_y}, {self.position_z}) {self.position_unit}\n"
+            f"  Source Position: ({self.position_x}, {self.position_y}, {self.source_position_z}) {self.position_unit}\n"
             f"  Direction: ({self.direction_x}, {self.direction_y}, {self.direction_z})\n"
             f"  Shape: {self.shape} ({self.halfx}x{self.halfy} {self.shape_unit})\n"
             f"  Angle: {self.angle_type} (max theta: {self.max_theta} {self.angle_unit})\n"
