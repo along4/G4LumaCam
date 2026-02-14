@@ -33,8 +33,8 @@ class Config:
     energy_gradient: Optional[float] = None  # Used for Lin distribution
     energy_intercept: Optional[float] = None  # Used for Lin distribution
     energy_histogram: Optional[List[Tuple[float, float]]] = None  # Used for Hist distribution: (energy, intensity)
-    position_x: float = 0
-    position_y: float = 0
+    source_position_x: float = 0
+    source_position_y: float = 0
     source_position_z: float = -1059  # Source z position
     position_unit: str = "cm"
     direction_x: float = 0
@@ -385,7 +385,7 @@ class Config:
 """
 
         macro_content += f"""
-/gps/position {self.position_x} {self.position_y} {self.source_position_z} {self.position_unit}
+/gps/position {self.source_position_x} {self.source_position_y} {self.source_position_z} {self.position_unit}
 /gps/direction {self.direction_x} {self.direction_y} {self.direction_z}
 /gps/pos/shape {self.shape}
 /gps/pos/halfx {self.halfx} {self.shape_unit}
@@ -444,7 +444,7 @@ class Config:
             f"  {source_info}"
             f"{time_info}"
             f"{pulse_info}"
-            f"  Source Position: ({self.position_x}, {self.position_y}, {self.source_position_z}) {self.position_unit}\n"
+            f"  Source Position: ({self.source_position_x}, {self.source_position_y}, {self.source_position_z}) {self.position_unit}\n"
             f"  Direction: ({self.direction_x}, {self.direction_y}, {self.direction_z})\n"
             f"  Shape: {self.shape} ({self.halfx}x{self.halfy} {self.shape_unit})\n"
             f"  Angle: {self.angle_type} (max theta: {self.max_theta} {self.angle_unit})\n"
